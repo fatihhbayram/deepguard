@@ -1,0 +1,74 @@
+# MVP Data Model Direction
+
+Avoid designing 20–30 tables before implementation.
+
+Initial target: approximately 7 tables.
+
+## Candidate tables
+
+```text
+users
+analyses
+media_files
+analysis_jobs
+analysis_signals
+analysis_segments
+reports
+```
+
+`api_keys` can be added in P9.
+
+## Analysis
+
+Stores:
+
+- owner
+- status
+- timestamps
+- overall deterministic risk level
+- risk-engine version
+
+## Media file
+
+Stores:
+
+- analysis id
+- original object key
+- normalized object key if created
+- SHA-256
+- MIME
+- size
+- duration
+- container
+- codec
+- fps
+- resolution
+
+## Analysis signal
+
+Stores normalized provider evidence:
+
+```text
+provider
+signal_type
+score nullable
+risk_level
+provider_version
+status
+metadata JSON
+```
+
+## Analysis segment
+
+Stores timeline evidence:
+
+```text
+signal_id
+start_time
+end_time
+score nullable
+risk_level nullable
+metadata JSON
+```
+
+Do not over-normalize JSON payloads from providers before product requirements prove that relational fields are needed.
