@@ -3,21 +3,54 @@
 const API_URL =
   process.env.API_INTERNAL_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+const HEALTH_TIMEOUT_MS = 3000;
+
 type HealthResponse = {
   status: string;
   database: string;
 };
 
 type HealthResult =
-  | { reachable: true; health: HealthResponse }
+  | { reachable: true; httpOk: boolean; health: HealthResponse }
   | { reachable: false; error: string };
+
+function parseHealth(payload: unknown): HealthResponse | null {
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+
+  const { status, database } = payload as Record<string, unknown>;
+  if (typeof status !== "string" || typeof database !== "string") {
+    return null;
+  }
+
+  return { status, database };
+}
 
 async function fetchHealth(): Promise<HealthResult> {
   try {
-    const response = await fetch(`${API_URL}/health`, { cache: "no-store" });
-    const health = (await response.json()) as HealthResponse;
-    return { reachable: true, health };
+    const response = await fetch(`${API_URL}/health`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    });
+
+    // The API answers 503 with a meaningful degraded body, so the payload is
+    // still worth reading when the status code is not ok.
+    const payload = await response.json().catch(() => null);
+    const health = parseHealth(payload);
+    if (!health) {
+      return {
+        reachable: false,
+        error: `Unexpected response body (HTTP ${response.status})`,
+      };
+    }
+
+    return { reachable: true, httpOk: response.ok, health };
   } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      return { reachable: false, error: `No response within ${HEALTH_TIMEOUT_MS}ms` };
+    }
+
     return {
       reachable: false,
       error: error instanceof Error ? error.message : "Unknown error",
@@ -43,7 +76,7 @@ function StatusRow({ label, ok, detail }: { label: string; ok: boolean; detail: 
 export default async function Home() {
   const result = await fetchHealth();
 
-  const apiOk = result.reachable;
+  const apiOk = result.reachable && result.httpOk && result.health.status === "ok";
   const dbOk = result.reachable && result.health.database === "ok";
   const systemOk = apiOk && dbOk;
 
@@ -63,7 +96,7 @@ export default async function Home() {
         <StatusRow
           label="API"
           ok={apiOk}
-          detail={apiOk ? result.health.status : "unreachable"}
+          detail={result.reachable ? result.health.status : "unreachable"}
         />
         <StatusRow
           label="Database"
