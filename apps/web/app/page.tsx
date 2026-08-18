@@ -1,4 +1,7 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// This page renders on the server, so it prefers the Docker-internal API URL and
+// falls back to the public one used by the browser.
+const API_URL =
+  process.env.API_INTERNAL_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 type HealthResponse = {
   status: string;
