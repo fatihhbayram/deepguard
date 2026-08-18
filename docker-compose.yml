@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deepguard}
       POSTGRES_DB: ${POSTGRES_DB:-deepguard}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -24,8 +24,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-deepguard}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-deepguard123}
     ports:
-      - "${MINIO_API_PORT:-9002}:9000"
-      - "${MINIO_CONSOLE_PORT:-9003}:9001"
+      - "127.0.0.1:${MINIO_API_PORT:-9002}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9003}:9001"
     volumes:
       - minio_data:/data
     healthcheck:
@@ -45,7 +45,7 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,9 +67,10 @@ services:
       # Server-side rendering talks to the API over the Docker network.
       API_INTERNAL_URL: http://api:8000
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
       interval: 10s
