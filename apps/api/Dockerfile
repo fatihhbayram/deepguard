@@ -5,6 +5,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# ffprobe validates uploaded media; ffmpeg is the same Debian package.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 

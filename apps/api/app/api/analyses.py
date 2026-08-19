@@ -8,7 +8,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile, status
 from pydantic import BaseModel
 
-from app.storage import store_original
+from app.media import MediaMetadata, MediaProbeError, MediaProbeUnavailable, probe_media
+from app.storage import remove_original, store_original
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,14 @@ def discard_temp_file(path: str | Path) -> None:
         pass
 
 
+def discard_stored_original(storage_key: str) -> None:
+    """Roll back a stored original best-effort, never masking the error being handled."""
+    try:
+        remove_original(storage_key)
+    except Exception:
+        logger.exception("Removing the rejected original %s from MinIO failed.", storage_key)
+
+
 class UploadAdmission(BaseModel):
     """What is genuinely known after admission validation — nothing is persisted yet."""
 
@@ -36,6 +45,7 @@ class UploadAdmission(BaseModel):
     size_bytes: int
     sha256: str
     storage_key: str
+    metadata: MediaMetadata
 
 
 @dataclass(frozen=True)
@@ -87,15 +97,16 @@ async def store_upload(file: UploadFile) -> StoredUpload:
 
 @router.post("/analyses", response_model=UploadAdmission)
 async def create_analysis(file: UploadFile) -> UploadAdmission:
-    """Admission validation only: declared MIME type and upload size.
+    """Admit an upload by declared MIME type and size, then prove it is real media.
 
-    The declared content type is not proof that the bytes are a real MP4/MOV container;
-    that check belongs to the later ffprobe task.
+    The declared content type is not proof that the bytes are a real MP4/MOV container,
+    so admission alone never produces a 200.
 
-    The admitted upload is stored in MinIO as the forensic original and, on success, is
-    also retained as a temp file for the following P1 tasks (ffprobe, normalization). If
-    storage fails the temp file is dropped: nothing persists a reference that could
-    reclaim it later.
+    The admitted upload is stored in MinIO as the forensic original, then probed with
+    ffprobe to confirm the bytes really are video and to extract the metadata later
+    tasks need. On success the temp file is retained for normalization; on any failure
+    both the temp file and the stored object are dropped best-effort, since nothing
+    persists a reference that could reclaim them later.
     """
     content_type = (file.content_type or "").strip().lower()
     if content_type not in ALLOWED_CONTENT_TYPES:
@@ -120,10 +131,32 @@ async def create_analysis(file: UploadFile) -> UploadAdmission:
             detail="media storage unavailable",
         ) from None
 
+    try:
+        metadata = await probe_media(stored.path)
+    except MediaProbeUnavailable:
+        discard_temp_file(stored.path)
+        discard_stored_original(storage_key)
+        # The media may well be fine — this is the server missing its media processor.
+        logger.exception("ffprobe is unavailable in this environment.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="media processor unavailable",
+        ) from None
+    except MediaProbeError:
+        discard_temp_file(stored.path)
+        discard_stored_original(storage_key)
+        # Rejected content must not stay behind as if it had been accepted.
+        logger.info("Rejected admitted upload %s as unusable media.", storage_key, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="invalid or unsupported video media",
+        ) from None
+
     return UploadAdmission(
         filename=file.filename,
         content_type=content_type,
         size_bytes=stored.size_bytes,
         sha256=stored.sha256,
         storage_key=storage_key,
+        metadata=metadata,
     )

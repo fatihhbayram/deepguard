@@ -53,3 +53,12 @@ def store_original(path: Path, sha256: str, content_type: str) -> str:
     client.fput_object(ORIGINALS_BUCKET, key, str(path), content_type=content_type)
 
     return key
+
+
+def remove_original(storage_key: str) -> None:
+    """Delete a stored original again.
+
+    This exists for exactly one case: an upload that was stored before it turned out not
+    to be usable media, which must not linger as a successful forensic artifact.
+    """
+    client.remove_object(ORIGINALS_BUCKET, storage_key)

@@ -1,0 +1,212 @@
+"""ffprobe-backed validation of admitted media.
+
+This module answers one question: are the uploaded bytes a real video, and what does
+downstream processing need to know about them? It deliberately does not decide whether
+the media is compatible with any particular detector provider — that decision belongs to
+the normalization task (D013).
+"""
+
+import asyncio
+import json
+import logging
+import math
+from dataclasses import dataclass
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+FFPROBE_BINARY = "ffprobe"
+FFPROBE_TIMEOUT_SECONDS = 10
+
+# Only the fields DeepGuard currently needs; full metadata dumps are both slower and a
+# larger parsing surface than this task requires.
+FFPROBE_ENTRIES = (
+    "stream=codec_name,width,height,avg_frame_rate,r_frame_rate,duration"
+    ":format=format_name,duration"
+)
+
+
+class MediaProbeError(Exception):
+    """The media was admitted but is not usable video."""
+
+
+class MediaProbeUnavailable(Exception):
+    """ffprobe itself could not be executed — a server problem, not a media problem."""
+
+
+@dataclass(frozen=True)
+class MediaMetadata:
+    """The minimum a downstream normalization/detection step needs about the original."""
+
+    format_name: str
+    codec_name: str
+    width: int
+    height: int
+    duration: float
+    frame_rate: float
+
+
+async def _run_ffprobe(path: Path) -> str:
+    """Execute ffprobe against the original file and return its stdout.
+
+    No shell is involved: the path is passed as a separate argv entry, so a filename can
+    never be interpreted as shell syntax. A probe that outlives the timeout is killed and
+    reaped rather than left running.
+    """
+    args = (
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", FFPROBE_ENTRIES,
+        "-of", "json",
+        str(path),
+    )
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            FFPROBE_BINARY,
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as error:
+        raise MediaProbeUnavailable("ffprobe could not be executed") from error
+
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(), timeout=FFPROBE_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        _terminate(process)
+        await process.wait()
+        raise MediaProbeError(
+            f"ffprobe timed out after {FFPROBE_TIMEOUT_SECONDS}s"
+        ) from None
+
+    if process.returncode != 0:
+        # stderr is diagnostic only: it can quote container internals and the temp path.
+        logger.warning(
+            "ffprobe exited with %s: %s",
+            process.returncode,
+            stderr.decode("utf-8", "replace").strip(),
+        )
+        raise MediaProbeError(f"ffprobe exited with {process.returncode}")
+
+    return stdout.decode("utf-8", "replace")
+
+
+def _terminate(process: asyncio.subprocess.Process) -> None:
+    try:
+        process.kill()
+    except ProcessLookupError:
+        # The child raced us to exit; the following wait() still reaps it.
+        pass
+
+
+def _parse_duration(value: object) -> float | None:
+    """Accept only a finite, strictly positive duration; anything else is unusable."""
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return None
+
+    try:
+        duration = float(value)
+    except ValueError:
+        return None
+
+    if not math.isfinite(duration) or duration <= 0:
+        return None
+
+    return duration
+
+
+def _parse_frame_rate(value: object) -> float | None:
+    """Parse an ffprobe frame rate, which is normally a rational such as `30000/1001`.
+
+    Parsed arithmetically rather than evaluated: ffprobe output is untrusted input, and
+    `0/0` for "unknown" is a value this has to reject, not crash on.
+    """
+    if not isinstance(value, str):
+        return None
+
+    numerator, separator, denominator = value.partition("/")
+    try:
+        rate = int(numerator) / int(denominator) if separator else float(value)
+    except (ValueError, ZeroDivisionError):
+        return None
+
+    if not math.isfinite(rate) or rate <= 0:
+        return None
+
+    return rate
+
+
+def _parse_dimension(value: object) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return None
+
+    return value
+
+
+def _parse(output: str) -> MediaMetadata:
+    """Turn ffprobe JSON into metadata, rejecting anything downstream cannot rely on."""
+    try:
+        probe = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise MediaProbeError("ffprobe returned malformed JSON") from error
+
+    if not isinstance(probe, dict):
+        raise MediaProbeError("ffprobe returned an unexpected JSON document")
+
+    streams = probe.get("streams")
+    if not isinstance(streams, list) or not streams or not isinstance(streams[0], dict):
+        raise MediaProbeError("no video stream")
+
+    # `-select_streams v:0` already narrowed this to the primary video stream; P1 needs
+    # no multi-stream selection policy.
+    stream = streams[0]
+    container = probe.get("format") if isinstance(probe.get("format"), dict) else {}
+
+    codec_name = stream.get("codec_name")
+    if not isinstance(codec_name, str) or not codec_name:
+        raise MediaProbeError("missing codec_name")
+
+    format_name = container.get("format_name")
+    if not isinstance(format_name, str) or not format_name:
+        raise MediaProbeError("missing format_name")
+
+    width = _parse_dimension(stream.get("width"))
+    height = _parse_dimension(stream.get("height"))
+    if width is None or height is None:
+        raise MediaProbeError("invalid video dimensions")
+
+    # Some containers carry the duration per stream, others only on the format.
+    duration = _parse_duration(stream.get("duration")) or _parse_duration(
+        container.get("duration")
+    )
+    if duration is None:
+        raise MediaProbeError("no usable duration")
+
+    # r_frame_rate is the narrow fallback for containers that report avg_frame_rate as
+    # the unknown `0/0`.
+    frame_rate = _parse_frame_rate(stream.get("avg_frame_rate")) or _parse_frame_rate(
+        stream.get("r_frame_rate")
+    )
+    if frame_rate is None:
+        raise MediaProbeError("no usable frame rate")
+
+    return MediaMetadata(
+        format_name=format_name,
+        codec_name=codec_name,
+        width=width,
+        height=height,
+        duration=duration,
+        frame_rate=frame_rate,
+    )
+
+
+async def probe_media(path: Path) -> MediaMetadata:
+    """Validate the staged original as real video and extract its metadata.
+
+    Runs against the byte-for-byte original staged on disk (D013): nothing is
+    transcoded, rewritten or re-downloaded from object storage.
+    """
+    return _parse(await _run_ffprobe(path))
