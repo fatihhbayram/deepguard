@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
@@ -6,6 +7,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, status
 from pydantic import BaseModel
+
+from app.storage import store_original
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["analyses"])
 
@@ -15,6 +20,14 @@ CHUNK_SIZE = 1024 * 1024
 TEMP_FILE_PREFIX = "deepguard-upload-"
 
 
+def discard_temp_file(path: str | Path) -> None:
+    """Remove a staged temp file best-effort, never masking the error being handled."""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 class UploadAdmission(BaseModel):
     """What is genuinely known after admission validation — nothing is persisted yet."""
 
@@ -22,6 +35,7 @@ class UploadAdmission(BaseModel):
     content_type: str
     size_bytes: int
     sha256: str
+    storage_key: str
 
 
 @dataclass(frozen=True)
@@ -61,10 +75,7 @@ async def store_upload(file: UploadFile) -> StoredUpload:
                 hasher.update(chunk)
                 temp_file.write(chunk)
     except BaseException:
-        try:
-            os.unlink(temp_file.name)
-        except OSError:
-            pass
+        discard_temp_file(temp_file.name)
         raise
 
     return StoredUpload(
@@ -81,8 +92,10 @@ async def create_analysis(file: UploadFile) -> UploadAdmission:
     The declared content type is not proof that the bytes are a real MP4/MOV container;
     that check belongs to the later ffprobe task.
 
-    The accepted upload is retained as a temp file for the following P1 tasks (MinIO
-    storage, ffprobe); its lifecycle beyond this request is defined there.
+    The admitted upload is stored in MinIO as the forensic original and, on success, is
+    also retained as a temp file for the following P1 tasks (ffprobe, normalization). If
+    storage fails the temp file is dropped: nothing persists a reference that could
+    reclaim it later.
     """
     content_type = (file.content_type or "").strip().lower()
     if content_type not in ALLOWED_CONTENT_TYPES:
@@ -96,9 +109,21 @@ async def create_analysis(file: UploadFile) -> UploadAdmission:
     finally:
         await file.close()
 
+    try:
+        storage_key = store_original(stored.path, stored.sha256, content_type)
+    except Exception:
+        discard_temp_file(stored.path)
+        # Endpoints, credentials and SDK errors stay in the server log, not the response.
+        logger.exception("Storing the original upload in MinIO failed.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="media storage unavailable",
+        ) from None
+
     return UploadAdmission(
         filename=file.filename,
         content_type=content_type,
         size_bytes=stored.size_bytes,
         sha256=stored.sha256,
+        storage_key=storage_key,
     )
