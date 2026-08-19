@@ -2,26 +2,36 @@
 
 ## Positioning
 
-DeepGuard is not:
-
-> "Upload a video and we tell you with certainty whether it is fake."
+DeepGuard is not a generic consumer "fake/real scanner".
 
 DeepGuard is:
 
-> An evidence-oriented AI Content Authenticity & Forensics platform that combines independent synthetic-media, provenance, metadata and speaker signals.
+> A B2B Media Authenticity & Forensics Infrastructure. It is an evidence-oriented platform that orchestrates independent synthetic-media, provenance, metadata, and speaker signals.
+
+DeepGuard does not average detector scores into a single "87% fake" probability. Instead, it aggregates multiple independent forensic signals and provides explainable evidence, suspicious timelines, and deterministic risk levels.
+
+## Differentiation / Moat
+
+1. Multi-signal evidence orchestration
+2. Provenance-first approach (especially C2PA)
+3. Explainable suspicious timeline / segment evidence
+4. API-first B2B integration
+5. Enterprise privacy / future on-prem deployment readiness
+6. Provider-independent architecture (without premature abstraction)
 
 ## Initial customer direction
 
 B2B-first.
 
-Potential later markets:
+Potential high-value verticals:
 
-- media/news verification
-- trust & safety
-- marketplace fraud review
-- insurance evidence screening
-- corporate communications
-- moderation workflows
+- fraud investigation
+- marketplace / classified listing fraud
+- insurance fraud
+- identity / onboarding review
+- enterprise impersonation
+- trust & safety / moderation
+- media authenticity workflows
 
 High-impact domains must use DeepGuard as a review/risk signal, not as the sole automatic decision-maker.
 

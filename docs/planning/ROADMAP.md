@@ -2,7 +2,8 @@
 
 ## Product goal
 
-Build a B2B-first AI Content Authenticity & Forensics platform that produces evidence-oriented analysis rather than a simplistic "real/fake" answer.
+Build a B2B Media Authenticity & Forensics Infrastructure that produces evidence-oriented analysis rather than a simplistic "real/fake" answer.
+
 
 Primary flow:
 
@@ -311,3 +312,23 @@ Expose the stabilized analysis workflow to B2B customers.
 - organization hierarchy
 
 until real customer demand exists.
+
+---
+
+# P10 — URL Ingestion
+
+## Objective
+
+Expand media ingestion beyond direct file uploads to support public media URLs.
+
+## Scope
+
+- YouTube ingestion
+- TikTok / Instagram / Social media URLs
+- Publicly accessible media URLs
+- Automatic downloading and temporary storage
+
+## Constraints
+
+- P1 data model must not be speculatively complicated to support URL ingestion.
+- Implemented strictly when URL ingestion becomes the immediate priority.
