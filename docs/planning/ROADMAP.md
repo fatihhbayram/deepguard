@@ -86,6 +86,8 @@ store original
   ↓
 ffprobe
   ↓
+provider-compatible normalization
+  ↓
 persist metadata
 ```
 
@@ -96,6 +98,7 @@ persist metadata
 - SHA-256 stored;
 - original stored in MinIO/S3;
 - basic ffprobe metadata stored;
+- provider-compatible derivative generated (if needed) and stored;
 - uploaded analysis visible in dashboard.
 
 ---
