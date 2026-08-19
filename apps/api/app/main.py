@@ -4,9 +4,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.api.analyses import router as analyses_router
 from app.db.session import get_session
 
 app = FastAPI(title="DeepGuard API")
+
+app.include_router(analyses_router)
 
 
 @app.get("/health")
