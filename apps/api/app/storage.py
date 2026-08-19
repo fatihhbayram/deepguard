@@ -79,12 +79,3 @@ def store_derivative(path: Path, sha256: str) -> str:
     )
 
     return key
-
-
-def remove_stored_object(storage_key: str) -> None:
-    """Delete a stored original or derivative again.
-
-    This exists for one case: a pipeline object stored before the request turned out to
-    fail, which must not linger as if the upload had been accepted.
-    """
-    client.remove_object(ORIGINALS_BUCKET, storage_key)

@@ -34,7 +34,7 @@ container reaches it over the Docker network at `http://api:8000`.
 apps/api/          FastAPI service
   app/main.py      /health endpoint
   app/db/          SQLAlchemy engine and session
-  alembic/         migration setup (no migrations yet)
+  alembic/         database migrations
   tests/           pytest suite
 apps/web/          Next.js application
   app/page.tsx     connectivity status page
@@ -57,6 +57,13 @@ docker compose up --build -d
 
 The defaults in `.env.example` are development credentials and work as-is. Change
 `POSTGRES_PASSWORD` and `MINIO_ROOT_PASSWORD` before deploying anywhere shared.
+
+Apply the database schema once the stack is up. Migrations are run explicitly, not on
+container start:
+
+```bash
+docker compose exec api alembic upgrade head
+```
 
 ## Services and default ports
 
@@ -92,13 +99,21 @@ Then open http://localhost:3000, which shows the same information as a status pa
 
 ## Tests and quality checks
 
-Backend tests use a stub session, so no running database is required:
+Most backend tests use a stub session, so no running database is required:
 
 ```bash
 cd apps/api
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 pytest
+```
+
+The tests marked `integration` verify persistence against the real PostgreSQL from
+Compose and skip when it is unreachable. Run them with the stack up and the migrations
+applied:
+
+```bash
+pytest -m integration
 ```
 
 Frontend checks:

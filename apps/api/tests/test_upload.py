@@ -1,16 +1,20 @@
 import hashlib
 import json
 import tempfile
+import uuid
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 
 from minio.error import S3Error
 
 from app import media, normalization, storage
 from app.api.analyses import CHUNK_SIZE, MAX_UPLOAD_BYTES, TEMP_FILE_PREFIX
+from app.db.models import Analysis, MediaFile
+from app.db.session import get_session
 from app.main import app
 from app.normalization import DERIVATIVE_TEMP_PREFIX
 
@@ -24,8 +28,8 @@ class FakeMinio:
         self.created_buckets = []
         self.uploads = []
         self.uploaded_bytes = {}
+        # Content-addressed objects are never deleted; this proves nothing tries to.
         self.removed = []
-        self.remove_failure = None
         # Number of uploads to let through before failing, for the derivative path.
         self.upload_failure_after = None
 
@@ -53,8 +57,6 @@ class FakeMinio:
         self.uploads.append((bucket, key, file_path, content_type))
 
     def remove_object(self, bucket, key):
-        if self.remove_failure:
-            raise self.remove_failure
         self.removed.append((bucket, key))
 
 
@@ -159,8 +161,52 @@ def fake_ffmpeg(monkeypatch):
     return recorder
 
 
+class FakeSession:
+    """Stand-in for a SQLAlchemy session, so the suite needs no live database.
+
+    The real persistence behaviour — which rows are built, in which order, and what is
+    committed or rolled back — is still the code under test. Only the driver is faked;
+    `tests/test_persistence.py` covers the schema against real PostgreSQL.
+    """
+
+    def __init__(self, *, commit_error=None):
+        self.commit_error = commit_error
+        self.rollback_error = None
+        self.added = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    def add(self, instance):
+        self.added.append(instance)
+
+    def flush(self):
+        # The real flush is what assigns the Python-side UUID defaults.
+        for instance in self.added:
+            if getattr(instance, "id", None) is None:
+                instance.id = uuid.uuid4()
+
+    def commit(self):
+        if self.commit_error is not None:
+            raise self.commit_error
+        self.flush()
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+        if self.rollback_error is not None:
+            raise self.rollback_error
+
+
 @pytest.fixture
-def client():
+def fake_session():
+    session = FakeSession()
+    app.dependency_overrides[get_session] = lambda: session
+    yield session
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client(fake_session):
     with TestClient(app) as test_client:
         yield test_client
 
@@ -207,14 +253,17 @@ def post_upload(client: TestClient, filename: str, payload, content_type: str):
     )
 
 
-def test_declared_mp4_is_accepted(client, new_temp_uploads, fake_minio, fake_ffprobe):
+def test_declared_mp4_is_accepted(client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe):
     payload = b"probe-says-this-is-video"
 
     response = post_upload(client, "clip.mp4", payload, "video/mp4")
 
     assert response.status_code == 200
     sha256 = hashlib.sha256(payload).hexdigest()
+    persisted = next(row for row in fake_session.added if isinstance(row, Analysis))
     assert response.json() == {
+        "id": str(persisted.id),
+        "status": "completed",
         "filename": "clip.mp4",
         "content_type": "video/mp4",
         "size_bytes": len(payload),
@@ -250,6 +299,8 @@ def test_response_does_not_leak_the_temp_path(client, new_temp_uploads, fake_min
 
     assert response.status_code == 200
     assert set(response.json()) == {
+        "id",
+        "status",
         "filename",
         "content_type",
         "size_bytes",
@@ -545,26 +596,16 @@ def test_invalid_media_removes_the_local_temp_file(client, new_temp_uploads, fak
     assert new_temp_uploads() == []
 
 
-def test_invalid_media_removes_the_stored_original(client, new_temp_uploads, fake_minio, fake_ffprobe):
+def test_invalid_media_preserves_the_stored_original(client, new_temp_uploads, fake_minio, fake_ffprobe):
     fake_ffprobe.output = "{not json"
 
     response = post_upload(client, "fake.mp4", b"payload", "video/mp4")
 
     assert response.status_code == 422
-    stored_key = fake_minio.uploads[0][1]
-    assert fake_minio.removed == [(storage.ORIGINALS_BUCKET, stored_key)]
-
-
-def test_failed_rollback_does_not_mask_the_media_rejection(
-    client, new_temp_uploads, fake_minio, fake_ffprobe
-):
-    fake_ffprobe.output = "{not json"
-    fake_minio.remove_failure = _s3_error("InternalError")
-
-    response = post_upload(client, "fake.mp4", b"payload", "video/mp4")
-
-    assert response.status_code == 422
-    assert response.json() == {"detail": "invalid or unsupported video media"}
+    # The key is content-addressed: identical bytes stored by an earlier analysis
+    # resolve to this same object, so deleting it could destroy that analysis's
+    # forensic original.
+    assert fake_minio.removed == []
 
 
 def test_canonical_media_is_not_normalized(client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg):
@@ -800,7 +841,7 @@ def test_failed_normalization_cleans_up_local_files(
     assert new_temp_uploads() == []
 
 
-def test_failed_normalization_rolls_back_the_stored_original(
+def test_failed_normalization_preserves_the_stored_original(
     client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
 ):
     fake_ffprobe.output = ffprobe_output(codec_name="vp9")
@@ -809,8 +850,9 @@ def test_failed_normalization_rolls_back_the_stored_original(
     response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
 
     assert response.status_code == 422
-    # Nothing persists a reference to it yet, so leaving it behind orphans it.
-    assert fake_minio.removed == [(storage.ORIGINALS_BUCKET, fake_minio.stored_keys[0])]
+    # A transient transcode failure must not delete an object an earlier analysis of
+    # the same bytes already refers to.
+    assert fake_minio.removed == []
 
 
 def test_derivative_upload_failure_returns_a_controlled_503(
@@ -825,7 +867,7 @@ def test_derivative_upload_failure_returns_a_controlled_503(
     assert response.json() == {"detail": "media storage unavailable"}
 
 
-def test_derivative_upload_failure_cleans_up_files_and_objects(
+def test_derivative_upload_failure_cleans_up_local_files_only(
     client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
 ):
     fake_ffprobe.output = ffprobe_output(codec_name="vp9")
@@ -834,24 +876,157 @@ def test_derivative_upload_failure_cleans_up_files_and_objects(
     response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
 
     assert response.status_code == 503
+    # Local temp files belong to this request alone; the stored objects do not.
     assert new_temp_uploads() == []
-    original_key = fake_minio.stored_keys[0]
-    derivative = storage.derivative_key(hashlib.sha256(DERIVATIVE_BYTES).hexdigest())
-    # The upload may have created the object before failing, so both are dropped.
-    assert fake_minio.removed == [
-        (storage.ORIGINALS_BUCKET, derivative),
-        (storage.ORIGINALS_BUCKET, original_key),
-    ]
+    assert fake_minio.removed == []
 
 
-def test_failed_rollback_does_not_mask_the_normalization_failure(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
+def _added(session, model):
+    return next(row for row in session.added if isinstance(row, model))
+
+
+def test_successful_upload_persists_the_analysis_and_its_media(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    payload = b"forensic-original"
+
+    response = post_upload(client, "clip.mp4", payload, "video/mp4")
+
+    assert response.status_code == 200
+    assert fake_session.commits == 1
+    analysis = _added(fake_session, Analysis)
+    media_file = _added(fake_session, MediaFile)
+    assert analysis.status == "completed"
+    assert media_file.analysis_id == analysis.id
+    assert media_file.original_filename == "clip.mp4"
+    assert media_file.content_type == "video/mp4"
+    assert media_file.size_bytes == len(payload)
+    assert media_file.original_sha256 == hashlib.sha256(payload).hexdigest()
+    assert media_file.original_storage_key == response.json()["storage_key"]
+    assert media_file.format_name == "mov,mp4,m4a,3gp,3g2,mj2"
+    assert media_file.codec_name == "h264"
+    assert media_file.width == 1920
+    assert media_file.height == 1080
+    assert media_file.duration == 12.34
+    assert media_file.frame_rate == 30.0
+    assert media_file.pix_fmt == "yuv420p"
+    assert media_file.constant_frame_rate is True
+    assert media_file.was_normalized is False
+    # No separate artifact exists, so the derivative carries no identity of its own.
+    assert media_file.derivative_storage_key == media_file.original_storage_key
+    assert media_file.derivative_sha256 is None
+
+
+def test_response_returns_the_persisted_analysis_id(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.json()["id"] == str(_added(fake_session, Analysis).id)
+
+
+def test_repeated_upload_of_identical_media_creates_a_second_analysis(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    payload = b"same-bytes"
+
+    first = post_upload(client, "a.mp4", payload, "video/mp4")
+    second = post_upload(client, "b.mp4", payload, "video/mp4")
+
+    # Media identity is not analysis identity: the same file may be analysed again.
+    assert first.json()["storage_key"] == second.json()["storage_key"]
+    assert first.json()["id"] != second.json()["id"]
+    assert fake_session.commits == 2
+
+
+def test_normalized_upload_persists_the_derivative_identity(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
+):
+    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
+
+    response = post_upload(client, "clip.mp4", b"original-bytes", "video/mp4")
+
+    body = response.json()
+    media_file = _added(fake_session, MediaFile)
+    assert media_file.was_normalized is True
+    assert media_file.derivative_storage_key == body["derivative_storage_key"]
+    assert media_file.derivative_sha256 == hashlib.sha256(DERIVATIVE_BYTES).hexdigest()
+    assert media_file.derivative_sha256 != media_file.original_sha256
+
+
+def test_analysis_is_persisted_only_after_the_media_pipeline_succeeded(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
 ):
     fake_ffprobe.output = ffprobe_output(codec_name="vp9")
     fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
-    fake_minio.remove_failure = _s3_error("InternalError")
 
     response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
 
     assert response.status_code == 422
-    assert response.json() == {"detail": "video could not be normalized for analysis"}
+    assert fake_session.added == []
+    assert fake_session.commits == 0
+
+
+def _fail_commit(session):
+    session.commit_error = OperationalError("INSERT", None, Exception("connection lost"))
+
+
+def test_persistence_failure_returns_a_controlled_500(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    _fail_commit(fake_session)
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 500
+    # No statement, connection string or driver detail reaches the client.
+    assert response.json() == {"detail": "analysis could not be persisted"}
+
+
+def test_persistence_failure_rolls_the_transaction_back(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    _fail_commit(fake_session)
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 500
+    assert fake_session.rollbacks == 1
+    assert fake_session.commits == 0
+
+
+def test_persistence_failure_preserves_the_stored_objects(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
+):
+    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
+    _fail_commit(fake_session)
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 500
+    # Both keys are content-addressed and may already belong to another analysis.
+    assert fake_minio.removed == []
+    assert len(fake_minio.stored_keys) == 2
+
+
+def test_persistence_failure_still_cleans_up_local_temp_files(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    _fail_commit(fake_session)
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 500
+    assert new_temp_uploads() == []
+
+
+def test_failed_rollback_does_not_mask_the_persistence_failure(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    _fail_commit(fake_session)
+    fake_session.rollback_error = OperationalError("ROLLBACK", None, Exception("gone"))
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "analysis could not be persisted"}
