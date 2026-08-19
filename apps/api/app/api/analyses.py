@@ -4,10 +4,12 @@ import os
 import tempfile
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -30,6 +32,10 @@ ALLOWED_CONTENT_TYPES = frozenset({"video/mp4", "video/quicktime"})
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
 TEMP_FILE_PREFIX = "deepguard-upload-"
+
+# How many analyses the listing returns. The dashboard shows recent activity, so a fixed
+# ceiling is all it needs; paging belongs to a phase that has a reason for it.
+RECENT_ANALYSES_LIMIT = 50
 
 
 def discard_temp_file(path: str | Path) -> None:
@@ -76,6 +82,26 @@ class CreatedAnalysis(BaseModel):
     derivative_storage_key: str
     # Present only when a real derivative exists, since it is that artifact's identity.
     derivative_sha256: str | None = None
+
+
+class AnalysisSummary(BaseModel):
+    """One row of the dashboard listing.
+
+    Deliberately narrower than `CreatedAnalysis`: only what the list view renders. The
+    storage keys, ffprobe geometry and derivative identity are not shown there, and
+    detector, risk and report fields do not exist yet.
+    """
+
+    id: uuid.UUID
+    status: str
+    created_at: datetime
+    original_filename: str | None
+    # Named for what it is: the MIME the client declared. ffprobe proves the bytes are
+    # video, but it never confirms this string, so the listing must not imply it did.
+    declared_content_type: str
+    size_bytes: int
+    original_sha256: str
+    was_normalized: bool
 
 
 @dataclass(frozen=True)
@@ -335,3 +361,52 @@ async def create_analysis(
         derivative_storage_key=canonical_key,
         derivative_sha256=derivative_sha256,
     )
+
+
+@router.get("/analyses", response_model=list[AnalysisSummary])
+def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSummary]:
+    """Return the most recent analyses for the dashboard listing.
+
+    An inner join is correct here rather than restrictive: an analysis and its media row
+    are written in one transaction, so an analysis without media cannot exist. Ordering
+    falls back to the id because `created_at` defaults to the transaction timestamp, which
+    two analyses committed together can share — without the tiebreak their relative order
+    would be arbitrary between calls.
+    """
+    try:
+        rows = session.execute(
+            select(
+                Analysis.id,
+                Analysis.status,
+                Analysis.created_at,
+                MediaFile.original_filename,
+                MediaFile.content_type,
+                MediaFile.size_bytes,
+                MediaFile.original_sha256,
+                MediaFile.was_normalized,
+            )
+            .join(MediaFile, MediaFile.analysis_id == Analysis.id)
+            .order_by(Analysis.created_at.desc(), Analysis.id.desc())
+            .limit(RECENT_ANALYSES_LIMIT)
+        ).all()
+    except SQLAlchemyError:
+        # Statements, connection strings and driver errors stay in the server log.
+        logger.exception("Reading the analysis listing failed.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="analyses are temporarily unavailable",
+        ) from None
+
+    return [
+        AnalysisSummary(
+            id=row.id,
+            status=row.status,
+            created_at=row.created_at,
+            original_filename=row.original_filename,
+            declared_content_type=row.content_type,
+            size_bytes=row.size_bytes,
+            original_sha256=row.original_sha256,
+            was_normalized=row.was_normalized,
+        )
+        for row in rows
+    ]

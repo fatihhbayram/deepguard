@@ -10,11 +10,14 @@ import hashlib
 import uuid
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import inspect
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.api.analyses import RECENT_ANALYSES_LIMIT
 from app.db.models import ANALYSIS_STATUS_COMPLETED, Analysis, MediaFile
 from app.db.session import SessionLocal, engine
+from app.main import app
 
 pytestmark = pytest.mark.integration
 
@@ -189,3 +192,58 @@ def test_the_same_media_can_be_analysed_more_than_once(session):
             MediaFile.original_storage_key == media_file(first.id).original_storage_key
         )
         assert stored.count() == 2
+
+
+def test_persisted_analyses_can_be_read_back_through_the_listing_endpoint(session):
+    """The dashboard's read path, end to end against real PostgreSQL.
+
+    No session is overridden here: the request opens its own connection to the same
+    database, so this proves a committed row is readable by a later request rather than
+    only visible inside the writing session.
+    """
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id, original_filename="listed.mov"))
+    db.commit()
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/analyses")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) <= RECENT_ANALYSES_LIMIT
+
+    listed = next(row for row in body if row["id"] == str(analysis.id))
+    assert listed["status"] == ANALYSIS_STATUS_COMPLETED
+    assert listed["original_filename"] == "listed.mov"
+    assert listed["declared_content_type"] == "video/quicktime"
+    assert listed["size_bytes"] == 4096
+    assert listed["original_sha256"] == hashlib.sha256(b"original").hexdigest()
+    assert listed["was_normalized"] is True
+    # The timestamp survives as a real value from the database default.
+    assert listed["created_at"] is not None
+
+
+def test_the_listing_returns_the_most_recent_analysis_first(session):
+    db, created = session
+    older = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(older)
+    db.flush()
+    db.add(media_file(older.id))
+    db.commit()
+
+    newer = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(newer)
+    db.flush()
+    db.add(media_file(newer.id))
+    db.commit()
+    created.extend([older.id, newer.id])
+
+    with TestClient(app) as client:
+        body = client.get("/api/v1/analyses").json()
+
+    ids = [row["id"] for row in body]
+    assert ids.index(str(newer.id)) < ids.index(str(older.id))
