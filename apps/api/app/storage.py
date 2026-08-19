@@ -9,6 +9,11 @@ load_dotenv()
 
 ORIGINALS_BUCKET = "deepguard-originals"
 ORIGINALS_PREFIX = "originals/"
+# Provider-compatible derivatives live beside the originals under their own prefix; a
+# second bucket would add operational surface without changing anything for the MVP.
+DERIVATIVES_PREFIX = "derivatives/"
+DERIVATIVE_CONTENT_TYPE = "video/mp4"
+DERIVATIVE_EXTENSION = ".mp4"
 
 # Already-created races are benign: the bucket we wanted exists either way.
 _BUCKET_EXISTS_CODES = frozenset({"BucketAlreadyOwnedByYou", "BucketAlreadyExists"})
@@ -27,7 +32,7 @@ def _build_client() -> Minio:
 client = _build_client()
 
 
-def _ensure_originals_bucket() -> None:
+def _ensure_bucket() -> None:
     if client.bucket_exists(ORIGINALS_BUCKET):
         return
 
@@ -47,7 +52,7 @@ def store_original(path: Path, sha256: str, content_type: str) -> str:
     bytes are never re-read into memory or re-hashed (D013: the original is a forensic
     artifact and must stay byte-for-byte identical).
     """
-    _ensure_originals_bucket()
+    _ensure_bucket()
 
     key = f"{ORIGINALS_PREFIX}{sha256}"
     client.fput_object(ORIGINALS_BUCKET, key, str(path), content_type=content_type)
@@ -55,10 +60,31 @@ def store_original(path: Path, sha256: str, content_type: str) -> str:
     return key
 
 
-def remove_original(storage_key: str) -> None:
-    """Delete a stored original again.
+def derivative_key(sha256: str) -> str:
+    """The content-addressed key of a derivative, from the derivative's own hash."""
+    return f"{DERIVATIVES_PREFIX}{sha256}{DERIVATIVE_EXTENSION}"
 
-    This exists for exactly one case: an upload that was stored before it turned out not
-    to be usable media, which must not linger as a successful forensic artifact.
+
+def store_derivative(path: Path, sha256: str) -> str:
+    """Upload a normalized derivative and return its storage key.
+
+    The key is addressed on the derivative's own SHA-256, not the original's: the two
+    are different artifacts and must not share an identity.
+    """
+    _ensure_bucket()
+
+    key = derivative_key(sha256)
+    client.fput_object(
+        ORIGINALS_BUCKET, key, str(path), content_type=DERIVATIVE_CONTENT_TYPE
+    )
+
+    return key
+
+
+def remove_stored_object(storage_key: str) -> None:
+    """Delete a stored original or derivative again.
+
+    This exists for one case: a pipeline object stored before the request turned out to
+    fail, which must not linger as if the upload had been accepted.
     """
     client.remove_object(ORIGINALS_BUCKET, storage_key)

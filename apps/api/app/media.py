@@ -21,9 +21,13 @@ FFPROBE_TIMEOUT_SECONDS = 10
 # Only the fields DeepGuard currently needs; full metadata dumps are both slower and a
 # larger parsing surface than this task requires.
 FFPROBE_ENTRIES = (
-    "stream=codec_name,width,height,avg_frame_rate,r_frame_rate,duration"
+    "stream=codec_name,width,height,pix_fmt,avg_frame_rate,r_frame_rate,duration"
     ":format=format_name,duration"
 )
+
+# Two rates reported as the same value is the evidence ffprobe offers for constant frame
+# timing; anything else is treated as unknown rather than assumed constant.
+FRAME_RATE_EQUALITY_TOLERANCE = 1e-6
 
 
 class MediaProbeError(Exception):
@@ -44,6 +48,8 @@ class MediaMetadata:
     height: int
     duration: float
     frame_rate: float
+    pix_fmt: str | None
+    constant_frame_rate: bool
 
 
 async def _run_ffprobe(path: Path) -> str:
@@ -139,6 +145,20 @@ def _parse_frame_rate(value: object) -> float | None:
     return rate
 
 
+def _is_constant_frame_rate(average: float | None, base: float | None) -> bool:
+    """Decide whether the source can be treated as constant frame rate.
+
+    ffprobe reports the averaged rate and the container's base rate separately. They
+    agree for constant-rate media and diverge once frame timing varies, so equality is
+    the narrow evidence available here. A missing or unknown rate is not evidence of
+    anything — it stays False, which makes the caller normalize instead of assuming.
+    """
+    if average is None or base is None:
+        return False
+
+    return math.isclose(average, base, rel_tol=FRAME_RATE_EQUALITY_TOLERANCE)
+
+
 def _parse_dimension(value: object) -> int | None:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         return None
@@ -187,11 +207,15 @@ def _parse(output: str) -> MediaMetadata:
 
     # r_frame_rate is the narrow fallback for containers that report avg_frame_rate as
     # the unknown `0/0`.
-    frame_rate = _parse_frame_rate(stream.get("avg_frame_rate")) or _parse_frame_rate(
-        stream.get("r_frame_rate")
-    )
+    average_frame_rate = _parse_frame_rate(stream.get("avg_frame_rate"))
+    base_frame_rate = _parse_frame_rate(stream.get("r_frame_rate"))
+    frame_rate = average_frame_rate or base_frame_rate
     if frame_rate is None:
         raise MediaProbeError("no usable frame rate")
+
+    # An unreported pixel format is not a reason to reject genuine video; it only means
+    # compatibility cannot be established from it.
+    pix_fmt = stream.get("pix_fmt")
 
     return MediaMetadata(
         format_name=format_name,
@@ -200,6 +224,8 @@ def _parse(output: str) -> MediaMetadata:
         height=height,
         duration=duration,
         frame_rate=frame_rate,
+        pix_fmt=pix_fmt if isinstance(pix_fmt, str) and pix_fmt else None,
+        constant_frame_rate=_is_constant_frame_rate(average_frame_rate, base_frame_rate),
     )
 
 
