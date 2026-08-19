@@ -23,6 +23,7 @@ FFPROBE_TIMEOUT_SECONDS = 10
 FFPROBE_ENTRIES = (
     "stream=codec_name,width,height,pix_fmt,avg_frame_rate,r_frame_rate,duration"
     ":format=format_name,duration"
+    ":format_tags=major_brand"
 )
 
 # Two rates reported as the same value is the evidence ffprobe offers for constant frame
@@ -43,6 +44,12 @@ class MediaMetadata:
     """The minimum a downstream normalization/detection step needs about the original."""
 
     format_name: str
+    # The ISO base media file format brand written into the file itself — `mp42` for an
+    # MP4, `qt  ` for a QuickTime file. `format_name` reports one shared demuxer for the
+    # whole MOV/MP4 family, so this is the only evidence in the bytes that separates
+    # them. None whenever the container carries no brand, which is every non-ISOBMFF
+    # format and any ISOBMFF file with an absent or unreadable tag.
+    major_brand: str | None
     codec_name: str
     width: int
     height: int
@@ -159,6 +166,25 @@ def _is_constant_frame_rate(average: float | None, base: float | None) -> bool:
     return math.isclose(average, base, rel_tol=FRAME_RATE_EQUALITY_TOLERANCE)
 
 
+def _parse_major_brand(tags: object) -> str | None:
+    """Extract the container's major brand from the format tags, if it declares one.
+
+    Brands are four bytes, space padded (`qt  `), and their case is not guaranteed by
+    every muxer, so the value is trimmed and lower-cased into the token callers compare
+    against. Anything missing or not a usable string returns None, which callers must
+    read as "the container did not prove what it is" rather than as any particular
+    format.
+    """
+    if not isinstance(tags, dict):
+        return None
+
+    brand = tags.get("major_brand")
+    if not isinstance(brand, str):
+        return None
+
+    return brand.strip().lower() or None
+
+
 def _parse_dimension(value: object) -> int | None:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         return None
@@ -219,6 +245,9 @@ def _parse(output: str) -> MediaMetadata:
 
     return MediaMetadata(
         format_name=format_name,
+        # A container without a readable brand is not rejected — plenty of real video
+        # carries none. It only means compatibility cannot be established from it.
+        major_brand=_parse_major_brand(container.get("tags")),
         codec_name=codec_name,
         width=width,
         height=height,

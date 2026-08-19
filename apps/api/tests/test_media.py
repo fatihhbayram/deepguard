@@ -5,6 +5,7 @@ ffprobe binary or a video fixture.
 """
 
 import asyncio
+import json
 
 import pytest
 
@@ -95,6 +96,58 @@ def test_a_child_that_raced_us_to_exit_is_still_reaped(spawned, monkeypatch):
         asyncio.run(media._run_ffprobe("/tmp/slow.mp4"))
 
     assert process.waited
+
+
+def test_the_container_brand_is_requested_from_ffprobe(spawned, tmp_path):
+    # Without this entry the response carries no container evidence at all, and the
+    # bypass decision silently falls back to trusting nothing.
+    calls = spawned(FakeProcess(output=b"{}"))
+
+    asyncio.run(media._run_ffprobe(tmp_path / "clip.mp4"))
+
+    _, args = calls[0]
+    assert "format_tags=major_brand" in args[args.index("-show_entries") + 1]
+
+
+def probe_json(*, tags=None, **format_extra) -> str:
+    stream = {
+        "codec_name": "h264",
+        "width": 1920,
+        "height": 1080,
+        "duration": "12.34",
+        "pix_fmt": "yuv420p",
+        "avg_frame_rate": "30/1",
+        "r_frame_rate": "30/1",
+    }
+    container = {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "12.34", **format_extra}
+    if tags is not None:
+        container["tags"] = tags
+
+    return json.dumps({"streams": [stream], "format": container})
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        ({"major_brand": "mp42"}, "mp42"),
+        # Brands are four bytes, space padded — QuickTime's is literally `qt  `.
+        ({"major_brand": "qt  "}, "qt"),
+        ({"major_brand": "MP42"}, "mp42"),
+        ({"major_brand": ""}, None),
+        ({"major_brand": "   "}, None),
+        ({"major_brand": 42}, None),
+        # An ISOBMFF file whose tags carry no brand, and a container with no tags at all.
+        ({"minor_version": "512"}, None),
+        (None, None),
+    ],
+)
+def test_the_container_brand_is_extracted_from_the_format_tags(reported, expected):
+    assert media._parse(probe_json(tags=reported)).major_brand == expected
+
+
+def test_an_unparseable_tags_block_is_not_treated_as_a_brand():
+    # ffprobe would not emit this, but the parser treats its output as untrusted input.
+    assert media._parse(probe_json(tags="mp42")).major_brand is None
 
 
 def test_a_missing_ffprobe_binary_is_not_reported_as_bad_media(monkeypatch, tmp_path):

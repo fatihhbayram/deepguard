@@ -27,9 +27,14 @@ DERIVATIVE_TEMP_SUFFIX = ".mp4"
 
 # The canonical downstream target. NVIDIA SVD takes MP4/H.264 and does not support
 # variable frame rate.
-CANONICAL_CONTENT_TYPE = "video/mp4"
 CANONICAL_CODEC = "h264"
 CANONICAL_PIX_FMT = "yuv420p"
+
+# Major brands that prove the bytes really are an MP4. `isom` and the `isoN` brands are
+# the ISO base media file format itself; `mp41`/`mp42` and `avc1` are the MP4 brands
+# muxers actually write. QuickTime's `qt  ` is deliberately absent: a MOV is a different
+# container that the provider does not take, whatever the upload declared it to be.
+MP4_MAJOR_BRANDS = frozenset({"isom", "iso2", "iso4", "iso5", "iso6", "mp41", "mp42", "avc1"})
 
 # Rounds each side up to the nearest even number. Even-dimension video pads by zero
 # pixels, so the common case is unaffected.
@@ -58,18 +63,22 @@ class NormalizedMedia:
     sha256: str
 
 
-def needs_normalization(content_type: str, metadata: MediaMetadata) -> bool:
+def needs_normalization(metadata: MediaMetadata) -> bool:
     """Decide whether the original can be sent downstream without transcoding.
 
+    Every fact here comes from ffprobe, never from the upload's declared MIME type. A
+    client can call a QuickTime file `video/mp4`, so that declaration proves nothing
+    about the container; the major brand written inside the file does, and a `qt  ` brand
+    is normalized no matter what was declared.
+
     The bypass is deliberately conservative: it is taken only when every fact the
-    provider requires is positively known. ffprobe reports one shared demuxer name for
-    the whole MOV/MP4 family, so it cannot tell an MP4 from a QuickTime file — the
-    admitted `video/mp4` declaration is what distinguishes them, and a MOV is normalized
-    rather than assumed compatible. Anything unknown (pixel format, frame timing) counts
-    against the bypass, because guessing wrong means shipping media the detector rejects.
+    provider requires is positively known. An absent, unreadable or unrecognized brand is
+    not evidence of an MP4, so it normalizes — as does anything unknown about pixel
+    format or frame timing — because guessing wrong means shipping media the detector
+    rejects.
     """
     return not (
-        content_type == CANONICAL_CONTENT_TYPE
+        metadata.major_brand in MP4_MAJOR_BRANDS
         and metadata.codec_name == CANONICAL_CODEC
         and metadata.pix_fmt == CANONICAL_PIX_FMT
         and metadata.constant_frame_rate

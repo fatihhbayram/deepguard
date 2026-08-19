@@ -57,6 +57,7 @@ def spawned(monkeypatch):
 def metadata(**overrides) -> MediaMetadata:
     fields = {
         "format_name": "matroska,webm",
+        "major_brand": None,
         "codec_name": "vp9",
         "width": 1920,
         "height": 1080,
@@ -69,37 +70,54 @@ def metadata(**overrides) -> MediaMetadata:
     return MediaMetadata(**{**fields, **overrides})
 
 
+def mp4_metadata(**overrides) -> MediaMetadata:
+    """Metadata ffprobe reports for a canonical MP4: the shared demuxer, an MP4 brand."""
+    return metadata(
+        **{
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "major_brand": "mp42",
+            "codec_name": "h264",
+            **overrides,
+        }
+    )
+
+
 def test_canonical_media_needs_no_normalization():
-    assert not normalization.needs_normalization(
-        "video/mp4", metadata(format_name="mov,mp4,m4a,3gp,3g2,mj2", codec_name="h264")
-    )
+    assert not normalization.needs_normalization(mp4_metadata())
 
 
-def test_quicktime_needs_normalization_even_with_h264():
-    # ffprobe cannot separate MOV from MP4 inside the shared demuxer, and the detector
-    # takes MP4 — so the admitted content type decides, conservatively.
-    assert normalization.needs_normalization(
-        "video/quicktime",
-        metadata(format_name="mov,mp4,m4a,3gp,3g2,mj2", codec_name="h264"),
-    )
+@pytest.mark.parametrize("brand", ["isom", "mp41", "mp42", "iso2", "avc1"])
+def test_every_accepted_mp4_brand_needs_no_normalization(brand):
+    assert not normalization.needs_normalization(mp4_metadata(major_brand=brand))
+
+
+def test_quicktime_brand_needs_normalization_even_with_h264():
+    # ffprobe reports the same demuxer name for MOV and MP4; the brand inside the file is
+    # what separates them, and the detector does not take QuickTime.
+    assert normalization.needs_normalization(mp4_metadata(major_brand="qt"))
+
+
+def test_a_declared_mime_type_cannot_make_a_quicktime_file_compatible():
+    # The regression this guards: a real MOV uploaded as `video/mp4`. Nothing about the
+    # declaration reaches this decision, so the `qt` brand still decides.
+    assert normalization.needs_normalization(mp4_metadata(major_brand="qt"))
+
+
+def test_missing_container_brand_needs_normalization():
+    # No brand is not evidence of an MP4, so the conservative answer is to normalize.
+    assert normalization.needs_normalization(mp4_metadata(major_brand=None))
+
+
+def test_unrecognized_container_brand_needs_normalization():
+    assert normalization.needs_normalization(mp4_metadata(major_brand="3gp4"))
 
 
 def test_unknown_pixel_format_needs_normalization():
-    assert normalization.needs_normalization(
-        "video/mp4",
-        metadata(format_name="mov,mp4,m4a,3gp,3g2,mj2", codec_name="h264", pix_fmt=None),
-    )
+    assert normalization.needs_normalization(mp4_metadata(pix_fmt=None))
 
 
 def test_variable_frame_rate_needs_normalization():
-    assert normalization.needs_normalization(
-        "video/mp4",
-        metadata(
-            format_name="mov,mp4,m4a,3gp,3g2,mj2",
-            codec_name="h264",
-            constant_frame_rate=False,
-        ),
-    )
+    assert normalization.needs_normalization(mp4_metadata(constant_frame_rate=False))
 
 
 def test_ffmpeg_is_executed_without_a_shell(spawned, tmp_path):

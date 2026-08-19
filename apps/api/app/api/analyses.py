@@ -309,7 +309,9 @@ async def create_analysis(
             detail="invalid or unsupported video media",
         ) from None
 
-    was_normalized = needs_normalization(content_type, metadata)
+    # Decided from the probed container evidence alone; `content_type` is only what the
+    # client claimed, and a MOV declared as `video/mp4` must still be normalized.
+    was_normalized = needs_normalization(metadata)
     if was_normalized:
         canonical_key, derivative_sha256 = await create_derivative(
             stored.path, storage_key, metadata

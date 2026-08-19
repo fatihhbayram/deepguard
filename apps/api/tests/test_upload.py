@@ -81,6 +81,9 @@ def ffprobe_output(
     stream_duration="12.34",
     format_name="mov,mp4,m4a,3gp,3g2,mj2",
     format_duration="12.34",
+    # The default describes a real MP4 container. `None` drops the tag, as a container
+    # that declares no brand does.
+    major_brand="mp42",
     **stream_extra,
 ) -> str:
     """Build ffprobe JSON of the shape the real binary emits for the requested entries."""
@@ -101,12 +104,11 @@ def ffprobe_output(
             }
         ]
 
-    return json.dumps(
-        {
-            "streams": streams,
-            "format": {"format_name": format_name, "duration": format_duration},
-        }
-    )
+    container = {"format_name": format_name, "duration": format_duration}
+    if major_brand is not None:
+        container["tags"] = {"major_brand": major_brand}
+
+    return json.dumps({"streams": streams, "format": container})
 
 
 @pytest.fixture
@@ -271,6 +273,7 @@ def test_declared_mp4_is_accepted(client, fake_session, new_temp_uploads, fake_m
         "storage_key": f"originals/{sha256}",
         "metadata": {
             "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "major_brand": "mp42",
             "codec_name": "h264",
             "width": 1920,
             "height": 1080,
@@ -512,7 +515,7 @@ def test_non_nvidia_compatible_video_is_still_accepted(
 ):
     # Probing validates that the media is genuine video, not that a provider can consume
     # it; incompatible media is accepted and normalized rather than rejected.
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9", format_name="matroska,webm")
+    fake_ffprobe.output = ffprobe_output(codec_name="vp9", format_name="matroska,webm", major_brand=None)
 
     response = post_upload(client, "clip.mov", b"payload", "video/quicktime")
 
@@ -633,8 +636,10 @@ def test_canonical_media_does_not_create_a_duplicate_derivative(
 def test_quicktime_is_normalized_even_when_it_carries_h264(
     client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
 ):
-    # ffprobe reports the shared mov/mp4 demuxer for both, so a MOV cannot be proven to
-    # be an MP4; NVIDIA SVD takes MP4, so the conservative answer is to normalize.
+    # ffprobe reports the shared mov/mp4 demuxer for both, so only the brand separates
+    # them; NVIDIA SVD takes MP4, so a QuickTime file is normalized.
+    fake_ffprobe.output = ffprobe_output(major_brand="qt  ")
+
     response = post_upload(client, "clip.mov", b"payload", "video/quicktime")
 
     assert response.status_code == 200
@@ -642,8 +647,36 @@ def test_quicktime_is_normalized_even_when_it_carries_h264(
     assert len(fake_ffmpeg.calls) == 1
 
 
+def test_quicktime_declared_as_mp4_is_still_normalized(
+    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
+):
+    # A real MOV uploaded as `video/mp4`: the declaration is the client's claim, the
+    # `qt  ` brand is the file's own evidence, and the evidence decides.
+    fake_ffprobe.output = ffprobe_output(major_brand="qt  ")
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["was_normalized"] is True
+    assert body["metadata"]["major_brand"] == "qt"
+    assert len(fake_ffmpeg.calls) == 1
+
+
+def test_a_container_without_a_brand_is_normalized(
+    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
+):
+    # Otherwise canonical, but the container proves nothing about what it is.
+    fake_ffprobe.output = ffprobe_output(major_brand=None)
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.json()["was_normalized"] is True
+    assert response.json()["metadata"]["major_brand"] is None
+
+
 def test_webm_vp9_is_normalized(client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9", format_name="matroska,webm")
+    fake_ffprobe.output = ffprobe_output(codec_name="vp9", format_name="matroska,webm", major_brand=None)
 
     response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
 
