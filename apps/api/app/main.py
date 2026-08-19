@@ -6,8 +6,12 @@ from sqlalchemy.orm import Session
 
 from app.api.analyses import router as analyses_router
 from app.db.session import get_session
+from app.request_limits import UploadRequestSizeLimit
 
 app = FastAPI(title="DeepGuard API")
+
+# In front of routing, so an oversized body is bounded before FastAPI parses the upload.
+app.add_middleware(UploadRequestSizeLimit)
 
 app.include_router(analyses_router)
 

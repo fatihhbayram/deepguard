@@ -11,7 +11,7 @@ from sqlalchemy.exc import OperationalError
 
 from minio.error import S3Error
 
-from app import media, normalization, storage
+from app import media, normalization, request_limits, storage
 from app.api.analyses import CHUNK_SIZE, MAX_UPLOAD_BYTES, TEMP_FILE_PREFIX
 from app.db.models import Analysis, MediaFile
 from app.db.session import get_session
@@ -360,7 +360,34 @@ def test_upload_above_the_size_limit_is_rejected(client, new_temp_uploads, fake_
         response = post_upload(client, "big.mp4", payload, "video/mp4")
 
     assert response.status_code == 413
+    # The route's own limit answered, not the request guard in front of it: the body is
+    # a MAX_UPLOAD_BYTES + 1 file plus a few hundred bytes of multipart framing, which
+    # stays inside the request limit's overhead margin. The two layers stay independent.
+    assert response.json() == {
+        "detail": f"Upload exceeds the {MAX_UPLOAD_BYTES} byte limit."
+    }
     assert new_temp_uploads() == []
+
+
+def test_an_oversized_request_body_is_bounded_before_the_upload_is_parsed(
+    client, new_temp_uploads, fake_minio, fake_ffprobe, monkeypatch
+):
+    """The guard in front of FastAPI answers before an UploadFile is ever produced.
+
+    The real request limit sits above the file limit, so the limit is shrunk here rather
+    than posting a body large enough to cross it. What is under test is the layering, not
+    the number: nothing behind the guard runs.
+    """
+    monkeypatch.setattr(request_limits, "MAX_REQUEST_BYTES", 1024)
+
+    response = post_upload(client, "big.mp4", b"0" * 8192, "video/mp4")
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "Request body exceeds the 1024 byte limit."}
+    # No parsed upload, so no staged temp file, nothing stored and nothing probed.
+    assert new_temp_uploads() == []
+    assert fake_minio.uploads == []
+    assert fake_ffprobe.paths == []
 
 
 def test_admitted_upload_is_stored_in_minio(client, new_temp_uploads, fake_minio, fake_ffprobe):
