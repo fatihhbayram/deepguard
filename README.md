@@ -6,9 +6,10 @@ body of evidence, rather than returning a single verdict on whether media is fak
 
 ## Current status
 
-The upload pipeline exists end to end and detection has moved off it. A video can be
-submitted, validated, stored, described and queued for analysis, and the resulting analysis is
-listed in the dashboard. What runs today:
+The upload pipeline exists end to end and detection runs asynchronously behind it. A video can
+be submitted, validated, stored, described, queued, analysed by NVIDIA's synthetic video
+detector in a background worker and persisted, and the resulting analysis is listed in the
+dashboard. What runs today:
 
 - `POST /api/v1/analyses` accepts a video upload;
 - the upload is admitted only by declared MIME type (`video/mp4`, `video/quicktime`) and a
@@ -26,6 +27,21 @@ listed in the dashboard. What runs today:
   would be an upload accepted and then silently forgotten;
 - detection does not run on the request. NVIDIA can take minutes on a video, and no client is
   made to hold a connection open through them;
+- a separate worker process claims queued jobs with `SELECT ... FOR UPDATE SKIP LOCKED`,
+  marks each `processing` and commits before doing any work, so more than one worker is safe
+  and no transaction is held open across inference;
+- the worker fetches the provider-compatible object from MinIO, sends it to NVIDIA's
+  Synthetic Video Detector over gRPC, and deletes the local copy either way;
+- NVIDIA's probability is recorded as returned, on NVIDIA's own scale, as one signal among
+  the several a full analysis will eventually carry;
+- the clips NVIDIA scored inside the video are kept as evidence in their own right, capped at
+  the strongest twenty per detection, each with the provider's clip index and raw logit;
+- a detector that fails, times out or is misconfigured does not fail the job: the failure is
+  itself persisted as a signal, so the gap in the evidence is visible rather than silent. A
+  fault on this side — object storage unreachable, an unreadable artifact — fails the job and
+  the analysis instead, with the failure kind on the job row;
+- the signal, its clip evidence and the `completed` statuses are written in one final
+  transaction;
 - `GET /api/v1/analyses` returns the most recent analyses with their signal and its strongest
   clips;
 - the Next.js dashboard renders that list beside the connectivity status.
@@ -38,34 +54,45 @@ carry a provider score but no risk level; deciding what a score means is a later
 ```text
 Next.js (web)
    ↓ REST
-FastAPI (api)
-   ↓
-PostgreSQL   MinIO   NVIDIA SVD
+FastAPI (api) ──→ PostgreSQL ←── worker (api-worker)
+   ↓                  ↑              ↓
+ MinIO ───────────────┘         NVIDIA SVD
 ```
 
+The API and the worker are the same image with different commands. They never call each
+other: the API writes a job, the worker reads one, and the jobs table is the whole of their
+conversation. Adding a second worker needs no coordination beyond that — `SKIP LOCKED` is
+what keeps two of them off the same row.
+
 The browser reaches the API over the published host port. Server-side rendering in the web
-container reaches it over the Docker network at `http://api:8000`. The API reaches MinIO over
-the Docker network at `minio:9000`, never the published host port. NVIDIA is reached over TLS
-gRPC at its hosted endpoint, addressed by function ID.
+container reaches it over the Docker network at `http://api:8000`. Both API and worker reach
+MinIO over the Docker network at `minio:9000`, never the published host port. NVIDIA is
+reached from the worker over TLS gRPC at its hosted endpoint, addressed by function ID.
 
 Uploads return once the media is staged and the work is queued: storage, probing,
 normalization and persistence run on the request, detection does not. If storage, probing or
 normalization fails, no analysis row and no job are written. Local temp files are always
-removed — the runner reads the canonical object back out of MinIO rather than depending on a
+removed — the worker reads the canonical object back out of MinIO rather than depending on a
 file the request left behind. Stored MinIO objects are not deleted on failure, because their
 keys are content-addressed and may already be referenced by an earlier analysis of identical
 bytes.
 
-Nothing runs the queued jobs yet. The detector code and its evidence handling are in place
-and tested; the runner that claims a job, calls NVIDIA and records the result is the next
-task, so an upload today stays `queued` and carries no signal.
+The worker takes each job in three steps, never one transaction: claim it and commit, then
+download and detect with nothing open, then write the evidence and close the job out.
+Holding the claim across inference would pin a connection and a row lock for however long
+NVIDIA takes.
+
+A job is claimed once. Retrying a failed job and recovering one whose worker died mid-flight
+are not implemented — a job left `processing` stays there.
 
 ## Repository structure
 
 ```text
-apps/api/              FastAPI service
+apps/api/              FastAPI service and the worker that shares its image
   app/main.py          /health endpoint, router wiring
   app/api/analyses.py  upload pipeline and analysis listing
+  app/worker.py        job claiming and the background processing loop
+  app/detection.py     one detector's answer, turned into evidence
   app/media.py         ffprobe validation and metadata extraction
   app/normalization.py provider-compatible MP4/H.264 derivatives
   app/nvidia_video.py  NVIDIA Synthetic Video Detector gRPC client
@@ -173,9 +200,15 @@ A segment is one clip the detector scored. NVIDIA reports a frame index and a ra
 clip and no timestamps, so those two figures are what is stored — the logit is not a
 probability and is not comparable with the signal's `score`.
 
-Detection needs `NVIDIA_API_KEY` and `NVIDIA_SVD_FUNCTION_ID` in `.env`. Missing or wrong
-credentials never fail an upload: they are a detector's problem, and the detector no longer
-runs on the request at all.
+Detection needs `NVIDIA_API_KEY` and `NVIDIA_SVD_FUNCTION_ID` in `.env`, read by the worker
+rather than the API. Missing or wrong credentials never fail an upload and never fail a job:
+the analysis completes carrying a `FAILED` signal instead of a score.
+
+Watch a job being processed:
+
+```bash
+docker compose logs -f api-worker
+```
 
 Rejections are bounded and generic: `415` for an unsupported MIME type, `413` above the
 100 MiB limit, `422` when the bytes are not usable video, `503` when object storage or the
@@ -216,5 +249,7 @@ Dependencies are installed at image build time. After editing `apps/api/requirem
 
 ```bash
 docker compose build api
-docker compose up -d api
+docker compose up -d api api-worker
 ```
+
+The API and the worker share one image, so a change to either rebuilds both.

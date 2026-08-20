@@ -32,6 +32,10 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 # what moves it on. `completed` is not written anywhere until then.
 ANALYSIS_STATUS_QUEUED = "queued"
 ANALYSIS_STATUS_COMPLETED = "completed"
+# Not "the media is fake" — "we could not find out". The detector never answered because
+# something on this side broke, and the analysis says so rather than staying `queued`
+# behind work that already gave up.
+ANALYSIS_STATUS_FAILED = "failed"
 
 # The state of the detection work an analysis is owed. A job is `queued` when the upload
 # commits it, `processing` while a runner holds it, and ends `completed` or `failed`.

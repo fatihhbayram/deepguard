@@ -60,6 +60,16 @@ def store_original(path: Path, sha256: str, content_type: str) -> str:
     return key
 
 
+def fetch_object(key: str, path: Path) -> None:
+    """Download a stored object to a local file, overwriting whatever is there.
+
+    How the worker gets the media back: nothing is handed between the upload request and
+    the job but a storage key, so the object store is the only thing either of them has
+    to agree on.
+    """
+    client.fget_object(ORIGINALS_BUCKET, key, str(path))
+
+
 def derivative_key(sha256: str) -> str:
     """The content-addressed key of a derivative, from the derivative's own hash."""
     return f"{DERIVATIVES_PREFIX}{sha256}{DERIVATIVE_EXTENSION}"

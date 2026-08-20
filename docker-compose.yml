@@ -66,6 +66,34 @@ services:
       timeout: 5s
       retries: 5
 
+  # Same image as the API, different entrypoint: one codebase, and the queue is the only
+  # thing the two processes say to each other. It publishes no port and serves no
+  # request — nothing talks to it, it only reads the jobs table.
+  api-worker:
+    build:
+      context: ./apps/api
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-deepguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deepguard}
+      POSTGRES_DB: ${POSTGRES_DB:-deepguard}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      MINIO_ENDPOINT: minio:9000
+      MINIO_SECURE: "false"
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-deepguard}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-deepguard123}
+      # This is the process that actually calls NVIDIA. Without credentials it still runs
+      # every job to completion and records a failed signal for each.
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_SVD_FUNCTION_ID: ${NVIDIA_SVD_FUNCTION_ID:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
   web:
     build:
       context: ./apps/web
