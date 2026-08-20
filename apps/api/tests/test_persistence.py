@@ -385,3 +385,65 @@ def test_deleting_an_analysis_takes_its_signals_with_it(session):
             .count()
             == 0
         )
+
+
+def test_a_persisted_signal_reaches_the_listing_endpoint(session):
+    """The dashboard's evidence read path, end to end against real PostgreSQL.
+
+    The fake-session suite proves the query's shape; only a real database proves the
+    outer join returns the stored figures, and returns nothing where none were stored.
+    """
+    db, created = session
+    with_signal = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    without_signal = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add_all([with_signal, without_signal])
+    db.flush()
+    created.extend([with_signal.id, without_signal.id])
+    db.add_all([media_file(with_signal.id), media_file(without_signal.id)])
+    db.add(nvidia_signal(with_signal.id))
+    db.commit()
+
+    with TestClient(app) as client:
+        body = client.get("/api/v1/analyses").json()
+
+    listed = next(row for row in body if row["id"] == str(with_signal.id))["synthetic_video"]
+    assert listed["provider"] == "nvidia"
+    assert listed["signal_type"] == "synthetic_video"
+    assert listed["status"] == SIGNAL_STATUS_SUCCESS
+    # Full double precision survives the round trip through the join.
+    assert listed["score"] == NVIDIA_PROBABILITY
+    assert listed["provider_version"] == "847b6e53-0133-452d-ab85-d7acf3ace723"
+    assert listed["logit"] == 1.9142135381698608
+    assert listed["total_clips"] == 7
+
+    # An analysis with no signal still lists, and claims no evidence it does not have.
+    other = next(row for row in body if row["id"] == str(without_signal.id))
+    assert other["synthetic_video"] is None
+
+
+def test_a_failed_signal_reaches_the_listing_without_a_score(session):
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    db.add(
+        nvidia_signal(
+            analysis.id,
+            score=None,
+            provider_version=None,
+            status=SIGNAL_STATUS_FAILED,
+            signal_metadata={"error": "NvidiaAuthenticationError"},
+        )
+    )
+    db.commit()
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/analyses")
+
+    listed = next(row for row in response.json() if row["id"] == str(analysis.id))
+    assert listed["synthetic_video"]["status"] == SIGNAL_STATUS_FAILED
+    assert listed["synthetic_video"]["score"] is None
+    # The provider's failure detail stays in the database and the server log.
+    assert "NvidiaAuthenticationError" not in response.text
