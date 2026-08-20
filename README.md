@@ -143,11 +143,14 @@ Every port is published on `127.0.0.1` only, and each one can be overridden in `
 
 ## Verifying the stack
 
-Check that all four containers report healthy:
+Check the containers. Five run; the four that serve something report healthy:
 
 ```bash
 docker compose ps
 ```
+
+`api-worker` has no healthcheck and publishes no port — nothing calls it, so there is
+nothing to probe. That it is `Up` is what there is to check; what it is doing is in its log.
 
 Query the API directly:
 
