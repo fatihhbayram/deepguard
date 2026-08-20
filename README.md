@@ -6,9 +6,9 @@ body of evidence, rather than returning a single verdict on whether media is fak
 
 ## Current status
 
-The upload pipeline exists end to end and produces its first real forensic signal. A video can
-be submitted, validated, stored, described, analysed by NVIDIA's synthetic video detector and
-persisted, and the resulting analysis is listed in the dashboard. What runs today:
+The upload pipeline exists end to end and detection has moved off it. A video can be
+submitted, validated, stored, described and queued for analysis, and the resulting analysis is
+listed in the dashboard. What runs today:
 
 - `POST /api/v1/analyses` accepts a video upload;
 - the upload is admitted only by declared MIME type (`video/mp4`, `video/quicktime`) and a
@@ -21,19 +21,11 @@ persisted, and the resulting analysis is listed in the dashboard. What runs toda
   `yuv420p`, constant frame rate) gets a separate MP4/H.264 derivative via `ffmpeg`;
 - original and derivative are kept as distinct artifacts, each with its own SHA-256 and its
   own storage key — the original is never rewritten;
-- whichever artifact is provider-compatible — the derivative when one was made, the original
-  otherwise — is sent to NVIDIA's Synthetic Video Detector over gRPC while it is still on
-  local disk;
-- NVIDIA's probability is recorded as returned, on NVIDIA's own scale, as one signal among
-  the several a full analysis will eventually carry;
-- a detector that fails, times out or is misconfigured does not fail the upload: the failure
-  is itself persisted as a signal, so the gap in the evidence is visible rather than silent —
-  a fault on this server's own side is not treated that way and still surfaces as an error;
-- the clips NVIDIA scored inside the video are kept as evidence in their own right, capped at
-  the strongest twenty per detection, each with the provider's frame index and raw logit;
-- the completed analysis, its media facts, that signal and its clip evidence are written to
-  PostgreSQL in one transaction, after detection has finished — no transaction is held open
-  across the call;
+- the analysis, its media facts and a `queued` job are written to PostgreSQL in one
+  transaction, and the upload answers `202 Accepted` — an analysis committed without its job
+  would be an upload accepted and then silently forgotten;
+- detection does not run on the request. NVIDIA can take minutes on a video, and no client is
+  made to hold a connection open through them;
 - `GET /api/v1/analyses` returns the most recent analyses with their signal and its strongest
   clips;
 - the Next.js dashboard renders that list beside the connectivity status.
@@ -56,13 +48,17 @@ container reaches it over the Docker network at `http://api:8000`. The API reach
 the Docker network at `minio:9000`, never the published host port. NVIDIA is reached over TLS
 gRPC at its hosted endpoint, addressed by function ID.
 
-Uploads are handled synchronously: the request returns only after storage, probing,
-normalization, detection and persistence have all run. If storage, probing or normalization
-fails, no analysis row is written. Detection is different — it is evidence gathering, not
-admission control, so its failure is recorded rather than fatal. Local temp files are always
-removed; stored MinIO objects are not deleted on
-failure, because their keys are content-addressed and may already be referenced by an
-earlier analysis of identical bytes.
+Uploads return once the media is staged and the work is queued: storage, probing,
+normalization and persistence run on the request, detection does not. If storage, probing or
+normalization fails, no analysis row and no job are written. Local temp files are always
+removed — the runner reads the canonical object back out of MinIO rather than depending on a
+file the request left behind. Stored MinIO objects are not deleted on failure, because their
+keys are content-addressed and may already be referenced by an earlier analysis of identical
+bytes.
+
+Nothing runs the queued jobs yet. The detector code and its evidence handling are in place
+and tested; the runner that claims a job, calls NVIDIA and records the result is the next
+task, so an upload today stays `queued` and carries no signal.
 
 ## Repository structure
 
@@ -153,13 +149,19 @@ Upload a video and see it appear in the dashboard:
 curl -F 'file=@sample.mp4;type=video/mp4' http://localhost:8000/api/v1/analyses
 ```
 
-The response carries the analysis id, the original's SHA-256 and storage key, the ffprobe
-metadata, `was_normalized`, and the derivative's storage key and SHA-256. When the original
-is already provider-compatible, no derivative is produced: `was_normalized` is `false`,
-`derivative_storage_key` is the original's key and `derivative_sha256` is `null`.
+The answer is `202 Accepted`, carrying the analysis id, the original's SHA-256 and storage
+key, the ffprobe metadata, `was_normalized`, and the derivative's storage key and SHA-256.
+When the original is already provider-compatible, no derivative is produced:
+`was_normalized` is `false`, `derivative_storage_key` is the original's key and
+`derivative_sha256` is `null`. `status` is `queued`, because nothing has looked at the video
+yet. The queued work is a row of its own:
 
-The NVIDIA signal is not in that response — it is evidence attached to the analysis, returned
-by `GET /api/v1/analyses` and shown on the dashboard. It can also be read directly:
+```sql
+SELECT status, error_message, created_at, updated_at FROM analysis_jobs;
+```
+
+The NVIDIA signal is not in the upload response — it is evidence attached to the analysis,
+returned by `GET /api/v1/analyses` and shown on the dashboard. It can also be read directly:
 
 ```sql
 SELECT provider, signal_type, status, score, metadata FROM analysis_signals;
@@ -171,8 +173,9 @@ A segment is one clip the detector scored. NVIDIA reports a frame index and a ra
 clip and no timestamps, so those two figures are what is stored — the logit is not a
 probability and is not comparable with the signal's `score`.
 
-Detection needs `NVIDIA_API_KEY` and `NVIDIA_SVD_FUNCTION_ID` in `.env`. Without them the
-upload still succeeds and the analysis records a `FAILED` signal instead of a score.
+Detection needs `NVIDIA_API_KEY` and `NVIDIA_SVD_FUNCTION_ID` in `.env`. Missing or wrong
+credentials never fail an upload: they are a detector's problem, and the detector no longer
+runs on the request at all.
 
 Rejections are bounded and generic: `415` for an unsupported MIME type, `413` above the
 100 MiB limit, `422` when the bytes are not usable video, `503` when object storage or the

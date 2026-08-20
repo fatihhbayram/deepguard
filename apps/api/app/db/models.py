@@ -1,8 +1,8 @@
-"""Persistent shape of an upload that completed the pipeline.
+"""Persistent shape of an upload that has been accepted for analysis.
 
 Stored are the analysis record itself, the media facts established by hashing, object
-storage, ffprobe and normalization, and one row per detector signal. Risk levels and job
-state belong to later phases and have no columns here.
+storage, ffprobe and normalization, the queued work that detection still owes it, and one
+row per detector signal. Risk levels belong to a later phase and have no columns here.
 
 Media identity is not analysis identity. Storage keys and hashes are content-addressed,
 so the same bytes can legitimately be uploaded and analysed more than once; none of
@@ -13,13 +13,34 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-# The single status P1 can produce: the row is written only after the whole pipeline has
-# succeeded, so there is no pending/running lifecycle to model yet.
+# Where an analysis is in its life. The upload commits it `queued` — the media is stored
+# and probed, but no detector has looked at it yet — and the phase that runs detection is
+# what moves it on. `completed` is not written anywhere until then.
+ANALYSIS_STATUS_QUEUED = "queued"
 ANALYSIS_STATUS_COMPLETED = "completed"
+
+# The state of the detection work an analysis is owed. A job is `queued` when the upload
+# commits it, `processing` while a runner holds it, and ends `completed` or `failed`.
+# Nothing yet moves a job out of `queued`: claiming and running it is P3-T2's job, and
+# these four names exist so that task inherits the vocabulary rather than inventing it.
+JOB_STATUS_QUEUED = "queued"
+JOB_STATUS_PROCESSING = "processing"
+JOB_STATUS_COMPLETED = "completed"
+JOB_STATUS_FAILED = "failed"
 
 # The outcome of asking one detector about one analysis. A provider that answered, a
 # provider that refused or broke, and a provider that never answered in time are three
@@ -36,7 +57,11 @@ class Base(DeclarativeBase):
 
 
 class Analysis(Base):
-    """One upload that was accepted, validated and stored."""
+    """One upload that was accepted, validated and stored.
+
+    It is committed `queued`: the media is real and safely stored, and detection is still
+    outstanding. The row exists long before there is anything to conclude about it.
+    """
 
     __tablename__ = "analyses"
 
@@ -92,6 +117,55 @@ class MediaFile(Base):
     derivative_storage_key: Mapped[str] = mapped_column(String(512), nullable=False)
     derivative_sha256: Mapped[str | None] = mapped_column(
         String(SHA256_HEX_LENGTH), nullable=True
+    )
+
+
+class AnalysisJob(Base):
+    """The detection work an analysis is owed, and how far that work has got.
+
+    The upload no longer waits for a detector. It stages the media, commits the analysis
+    and commits this row alongside it in the same transaction, so a committed analysis
+    always has a job: an analysis nobody was ever going to look at would be an upload
+    silently dropped, and the atomicity is what rules that out.
+
+    One analysis has exactly one job, which the unique constraint enforces rather than
+    merely assumes. A retry re-runs this row instead of adding a second one, so the
+    question "has this analysis been detected?" always has a single answer.
+
+    Nothing here claims work. Whichever runner eventually moves a job out of `queued`,
+    and how it does so safely, is P3-T2 — this table only records the state it moves
+    between.
+    """
+
+    __tablename__ = "analysis_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    analysis_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("analyses.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    # Why the job failed, for an operator reading the table. Null for every job that has
+    # not failed — an empty string would read as a failure with nothing to say. This is
+    # diagnostic text of unbounded length, not a code to branch on.
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # Touched on every write, so the age of a job's current state is readable — the figure
+    # a stuck `processing` job is spotted by.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 

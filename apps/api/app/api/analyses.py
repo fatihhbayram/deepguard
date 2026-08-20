@@ -15,11 +15,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db.models import (
-    ANALYSIS_STATUS_COMPLETED,
+    ANALYSIS_STATUS_QUEUED,
+    JOB_STATUS_QUEUED,
     SIGNAL_STATUS_FAILED,
     SIGNAL_STATUS_SUCCESS,
     SIGNAL_STATUS_TIMEOUT,
     Analysis,
+    AnalysisJob,
     AnalysisSegment,
     AnalysisSignal,
     MediaFile,
@@ -98,7 +100,11 @@ def report_possible_orphan(*storage_keys: str) -> None:
 
 
 class CreatedAnalysis(BaseModel):
-    """The persisted analysis, as the pipeline established it."""
+    """The staged analysis, as the upload left it.
+
+    Everything here is established before any detector runs, so nothing in it is a
+    finding: it is the media, its identity and where it was put. `status` is `queued`.
+    """
 
     id: uuid.UUID
     status: str
@@ -279,6 +285,11 @@ async def create_derivative(
     return key, derivative.sha256, derivative.path
 
 
+# Detection itself, kept intact and tested while it waits for the runner that will call
+# it. The upload route no longer does: it queues a job instead. P3-T2 owns moving these
+# two functions, and the evidence they build, into that runner.
+
+
 def strongest_clips(clips: tuple[NvidiaClipResult, ...]) -> list[AnalysisSegment]:
     """The provider's most strongly scored clips, capped at what may be persisted.
 
@@ -366,24 +377,22 @@ def persist_analysis(
     was_normalized: bool,
     derivative_storage_key: str,
     derivative_sha256: str | None,
-    signal: AnalysisSignal,
-    segments: list[AnalysisSegment],
 ) -> Analysis:
-    """Write the completed analysis, its media and its detector evidence in one transaction.
+    """Write the queued analysis, its media and the job it is owed in one transaction.
 
-    Called only once the whole pipeline has run, so the row is complete the moment it
-    exists — including the evidence, which is why the signal is written here rather than
-    appended afterwards. Either every row exists or none does; an analysis whose detector
-    result silently went missing would be worse than no analysis at all, and a signal
-    whose clip evidence went missing would misreport how much the detector actually said.
+    Called once the media pipeline has run, so everything the detector will need is
+    already stored. The job is written here rather than appended afterwards because
+    either every row exists or none does: an analysis committed without its job would be
+    an upload accepted and then silently forgotten, with no queue entry to notice it and
+    a client holding a `202` for work nobody will ever do.
 
-    Detection has already finished by the time this is called, so the transaction lasts
-    as long as three inserts and never spans the minutes NVIDIA can take.
+    No detector runs before this, so the transaction lasts as long as three inserts and
+    never spans the minutes NVIDIA can take.
 
     On failure the session is rolled back and the stored objects are reported rather than
     deleted, since they are content-addressed and may be shared.
     """
-    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    analysis = Analysis(status=ANALYSIS_STATUS_QUEUED)
     session.add(analysis)
     # Assigns the analysis id the media row needs, still inside the same transaction.
     session.flush()
@@ -410,48 +419,42 @@ def persist_analysis(
         )
     )
 
-    signal.analysis_id = analysis.id
-    session.add(signal)
-
-    if segments:
-        # The segments hang off the signal, so its id has to exist before they can name
-        # it — a second flush inside the same transaction, not a second transaction.
-        session.flush()
-        for segment in segments:
-            segment.signal_id = signal.id
-        session.add_all(segments)
+    session.add(AnalysisJob(analysis_id=analysis.id, status=JOB_STATUS_QUEUED))
 
     session.commit()
 
     return analysis
 
 
-@router.post("/analyses", response_model=CreatedAnalysis)
+@router.post(
+    "/analyses", response_model=CreatedAnalysis, status_code=status.HTTP_202_ACCEPTED
+)
 async def create_analysis(
     file: UploadFile, session: Session = Depends(get_session)
 ) -> CreatedAnalysis:
-    """Admit an upload by declared MIME type and size, then prove it is real media.
+    """Admit an upload, prove it is real media, stage it, and queue it for detection.
 
     The declared content type is not proof that the bytes are a real MP4/MOV container,
-    so admission alone never produces a 200.
+    so admission alone never produces a `202`.
 
     The admitted upload is stored in MinIO as the forensic original, then probed with
     ffprobe to confirm the bytes really are video and to extract the metadata later
     tasks need. Media that is not already in the canonical provider shape gets a
     separate normalized derivative (D013) — the original is never rewritten.
 
-    Whichever of the two is provider-compatible is then handed to NVIDIA's synthetic
-    video detector while it is still on local disk. That call is made before any database
-    work starts: it can take minutes, and no transaction is held open across it. NVIDIA
-    failing does not fail the upload — the failure is persisted as a signal of its own.
-    A failure to read our own staged artifact is a server fault, not a detector one, and
-    is the exception: it surfaces as a 500 like any other broken-machine condition.
+    No detector is called here. Everything above is bounded work on the uploaded bytes;
+    inference is not, and NVIDIA can take minutes on a video a client is not going to
+    wait through. So the request ends by committing the analysis and a `queued` job, and
+    the answer is `202 Accepted`: the media is stored and the work is recorded as owed,
+    not done. What the detector eventually finds is not in this response, and the status
+    the client gets back is `queued` because that is what is true when it is sent.
 
-    The analysis, its media, the signal and the clip evidence behind it are persisted
-    last, in one transaction, once nothing is left on local disk. On failure the temp
-    files are dropped; the stored
-    objects are kept, because their content-addressed keys may be shared with an earlier
-    analysis.
+    Both staged artifacts are deleted before responding. Nothing local survives the
+    request, and the runner that picks the job up reads the canonical object back out of
+    MinIO rather than depending on a temp file this process happened to leave behind.
+
+    On failure the temp files are dropped; the stored objects are kept, because their
+    content-addressed keys may be shared with an earlier analysis.
     """
     content_type = (file.content_type or "").strip().lower()
     if content_type not in ALLOWED_CONTENT_TYPES:
@@ -509,14 +512,11 @@ async def create_analysis(
         canonical_key, derivative_sha256 = storage_key, None
         inference_path = stored.path
 
-    try:
-        signal, segments = await detect_synthetic_video(inference_path)
-    finally:
-        # Detection is the last step that reads local media, so nothing may survive it —
-        # not on the success path, and not when it raised something unforeseen.
-        discard_temp_file(stored.path)
-        if was_normalized:
-            discard_temp_file(inference_path)
+    # Normalization is now the last step that reads local media: both artifacts are in
+    # MinIO, and the detector will fetch what it needs from there.
+    discard_temp_file(stored.path)
+    if was_normalized:
+        discard_temp_file(inference_path)
 
     try:
         analysis = persist_analysis(
@@ -529,8 +529,6 @@ async def create_analysis(
             was_normalized=was_normalized,
             derivative_storage_key=canonical_key,
             derivative_sha256=derivative_sha256,
-            signal=signal,
-            segments=segments,
         )
     except SQLAlchemyError:
         try:

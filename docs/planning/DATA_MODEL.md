@@ -44,6 +44,21 @@ Stores:
 - fps
 - resolution
 
+## Analysis job
+
+Stores the detection work an analysis is owed:
+
+```text
+analysis_id unique
+status queued | processing | completed | failed
+error_message nullable
+created_at
+updated_at
+```
+
+One job per analysis, enforced by the unique constraint: a retry re-runs the row rather than
+adding a second one, so "has this analysis been detected?" has a single answer.
+
 ## Analysis signal
 
 Stores normalized provider evidence:

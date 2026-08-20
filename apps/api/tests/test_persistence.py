@@ -12,14 +12,18 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.api.analyses import DASHBOARD_SEGMENTS, RECENT_ANALYSES_LIMIT
 from app.db.models import (
     ANALYSIS_STATUS_COMPLETED,
+    ANALYSIS_STATUS_QUEUED,
+    JOB_STATUS_PROCESSING,
+    JOB_STATUS_QUEUED,
     SIGNAL_STATUS_FAILED,
     SIGNAL_STATUS_SUCCESS,
     Analysis,
+    AnalysisJob,
     AnalysisSegment,
     AnalysisSignal,
     MediaFile,
@@ -88,6 +92,7 @@ def test_migration_created_the_analysis_schema(database):
     assert {
         "analyses",
         "media_files",
+        "analysis_jobs",
         "analysis_signals",
         "analysis_segments",
     } <= set(inspector.get_table_names())
@@ -115,6 +120,14 @@ def test_migration_created_the_analysis_schema(database):
         "was_normalized",
         "derivative_storage_key",
         "derivative_sha256",
+    }
+    assert {column["name"] for column in inspector.get_columns("analysis_jobs")} == {
+        "id",
+        "analysis_id",
+        "status",
+        "error_message",
+        "created_at",
+        "updated_at",
     }
     assert {column["name"] for column in inspector.get_columns("analysis_signals")} == {
         "id",
@@ -282,6 +295,110 @@ def test_the_listing_returns_the_most_recent_analysis_first(session):
 
     ids = [row["id"] for row in body]
     assert ids.index(str(newer.id)) < ids.index(str(older.id))
+
+
+def queued_analysis(db, created) -> Analysis:
+    """An analysis and its media, committed exactly as the upload route commits them."""
+    analysis = Analysis(status=ANALYSIS_STATUS_QUEUED)
+    db.add(analysis)
+    db.flush()
+    db.add(media_file(analysis.id))
+    created.append(analysis.id)
+
+    return analysis
+
+
+def test_a_queued_job_round_trips_through_postgresql(session):
+    db, created = session
+    analysis = queued_analysis(db, created)
+    db.add(AnalysisJob(analysis_id=analysis.id, status=JOB_STATUS_QUEUED))
+    db.commit()
+
+    with SessionLocal() as reader:
+        stored = reader.query(AnalysisJob).filter_by(analysis_id=analysis.id).one()
+
+        assert stored.status == JOB_STATUS_QUEUED
+        # Nothing has failed, so there is nothing to say about a failure.
+        assert stored.error_message is None
+        # Both stamps are the database's own, not the application's.
+        assert stored.created_at is not None
+        assert stored.updated_at is not None
+
+
+def test_an_analysis_can_only_be_queued_once(session):
+    db, created = session
+    analysis = queued_analysis(db, created)
+    db.add(AnalysisJob(analysis_id=analysis.id, status=JOB_STATUS_QUEUED))
+    db.commit()
+
+    db.add(AnalysisJob(analysis_id=analysis.id, status=JOB_STATUS_QUEUED))
+
+    # Enforced by the database, not merely assumed by the code that writes it: two jobs
+    # for one analysis would make "has this been detected?" two different answers.
+    with pytest.raises(IntegrityError):
+        db.commit()
+
+
+def test_a_job_cannot_name_an_analysis_that_does_not_exist(session):
+    db, _ = session
+    db.add(AnalysisJob(analysis_id=uuid.uuid4(), status=JOB_STATUS_QUEUED))
+
+    # Queued work pointing at nothing would be a runner's job to fail on forever.
+    with pytest.raises(IntegrityError):
+        db.commit()
+
+
+def test_a_failed_job_persists_why_it_failed(session):
+    db, created = session
+    analysis = queued_analysis(db, created)
+    db.add(
+        AnalysisJob(
+            analysis_id=analysis.id,
+            status="failed",
+            error_message="NVIDIA rejected the request (UNAUTHENTICATED)",
+        )
+    )
+    db.commit()
+
+    with SessionLocal() as reader:
+        stored = reader.query(AnalysisJob).filter_by(analysis_id=analysis.id).one()
+
+        # Diagnostic text of unbounded length, kept as written rather than truncated.
+        assert stored.error_message == "NVIDIA rejected the request (UNAUTHENTICATED)"
+
+
+def test_moving_a_job_on_touches_its_updated_at(session):
+    db, created = session
+    analysis = queued_analysis(db, created)
+    job = AnalysisJob(analysis_id=analysis.id, status=JOB_STATUS_QUEUED)
+    db.add(job)
+    db.commit()
+    queued_at = job.updated_at
+
+    job.status = JOB_STATUS_PROCESSING
+    db.commit()
+
+    with SessionLocal() as reader:
+        stored = reader.query(AnalysisJob).filter_by(analysis_id=analysis.id).one()
+
+        # How a job stuck in one state is eventually spotted: the age of that state has
+        # to be readable, so the stamp cannot stay at the time the row was created.
+        assert stored.status == JOB_STATUS_PROCESSING
+        assert stored.updated_at > queued_at
+        assert stored.created_at < stored.updated_at
+
+
+def test_deleting_an_analysis_takes_its_job_with_it(session):
+    db, created = session
+    analysis = queued_analysis(db, created)
+    db.add(AnalysisJob(analysis_id=analysis.id, status=JOB_STATUS_QUEUED))
+    db.commit()
+
+    db.query(Analysis).filter(Analysis.id == analysis.id).delete()
+    db.commit()
+
+    with SessionLocal() as reader:
+        assert reader.query(AnalysisJob).filter_by(analysis_id=analysis.id).count() == 0
 
 
 NVIDIA_PROBABILITY = 0.8734567165374756
