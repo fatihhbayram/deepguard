@@ -6,8 +6,9 @@ body of evidence, rather than returning a single verdict on whether media is fak
 
 ## Current status
 
-The upload pipeline exists end to end. A video can be submitted, validated, stored, described
-and persisted, and the resulting analysis is listed in the dashboard. What runs today:
+The upload pipeline exists end to end and produces its first real forensic signal. A video can
+be submitted, validated, stored, described, analysed by NVIDIA's synthetic video detector and
+persisted, and the resulting analysis is listed in the dashboard. What runs today:
 
 - `POST /api/v1/analyses` accepts a video upload;
 - the upload is admitted only by declared MIME type (`video/mp4`, `video/quicktime`) and a
@@ -20,11 +21,21 @@ and persisted, and the resulting analysis is listed in the dashboard. What runs 
   `yuv420p`, constant frame rate) gets a separate MP4/H.264 derivative via `ffmpeg`;
 - original and derivative are kept as distinct artifacts, each with its own SHA-256 and its
   own storage key — the original is never rewritten;
-- the completed analysis and its media facts are written to PostgreSQL in one transaction;
+- whichever artifact is provider-compatible — the derivative when one was made, the original
+  otherwise — is sent to NVIDIA's Synthetic Video Detector over gRPC while it is still on
+  local disk;
+- NVIDIA's probability is recorded as returned, on NVIDIA's own scale, as one signal among
+  the several a full analysis will eventually carry;
+- a detector that fails, times out or is misconfigured does not fail the upload: the failure
+  is itself persisted as a signal, so the gap in the evidence is visible rather than silent —
+  a fault on this server's own side is not treated that way and still surfaces as an error;
+- the completed analysis, its media facts and that signal are written to PostgreSQL in one
+  transaction, after detection has finished — no transaction is held open across the call;
 - `GET /api/v1/analyses` returns the most recent analyses;
 - the Next.js dashboard renders that list beside the connectivity status.
 
-No detector, provenance, risk or reporting functionality is implemented yet.
+No provenance, risk classification or reporting functionality is implemented yet. Signals
+carry a provider score but no risk level; deciding what a score means is a later phase.
 
 ## Architecture
 
@@ -33,16 +44,19 @@ Next.js (web)
    ↓ REST
 FastAPI (api)
    ↓
-PostgreSQL   MinIO
+PostgreSQL   MinIO   NVIDIA SVD
 ```
 
 The browser reaches the API over the published host port. Server-side rendering in the web
 container reaches it over the Docker network at `http://api:8000`. The API reaches MinIO over
-the Docker network at `minio:9000`, never the published host port.
+the Docker network at `minio:9000`, never the published host port. NVIDIA is reached over TLS
+gRPC at its hosted endpoint, addressed by function ID.
 
 Uploads are handled synchronously: the request returns only after storage, probing,
-normalization and persistence have all succeeded. If any step fails, no analysis row is
-written. Local temp files are always removed; stored MinIO objects are not deleted on
+normalization, detection and persistence have all run. If storage, probing or normalization
+fails, no analysis row is written. Detection is different — it is evidence gathering, not
+admission control, so its failure is recorded rather than fatal. Local temp files are always
+removed; stored MinIO objects are not deleted on
 failure, because their keys are content-addressed and may already be referenced by an
 earlier analysis of identical bytes.
 
@@ -54,6 +68,7 @@ apps/api/              FastAPI service
   app/api/analyses.py  upload pipeline and analysis listing
   app/media.py         ffprobe validation and metadata extraction
   app/normalization.py provider-compatible MP4/H.264 derivatives
+  app/nvidia_video.py  NVIDIA Synthetic Video Detector gRPC client
   app/storage.py       MinIO object storage
   app/db/              SQLAlchemy models, engine and session
   alembic/             database migrations
@@ -139,9 +154,19 @@ metadata, `was_normalized`, and the derivative's storage key and SHA-256. When t
 is already provider-compatible, no derivative is produced: `was_normalized` is `false`,
 `derivative_storage_key` is the original's key and `derivative_sha256` is `null`.
 
+The NVIDIA signal is not in that response — it is evidence attached to the analysis, and the
+dashboard has yet to display it. It can be read directly:
+
+```sql
+SELECT provider, signal_type, status, score, metadata FROM analysis_signals;
+```
+
+Detection needs `NVIDIA_API_KEY` and `NVIDIA_SVD_FUNCTION_ID` in `.env`. Without them the
+upload still succeeds and the analysis records a `FAILED` signal instead of a score.
+
 Rejections are bounded and generic: `415` for an unsupported MIME type, `413` above the
 100 MiB limit, `422` when the bytes are not usable video, `503` when object storage or the
-media processor is unavailable.
+media processor is unavailable. A provider failure is never one of them.
 
 ## Tests and quality checks
 

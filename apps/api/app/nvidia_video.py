@@ -88,12 +88,18 @@ class NvidiaVideoResult:
     `logit` and `probability` are the provider's own aggregate figures. `csv_data` is
     NVIDIA's `index,logit` rendering of the clip table, kept verbatim because it is the
     provider's own evidence artifact.
+
+    `function_id` is the NVCF function that answered. NVIDIA reports no model version of
+    its own, and the function ID is what pins the deployed detector behind this result,
+    so it travels with the numbers it produced. It is a public catalog identifier, never
+    a credential.
     """
 
     logit: float
     probability: float
     total_clips: int
     csv_data: str
+    function_id: str
     clips: tuple[NvidiaClipResult, ...] = field(default=())
 
 
@@ -181,7 +187,7 @@ def _provider_error(error: grpc.RpcError) -> NvidiaProviderError:
     return NvidiaProviderError(f"NVIDIA call failed ({code.name}): {details}")
 
 
-async def _collect(call) -> NvidiaVideoResult:
+async def _collect(call, function_id: str) -> NvidiaVideoResult:
     """Drain the response stream into the provider's typed result.
 
     Keepalive messages exist only to hold the stream open during a long inference and
@@ -214,6 +220,7 @@ async def _collect(call) -> NvidiaVideoResult:
         probability=final.probability,
         total_clips=final.total_clips,
         csv_data=final.csv_data,
+        function_id=function_id,
         clips=tuple(clips),
     )
 
@@ -256,7 +263,7 @@ async def analyze_video(
             metadata=metadata,
             timeout=timeout_seconds,
         )
-        return await _collect(call)
+        return await _collect(call, resolved_function_id)
     except grpc.RpcError as error:
         # A local read failure aborts the RPC, so the gRPC status describes a symptom
         # rather than the cause. The recorded cause wins.

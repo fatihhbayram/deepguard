@@ -11,9 +11,10 @@ from sqlalchemy.exc import OperationalError
 
 from minio.error import S3Error
 
-from app import media, normalization, request_limits, storage
+from app import media, normalization, nvidia_video, request_limits, storage
+from app.api import analyses
 from app.api.analyses import CHUNK_SIZE, MAX_UPLOAD_BYTES, TEMP_FILE_PREFIX
-from app.db.models import Analysis, MediaFile
+from app.db.models import Analysis, AnalysisSignal, MediaFile
 from app.db.session import get_session
 from app.main import app
 from app.normalization import DERIVATIVE_TEMP_PREFIX
@@ -160,6 +161,55 @@ def fake_ffmpeg(monkeypatch):
 
     recorder = Recorder()
     monkeypatch.setattr(normalization, "_run_ffmpeg", recorder.run)
+    return recorder
+
+
+NVIDIA_PROBABILITY = 0.8734567165374756
+NVIDIA_LOGIT = 1.9142135381698608
+NVIDIA_FUNCTION_ID = "847b6e53-0133-452d-ab85-d7acf3ace723"
+
+
+@pytest.fixture(autouse=True)
+def fake_nvidia(monkeypatch):
+    """Stand in for the detector, so no test in this module can reach NVIDIA.
+
+    Autouse deliberately: every upload that gets past normalization now calls the
+    detector, so a fixture a test forgot to request would mean real credentials, real
+    network traffic and a real bill from the suite.
+
+    The recorder captures the file's bytes during the call, because the request deletes
+    the artifact before it responds — reading the path afterwards would prove nothing.
+    """
+
+    class Recorder:
+        def __init__(self):
+            self.error = None
+            self.paths = []
+            self.analysed_bytes = []
+            # What the session had done by the time the detector was called. Detection
+            # must happen with no database work outstanding.
+            self.session_state = []
+
+        async def analyze(self, file_path, **kwargs):
+            self.paths.append(Path(file_path))
+            self.analysed_bytes.append(Path(file_path).read_bytes())
+            session = app.dependency_overrides.get(get_session)
+            if session is not None:
+                session = session()
+                self.session_state.append((list(session.added), session.commits))
+            if self.error:
+                raise self.error
+            return nvidia_video.NvidiaVideoResult(
+                logit=NVIDIA_LOGIT,
+                probability=NVIDIA_PROBABILITY,
+                total_clips=7,
+                csv_data="0,-2.25\n8,3.5\n",
+                function_id=NVIDIA_FUNCTION_ID,
+                clips=(nvidia_video.NvidiaClipResult(index=0, logit=-2.25),),
+            )
+
+    recorder = Recorder()
+    monkeypatch.setattr(analyses, "analyze_video", recorder.analyze)
     return recorder
 
 
@@ -1090,3 +1140,248 @@ def test_failed_rollback_does_not_mask_the_persistence_failure(
 
     assert response.status_code == 500
     assert response.json() == {"detail": "analysis could not be persisted"}
+
+
+def test_the_detector_receives_the_original_when_it_was_already_canonical(
+    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    payload = b"already-canonical-mp4"
+
+    response = post_upload(client, "clip.mp4", payload, "video/mp4")
+
+    assert response.status_code == 200
+    # No derivative exists, so the staged original is the provider-compatible artifact.
+    assert fake_nvidia.analysed_bytes == [payload]
+    assert fake_nvidia.paths[0].name.startswith(TEMP_FILE_PREFIX)
+
+
+def test_the_detector_receives_the_derivative_when_the_media_was_normalized(
+    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg, fake_nvidia
+):
+    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
+
+    response = post_upload(client, "clip.mp4", b"vp9-original-bytes", "video/mp4")
+
+    assert response.status_code == 200
+    # The original is not provider-compatible; sending it would be sending media the
+    # detector cannot read.
+    assert fake_nvidia.analysed_bytes == [DERIVATIVE_BYTES]
+    assert fake_nvidia.paths[0].name.startswith(DERIVATIVE_TEMP_PREFIX)
+
+
+def test_the_detector_is_not_called_when_the_pipeline_failed_earlier(
+    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg, fake_nvidia
+):
+    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
+    fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 422
+    assert fake_nvidia.paths == []
+
+
+def test_successful_detection_persists_the_nvidia_signal(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 200
+    analysis = _added(fake_session, Analysis)
+    signal = _added(fake_session, AnalysisSignal)
+    assert signal.analysis_id == analysis.id
+    assert signal.provider == "nvidia"
+    assert signal.signal_type == "synthetic_video"
+    assert signal.status == "SUCCESS"
+    assert signal.provider_version == NVIDIA_FUNCTION_ID
+
+
+def test_the_persisted_score_is_nvidias_probability_untouched(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    # Not rounded, not rescaled to a percentage, not turned into a DeepGuard number.
+    assert _added(fake_session, AnalysisSignal).score == NVIDIA_PROBABILITY
+
+
+def test_the_signal_carries_no_risk_level(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    # A provider score is evidence, not a classification. Nothing here may invent one.
+    assert _added(fake_session, AnalysisSignal).risk_level is None
+
+
+def test_signal_metadata_keeps_the_aggregate_figures_only(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    # The clip table and NVIDIA's CSV rendering of it are timeline evidence and grow
+    # with the video's length; neither is dumped into this row.
+    assert _added(fake_session, AnalysisSignal).signal_metadata == {
+        "logit": NVIDIA_LOGIT,
+        "total_clips": 7,
+    }
+
+
+def test_detector_timeout_still_returns_the_analysis(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    fake_nvidia.error = nvidia_video.NvidiaProviderTimeout("deadline exceeded")
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 200
+    assert fake_session.commits == 1
+    signal = _added(fake_session, AnalysisSignal)
+    assert signal.status == "TIMEOUT"
+    # NVIDIA may still have been working; recording 0.0 would be inventing an answer.
+    assert signal.score is None
+    assert signal.risk_level is None
+
+
+def test_detector_failure_still_returns_the_analysis(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    fake_nvidia.error = nvidia_video.NvidiaAuthenticationError("NVIDIA rejected the request")
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 200
+    signal = _added(fake_session, AnalysisSignal)
+    assert signal.status == "FAILED"
+    assert signal.score is None
+    assert signal.provider_version is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        nvidia_video.NvidiaProviderUnavailable("NVIDIA is unavailable"),
+        nvidia_video.NvidiaProviderInvalidResponse("no final result"),
+    ],
+)
+def test_every_known_provider_failure_is_recorded_rather_than_raised(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia, error
+):
+    fake_nvidia.error = error
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 200
+    assert _added(fake_session, AnalysisSignal).status == "FAILED"
+
+
+def test_a_failed_signal_records_the_failure_kind_and_nothing_more(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    fake_nvidia.error = nvidia_video.NvidiaAuthenticationError(
+        "NVIDIA rejected the request (UNAUTHENTICATED): bad key abc123"
+    )
+
+    post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    # The provider's own message can quote request detail, so only the class name of the
+    # failure is persisted. The detail stays in the server log.
+    assert _added(fake_session, AnalysisSignal).signal_metadata == {
+        "error": "NvidiaAuthenticationError"
+    }
+
+
+def test_detector_failure_still_persists_the_media(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg, fake_nvidia
+):
+    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
+    fake_nvidia.error = nvidia_video.NvidiaProviderUnavailable("NVIDIA is unavailable")
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    # One detector failing destroys no other evidence: the upload, its hashes and both
+    # stored objects survive exactly as they would have.
+    assert response.status_code == 200
+    assert _added(fake_session, MediaFile).derivative_sha256 == hashlib.sha256(
+        DERIVATIVE_BYTES
+    ).hexdigest()
+    assert len(fake_minio.stored_keys) == 2
+    assert fake_minio.removed == []
+
+
+def test_detection_finishes_before_any_database_work_starts(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    # NVIDIA can take minutes. Nothing may be written or held open across that wait, so
+    # by the time the detector is called the session must still be untouched.
+    assert fake_nvidia.session_state == [([], 0)]
+    assert fake_session.commits == 1
+
+
+def test_a_failed_detection_leaves_no_local_temp_files(
+    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg, fake_nvidia
+):
+    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
+    fake_nvidia.error = nvidia_video.NvidiaProviderTimeout("deadline exceeded")
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 200
+    assert new_temp_uploads() == []
+
+
+def test_an_unforeseen_detector_error_still_cleans_up_local_files(
+    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg, fake_nvidia
+):
+    # Not a provider failure at all — a bug. It is allowed to surface, but it must not
+    # leave the staged original or the derivative behind on the way out.
+    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
+    fake_nvidia.error = RuntimeError("unexpected")
+
+    with pytest.raises(RuntimeError):
+        post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert new_temp_uploads() == []
+
+
+def test_an_unreadable_staged_artifact_is_not_recorded_as_a_provider_failure(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    fake_nvidia.error = nvidia_video.NvidiaLocalFileError("cannot read the staged file")
+
+    with pytest.raises(nvidia_video.NvidiaLocalFileError):
+        post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    # This server prepared that file seconds earlier. Losing it is a fault here, not at
+    # NVIDIA, and writing a FAILED signal would blame the provider for our defect and
+    # bury a broken machine among routine evidence.
+    assert fake_session.added == []
+    assert fake_session.commits == 0
+
+
+def test_an_unreadable_staged_artifact_fails_the_request(
+    fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    fake_nvidia.error = nvidia_video.NvidiaLocalFileError("cannot read the staged file")
+
+    # A client that lets the server's own errors through, so the status a real caller
+    # would see is asserted rather than the exception the test client re-raises.
+    with TestClient(app, raise_server_exceptions=False) as unguarded:
+        response = post_upload(unguarded, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 500
+
+
+def test_an_unreadable_staged_artifact_still_cleans_up_local_files(
+    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg, fake_nvidia
+):
+    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
+    fake_nvidia.error = nvidia_video.NvidiaLocalFileError("cannot read the staged file")
+
+    with pytest.raises(nvidia_video.NvidiaLocalFileError):
+        post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    # Both the staged original and the derivative go, exactly as on every other path.
+    assert new_temp_uploads() == []

@@ -15,7 +15,14 @@ from sqlalchemy import inspect
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.analyses import RECENT_ANALYSES_LIMIT
-from app.db.models import ANALYSIS_STATUS_COMPLETED, Analysis, MediaFile
+from app.db.models import (
+    ANALYSIS_STATUS_COMPLETED,
+    SIGNAL_STATUS_FAILED,
+    SIGNAL_STATUS_SUCCESS,
+    Analysis,
+    AnalysisSignal,
+    MediaFile,
+)
 from app.db.session import SessionLocal, engine
 from app.main import app
 
@@ -77,7 +84,7 @@ def media_file(analysis_id: uuid.UUID, **overrides) -> MediaFile:
 def test_migration_created_the_analysis_schema(database):
     inspector = inspect(database)
 
-    assert {"analyses", "media_files"} <= set(inspector.get_table_names())
+    assert {"analyses", "media_files", "analysis_signals"} <= set(inspector.get_table_names())
     assert {column["name"] for column in inspector.get_columns("analyses")} == {
         "id",
         "status",
@@ -102,6 +109,18 @@ def test_migration_created_the_analysis_schema(database):
         "was_normalized",
         "derivative_storage_key",
         "derivative_sha256",
+    }
+    assert {column["name"] for column in inspector.get_columns("analysis_signals")} == {
+        "id",
+        "analysis_id",
+        "provider",
+        "signal_type",
+        "score",
+        "risk_level",
+        "provider_version",
+        "status",
+        "metadata",
+        "created_at",
     }
 
 
@@ -247,3 +266,122 @@ def test_the_listing_returns_the_most_recent_analysis_first(session):
 
     ids = [row["id"] for row in body]
     assert ids.index(str(newer.id)) < ids.index(str(older.id))
+
+
+NVIDIA_PROBABILITY = 0.8734567165374756
+
+
+def nvidia_signal(analysis_id: uuid.UUID, **overrides) -> AnalysisSignal:
+    """A signal row shaped exactly like the one a successful detection persists."""
+    values = {
+        "analysis_id": analysis_id,
+        "provider": "nvidia",
+        "signal_type": "synthetic_video",
+        "score": NVIDIA_PROBABILITY,
+        "provider_version": "847b6e53-0133-452d-ab85-d7acf3ace723",
+        "status": SIGNAL_STATUS_SUCCESS,
+        "signal_metadata": {"logit": 1.9142135381698608, "total_clips": 7},
+    }
+
+    return AnalysisSignal(**{**values, **overrides})
+
+
+def test_a_detector_signal_round_trips_through_postgresql(session):
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    db.add(nvidia_signal(analysis.id))
+    db.commit()
+
+    with SessionLocal() as reader:
+        stored = (
+            reader.query(AnalysisSignal)
+            .filter(AnalysisSignal.analysis_id == analysis.id)
+            .one()
+        )
+
+        assert stored.provider == "nvidia"
+        assert stored.signal_type == "synthetic_video"
+        # Full double precision, not the float4 that would silently truncate it.
+        assert stored.score == NVIDIA_PROBABILITY
+        assert stored.provider_version == "847b6e53-0133-452d-ab85-d7acf3ace723"
+        assert stored.status == SIGNAL_STATUS_SUCCESS
+        # JSONB gives the document back as the Python types that went in.
+        assert stored.signal_metadata == {"logit": 1.9142135381698608, "total_clips": 7}
+        assert stored.created_at is not None
+        assert stored.created_at.tzinfo is not None
+
+
+def test_a_persisted_signal_carries_no_risk_level(session):
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    db.add(nvidia_signal(analysis.id))
+    db.commit()
+
+    with SessionLocal() as reader:
+        stored = (
+            reader.query(AnalysisSignal)
+            .filter(AnalysisSignal.analysis_id == analysis.id)
+            .one()
+        )
+        # The column exists for the phase that owns risk logic. Nothing fills it yet.
+        assert stored.risk_level is None
+
+
+def test_a_failed_signal_persists_without_a_score(session):
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    db.add(
+        nvidia_signal(
+            analysis.id,
+            score=None,
+            provider_version=None,
+            status=SIGNAL_STATUS_FAILED,
+            signal_metadata={"error": "NvidiaAuthenticationError"},
+        )
+    )
+    db.commit()
+
+    with SessionLocal() as reader:
+        stored = (
+            reader.query(AnalysisSignal)
+            .filter(AnalysisSignal.analysis_id == analysis.id)
+            .one()
+        )
+
+        assert stored.status == SIGNAL_STATUS_FAILED
+        # A detector that never answered has no number, and the schema allows that.
+        assert stored.score is None
+        assert stored.signal_metadata == {"error": "NvidiaAuthenticationError"}
+
+
+def test_deleting_an_analysis_takes_its_signals_with_it(session):
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    db.add(media_file(analysis.id))
+    db.add(nvidia_signal(analysis.id))
+    db.commit()
+
+    db.query(Analysis).filter(Analysis.id == analysis.id).delete()
+    db.commit()
+
+    with SessionLocal() as reader:
+        assert (
+            reader.query(AnalysisSignal)
+            .filter(AnalysisSignal.analysis_id == analysis.id)
+            .count()
+            == 0
+        )

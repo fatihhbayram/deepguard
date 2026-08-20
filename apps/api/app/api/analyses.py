@@ -13,7 +13,15 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.db.models import ANALYSIS_STATUS_COMPLETED, Analysis, MediaFile
+from app.db.models import (
+    ANALYSIS_STATUS_COMPLETED,
+    SIGNAL_STATUS_FAILED,
+    SIGNAL_STATUS_SUCCESS,
+    SIGNAL_STATUS_TIMEOUT,
+    Analysis,
+    AnalysisSignal,
+    MediaFile,
+)
 from app.db.session import get_session
 from app.media import MediaMetadata, MediaProbeError, MediaProbeUnavailable, probe_media
 from app.normalization import (
@@ -22,6 +30,7 @@ from app.normalization import (
     needs_normalization,
     normalize_to_mp4,
 )
+from app.nvidia_video import NvidiaProviderError, NvidiaProviderTimeout, analyze_video
 from app.storage import derivative_key, store_derivative, store_original
 
 logger = logging.getLogger(__name__)
@@ -36,6 +45,11 @@ TEMP_FILE_PREFIX = "deepguard-upload-"
 # How many analyses the listing returns. The dashboard shows recent activity, so a fixed
 # ceiling is all it needs; paging belongs to a phase that has a reason for it.
 RECENT_ANALYSES_LIMIT = 50
+
+# Identity of the one detector wired in so far. NVIDIA's D009 answers exactly one
+# question — whether the video is synthetic — so the pair is a constant, not a lookup.
+NVIDIA_PROVIDER = "nvidia"
+SYNTHETIC_VIDEO_SIGNAL = "synthetic_video"
 
 
 def discard_temp_file(path: str | Path) -> None:
@@ -153,13 +167,18 @@ async def store_upload(file: UploadFile) -> StoredUpload:
 
 async def create_derivative(
     original_path: Path, storage_key: str, metadata: MediaMetadata
-) -> tuple[str, str]:
+) -> tuple[str, str, Path]:
     """Transcode the original into a stored canonical derivative and describe it.
 
-    Returns the derivative's storage key and its own SHA-256. Any failure cleans up the
-    local temp files and reports the request's stored objects as possible orphans; they
-    are content-addressed and therefore never deleted here. The original file on disk is
-    only read; the original MinIO object is preserved either way (D013).
+    Returns the derivative's storage key, its own SHA-256, and the local file it still
+    occupies. The derivative is deliberately left on disk: it is the artifact detector
+    inference has to read, and downloading back from MinIO what is already here would be
+    pointless. Deleting it is the caller's job, on every path.
+
+    Any failure cleans up the local temp files and reports the request's stored objects
+    as possible orphans; they are content-addressed and therefore never deleted here. The
+    original file on disk is only read; the original MinIO object is preserved either
+    way (D013).
     """
     try:
         derivative = await normalize_to_mp4(original_path, metadata)
@@ -195,9 +214,60 @@ async def create_derivative(
             detail="media storage unavailable",
         ) from None
 
-    discard_temp_file(derivative.path)
+    return key, derivative.sha256, derivative.path
 
-    return key, derivative.sha256
+
+async def detect_synthetic_video(file_path: Path) -> AnalysisSignal:
+    """Ask NVIDIA about the local artifact and turn the outcome into forensic evidence.
+
+    Every *provider* failure becomes a signal rather than an exception. A detector that
+    fails is a fact about the detector, not about the upload: the analysis is still real,
+    its media is still stored, and the failure is recorded in its own right so the gap is
+    visible rather than silent.
+
+    A failure on our own side is not that. `NvidiaLocalFileError` means the artifact this
+    server prepared moments ago can no longer be read — a broken machine, not a broken
+    provider — and recording it as a provider signal would blame NVIDIA for our fault and
+    leave a real defect looking like routine evidence. It propagates.
+
+    NVIDIA's probability is written down exactly as returned, on NVIDIA's own scale.
+    Interpreting it — the `risk_level` column — is not this task's, or this layer's, job,
+    so it stays null. `metadata` keeps only NVIDIA's two aggregate figures; the clip
+    table it also returns is timeline evidence and belongs in `analysis_segments`, not
+    dumped here as unbounded provider output.
+    """
+    signal = AnalysisSignal(
+        provider=NVIDIA_PROVIDER,
+        signal_type=SYNTHETIC_VIDEO_SIGNAL,
+    )
+
+    try:
+        result = await analyze_video(file_path)
+    except NvidiaProviderTimeout as error:
+        # The one failure worth telling apart at a glance: NVIDIA may still have been
+        # working, so this says nothing about the video either way.
+        logger.warning("NVIDIA synthetic-video detection timed out.", exc_info=True)
+        signal.status = SIGNAL_STATUS_TIMEOUT
+        signal.signal_metadata = {"error": type(error).__name__}
+        return signal
+    except NvidiaProviderError as error:
+        # Every other provider-side outcome — rejected credentials, an unreachable
+        # service, a truncated stream — is one status. Telling them apart in the schema
+        # would need product requirements that do not exist yet; the server log carries
+        # the detail, and the message never reaches the client.
+        logger.warning("NVIDIA synthetic-video detection failed.", exc_info=True)
+        signal.status = SIGNAL_STATUS_FAILED
+        # The failure kind, never NVIDIA's message: that text can quote request detail.
+        signal.signal_metadata = {"error": type(error).__name__}
+        return signal
+
+    signal.status = SIGNAL_STATUS_SUCCESS
+    # Untransformed and unrounded. This is NVIDIA's number, not DeepGuard's.
+    signal.score = result.probability
+    signal.provider_version = result.function_id
+    signal.signal_metadata = {"logit": result.logit, "total_clips": result.total_clips}
+
+    return signal
 
 
 def persist_analysis(
@@ -211,12 +281,20 @@ def persist_analysis(
     was_normalized: bool,
     derivative_storage_key: str,
     derivative_sha256: str | None,
+    signal: AnalysisSignal,
 ) -> Analysis:
-    """Write the completed analysis and its media in one transaction.
+    """Write the completed analysis, its media and its detector signal in one transaction.
 
-    Called only once the whole pipeline has succeeded, so the row is complete the moment
-    it exists. On failure the session is rolled back and the stored objects are reported
-    rather than deleted, since they are content-addressed and may be shared.
+    Called only once the whole pipeline has run, so the row is complete the moment it
+    exists — including the evidence, which is why the signal is written here rather than
+    appended afterwards. Either all three rows exist or none does; an analysis whose
+    detector result silently went missing would be worse than no analysis at all.
+
+    Detection has already finished by the time this is called, so the transaction lasts
+    as long as three inserts and never spans the minutes NVIDIA can take.
+
+    On failure the session is rolled back and the stored objects are reported rather than
+    deleted, since they are content-addressed and may be shared.
     """
     analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
     session.add(analysis)
@@ -244,6 +322,10 @@ def persist_analysis(
             derivative_sha256=derivative_sha256,
         )
     )
+
+    signal.analysis_id = analysis.id
+    session.add(signal)
+
     session.commit()
 
     return analysis
@@ -261,10 +343,19 @@ async def create_analysis(
     The admitted upload is stored in MinIO as the forensic original, then probed with
     ffprobe to confirm the bytes really are video and to extract the metadata later
     tasks need. Media that is not already in the canonical provider shape gets a
-    separate normalized derivative (D013) — the original is never rewritten. The
-    analysis is persisted last, once every step has succeeded and nothing is left on
-    local disk. On failure the temp files are dropped; the stored objects are kept,
-    because their content-addressed keys may be shared with an earlier analysis.
+    separate normalized derivative (D013) — the original is never rewritten.
+
+    Whichever of the two is provider-compatible is then handed to NVIDIA's synthetic
+    video detector while it is still on local disk. That call is made before any database
+    work starts: it can take minutes, and no transaction is held open across it. NVIDIA
+    failing does not fail the upload — the failure is persisted as a signal of its own.
+    A failure to read our own staged artifact is a server fault, not a detector one, and
+    is the exception: it surfaces as a 500 like any other broken-machine condition.
+
+    The analysis, its media and the signal are persisted last, in one transaction, once
+    nothing is left on local disk. On failure the temp files are dropped; the stored
+    objects are kept, because their content-addressed keys may be shared with an earlier
+    analysis.
     """
     content_type = (file.content_type or "").strip().lower()
     if content_type not in ALLOWED_CONTENT_TYPES:
@@ -313,15 +404,23 @@ async def create_analysis(
     # client claimed, and a MOV declared as `video/mp4` must still be normalized.
     was_normalized = needs_normalization(metadata)
     if was_normalized:
-        canonical_key, derivative_sha256 = await create_derivative(
+        canonical_key, derivative_sha256, inference_path = await create_derivative(
             stored.path, storage_key, metadata
         )
     else:
-        # Already canonical: no transcode, and no duplicate object of the original.
+        # Already canonical: no transcode, and no duplicate object of the original. The
+        # staged original is itself the artifact the detector should read.
         canonical_key, derivative_sha256 = storage_key, None
+        inference_path = stored.path
 
-    # No P1 step after this reads local media, so nothing may be left on disk.
-    discard_temp_file(stored.path)
+    try:
+        signal = await detect_synthetic_video(inference_path)
+    finally:
+        # Detection is the last step that reads local media, so nothing may survive it —
+        # not on the success path, and not when it raised something unforeseen.
+        discard_temp_file(stored.path)
+        if was_normalized:
+            discard_temp_file(inference_path)
 
     try:
         analysis = persist_analysis(
@@ -334,6 +433,7 @@ async def create_analysis(
             was_normalized=was_normalized,
             derivative_storage_key=canonical_key,
             derivative_sha256=derivative_sha256,
+            signal=signal,
         )
     except SQLAlchemyError:
         try:

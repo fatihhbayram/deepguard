@@ -49,6 +49,10 @@ services:
       MINIO_SECURE: "false"
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-deepguard}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-deepguard123}
+      # Detector credentials. Absent or wrong, the upload still succeeds and the
+      # analysis records a failed NVIDIA signal.
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_SVD_FUNCTION_ID: ${NVIDIA_SVD_FUNCTION_ID:-}
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     depends_on:
