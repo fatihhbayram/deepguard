@@ -1,6 +1,8 @@
 alembic==1.19.1
 fastapi==0.141.1
+grpcio==1.76.0
 minio==7.2.20
+protobuf==6.33.6
 psycopg2-binary==2.9.12
 python-dotenv==1.2.3
 python-multipart==0.0.32
