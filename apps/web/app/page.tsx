@@ -18,6 +18,20 @@ type HealthResult =
 // Mirrors the API's AnalysisSummary. The MIME string is the one the client declared —
 // ffprobe proves the bytes are video but never confirms this value — so the field keeps
 // the name that says so.
+// The NVIDIA synthetic-video signal the API joined onto the analysis. `score` is the
+// provider's own probability, on the provider's own scale: it is displayed as returned
+// and never turned into a verdict or a risk band. It is null for every status other than
+// SUCCESS, because a detector that did not answer produced no number.
+type SyntheticVideoSignal = {
+  provider: string;
+  signal_type: string;
+  status: string;
+  score: number | null;
+  provider_version: string | null;
+  logit: number | null;
+  total_clips: number | null;
+};
+
 type AnalysisSummary = {
   id: string;
   status: string;
@@ -25,7 +39,17 @@ type AnalysisSummary = {
   original_filename: string | null;
   declared_content_type: string;
   was_normalized: boolean;
+  // Null when the analysis carries no such signal at all — a different fact from a
+  // detector that ran and failed.
+  synthetic_video: SyntheticVideoSignal | null;
 };
+
+const SIGNAL_STATUS_SUCCESS = "SUCCESS";
+
+// Shown where a detector produced no figure. Never 0%, which would read as an answer.
+const UNAVAILABLE = "N/A";
+// Shown where there is no detector result to speak of.
+const ABSENT = "—";
 
 type AnalysesResult =
   | { ok: true; analyses: AnalysisSummary[] }
@@ -44,13 +68,75 @@ function parseHealth(payload: unknown): HealthResponse | null {
   return { status, database };
 }
 
+/** A number the API may legitimately have left out, or `undefined` for anything else. */
+function parseOptionalNumber(value: unknown): number | null | undefined {
+  if (value === null) {
+    return null;
+  }
+
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * The signal on one analysis: `null` when the API reported none, `undefined` when the
+ * payload was not a signal at all. The two are kept apart because an absent signal is a
+ * real state to render, while a malformed one means the response cannot be trusted.
+ */
+function parseSignal(payload: unknown): SyntheticVideoSignal | null | undefined {
+  if (payload === null) {
+    return null;
+  }
+
+  if (typeof payload !== "object") {
+    return undefined;
+  }
+
+  const { provider, signal_type, status, score, provider_version, logit, total_clips } =
+    payload as Record<string, unknown>;
+
+  const parsedScore = parseOptionalNumber(score);
+  const parsedLogit = parseOptionalNumber(logit);
+  const parsedClips = parseOptionalNumber(total_clips);
+
+  if (
+    typeof provider !== "string" ||
+    typeof signal_type !== "string" ||
+    typeof status !== "string" ||
+    parsedScore === undefined ||
+    parsedLogit === undefined ||
+    parsedClips === undefined ||
+    !(typeof provider_version === "string" || provider_version === null)
+  ) {
+    return undefined;
+  }
+
+  return {
+    provider,
+    signal_type,
+    status,
+    score: parsedScore,
+    provider_version,
+    logit: parsedLogit,
+    total_clips: parsedClips,
+  };
+}
+
 function parseAnalysis(payload: unknown): AnalysisSummary | null {
   if (typeof payload !== "object" || payload === null) {
     return null;
   }
 
-  const { id, status, created_at, original_filename, declared_content_type, was_normalized } =
-    payload as Record<string, unknown>;
+  const {
+    id,
+    status,
+    created_at,
+    original_filename,
+    declared_content_type,
+    was_normalized,
+    synthetic_video,
+  } = payload as Record<string, unknown>;
+
+  const signal = parseSignal(synthetic_video);
 
   if (
     typeof id !== "string" ||
@@ -58,12 +144,21 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     typeof created_at !== "string" ||
     typeof declared_content_type !== "string" ||
     typeof was_normalized !== "boolean" ||
+    signal === undefined ||
     !(typeof original_filename === "string" || original_filename === null)
   ) {
     return null;
   }
 
-  return { id, status, created_at, original_filename, declared_content_type, was_normalized };
+  return {
+    id,
+    status,
+    created_at,
+    original_filename,
+    declared_content_type,
+    was_normalized,
+    synthetic_video: signal,
+  };
 }
 
 async function fetchHealth(): Promise<HealthResult> {
@@ -144,6 +239,35 @@ function StatusRow({ label, ok, detail }: { label: string; ok: boolean; detail: 
   );
 }
 
+/**
+ * The provider's probability as text, or why there is none.
+ *
+ * The figure is NVIDIA's, so it is shown as NVIDIA reported it, only rendered as a
+ * percentage; it is never bucketed into a risk level or read as "fake" or "real" — no
+ * part of the product owns that judgement yet. A detector that failed, timed out or
+ * returned nothing has no probability, and saying "0%" would invent one.
+ */
+function probabilityText(signal: SyntheticVideoSignal | null): string {
+  if (signal === null) {
+    return ABSENT;
+  }
+
+  if (signal.status !== SIGNAL_STATUS_SUCCESS || signal.score === null) {
+    return UNAVAILABLE;
+  }
+
+  return `${(signal.score * 100).toFixed(2)}%`;
+}
+
+/** The exact stored figure, so rounding to two decimals never hides the real number. */
+function probabilityTitle(signal: SyntheticVideoSignal | null): string | undefined {
+  if (signal === null || signal.score === null) {
+    return undefined;
+  }
+
+  return `NVIDIA score: ${signal.score}`;
+}
+
 function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
   return (
     <div className="overflow-x-auto">
@@ -155,6 +279,9 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
             <th className="py-2 pr-4 font-medium">Type</th>
             <th className="py-2 pr-4 font-medium">Status</th>
             <th className="py-2 pr-4 font-medium">Normalized</th>
+            <th className="py-2 pr-4 font-medium">NVIDIA SVD</th>
+            <th className="py-2 pr-4 font-medium">Synthetic probability</th>
+            <th className="py-2 pr-4 font-medium">Clips</th>
             <th className="py-2 font-medium">Created</th>
           </tr>
         </thead>
@@ -172,6 +299,27 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
               <td className="py-2 pr-4 font-mono text-xs">{analysis.declared_content_type}</td>
               <td className="py-2 pr-4">{analysis.status}</td>
               <td className="py-2 pr-4">{analysis.was_normalized ? "yes" : "no"}</td>
+              {/* The detector's own state, verbatim: SUCCESS, FAILED or TIMEOUT are three
+                  different forensic facts, and an analysis may carry no signal at all. */}
+              <td
+                className="py-2 pr-4 font-mono text-xs"
+                title={
+                  analysis.synthetic_video?.provider_version
+                    ? `Provider version: ${analysis.synthetic_video.provider_version}`
+                    : undefined
+                }
+              >
+                {analysis.synthetic_video?.status ?? "no signal"}
+              </td>
+              <td
+                className="py-2 pr-4 font-mono text-xs"
+                title={probabilityTitle(analysis.synthetic_video)}
+              >
+                {probabilityText(analysis.synthetic_video)}
+              </td>
+              <td className="py-2 pr-4 font-mono text-xs">
+                {analysis.synthetic_video?.total_clips ?? ABSENT}
+              </td>
               <td className="py-2 font-mono text-xs">{analysis.created_at}</td>
             </tr>
           ))}
@@ -228,6 +376,10 @@ export default async function Home() {
 
       <section className="rounded-lg border border-black/10 p-6 dark:border-white/15">
         <h2 className="text-lg font-semibold">Recent analyses</h2>
+        <p className="mt-1 text-sm opacity-70">
+          Synthetic probability is NVIDIA&apos;s own score for its synthetic-video detector,
+          shown as returned. It is not a verdict.
+        </p>
 
         {!analysesResult.ok ? (
           <p className="mt-4 text-sm text-red-600">{analysesResult.error}</p>

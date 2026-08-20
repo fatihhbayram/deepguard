@@ -6,10 +6,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -98,12 +99,36 @@ class CreatedAnalysis(BaseModel):
     derivative_sha256: str | None = None
 
 
+class SyntheticVideoSignal(BaseModel):
+    """The persisted NVIDIA synthetic-video signal, as the dashboard may see it.
+
+    The provider's own identity, state and figure, nothing derived: no risk level, no
+    verdict, and no rescaling of `score`, which stays NVIDIA's number on NVIDIA's scale.
+    `score` is null for every non-SUCCESS status, because a detector that did not answer
+    has no number and 0.0 would be a fabricated one.
+
+    The stored `metadata` document is not passed through as it stands. On a failure it
+    holds the provider exception's class name, which is internal diagnostic detail, so
+    only the two aggregate figures a successful detection produces are named here.
+    """
+
+    provider: str
+    signal_type: str
+    status: str
+    score: float | None
+    provider_version: str | None
+    # NVIDIA's aggregate logit and the number of clips it scored. Both absent unless the
+    # detection succeeded and the provider reported them.
+    logit: float | None
+    total_clips: int | None
+
+
 class AnalysisSummary(BaseModel):
     """One row of the dashboard listing.
 
     Deliberately narrower than `CreatedAnalysis`: only what the list view renders. The
     storage keys, ffprobe geometry and derivative identity are not shown there, and
-    detector, risk and report fields do not exist yet.
+    risk and report fields do not exist yet.
     """
 
     id: uuid.UUID
@@ -116,6 +141,9 @@ class AnalysisSummary(BaseModel):
     size_bytes: int
     original_sha256: str
     was_normalized: bool
+    # Null for an analysis that carries no such signal — anything stored before the
+    # detector was wired in, and any later analysis whose signal row is absent.
+    synthetic_video: SyntheticVideoSignal | None
 
 
 @dataclass(frozen=True)
@@ -465,15 +493,60 @@ async def create_analysis(
     )
 
 
+def signal_figure(metadata: object, key: str, expected: type | tuple[type, ...]) -> Any | None:
+    """Read one aggregate figure out of a stored signal's metadata document.
+
+    The document is provider-derived JSON that was written by an earlier release and read
+    back here, so nothing guarantees its shape. A missing or wrongly typed value becomes
+    null rather than an error: the figure is supporting detail, and one odd row must not
+    take the whole listing down. Booleans are rejected for an int, since `True` is one in
+    Python and "1 clip" would be a lie.
+    """
+    if not isinstance(metadata, dict):
+        return None
+
+    value = metadata.get(key)
+    if isinstance(value, bool) or not isinstance(value, expected):
+        return None
+
+    return value
+
+
+def synthetic_video_signal(row: Any) -> SyntheticVideoSignal | None:
+    """Turn the joined signal columns into the response's signal, or nothing.
+
+    The outer join leaves every signal column null when an analysis carries no NVIDIA
+    signal; `status` is the one that cannot be null on a real row, so it decides.
+    """
+    if row.signal_status is None:
+        return None
+
+    return SyntheticVideoSignal(
+        provider=row.signal_provider,
+        signal_type=row.signal_type,
+        status=row.signal_status,
+        score=row.signal_score,
+        provider_version=row.signal_provider_version,
+        # A logit that happens to be whole round-trips through JSON as an int.
+        logit=signal_figure(row.signal_metadata, "logit", (int, float)),
+        total_clips=signal_figure(row.signal_metadata, "total_clips", int),
+    )
+
+
 @router.get("/analyses", response_model=list[AnalysisSummary])
 def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSummary]:
-    """Return the most recent analyses for the dashboard listing.
+    """Return the most recent analyses, with their NVIDIA signal, for the dashboard.
 
-    An inner join is correct here rather than restrictive: an analysis and its media row
-    are written in one transaction, so an analysis without media cannot exist. Ordering
-    falls back to the id because `created_at` defaults to the transaction timestamp, which
-    two analyses committed together can share — without the tiebreak their relative order
-    would be arbitrary between calls.
+    An inner join onto the media is correct here rather than restrictive: an analysis and
+    its media row are written in one transaction, so an analysis without media cannot
+    exist. The signal is a second, outer join, because it can genuinely be missing —
+    analyses stored before the detector existed have none — and the join condition names
+    the one detector wired in, so a later provider's signal cannot multiply these rows.
+    One statement returns everything: the listing must not issue a query per analysis.
+
+    Ordering falls back to the id because `created_at` defaults to the transaction
+    timestamp, which two analyses committed together can share — without the tiebreak
+    their relative order would be arbitrary between calls.
     """
     try:
         rows = session.execute(
@@ -486,8 +559,24 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
                 MediaFile.size_bytes,
                 MediaFile.original_sha256,
                 MediaFile.was_normalized,
+                # Labelled, because `status` and `created_at` exist on both tables and the
+                # unlabelled columns would collide in the result row.
+                AnalysisSignal.provider.label("signal_provider"),
+                AnalysisSignal.signal_type.label("signal_type"),
+                AnalysisSignal.status.label("signal_status"),
+                AnalysisSignal.score.label("signal_score"),
+                AnalysisSignal.provider_version.label("signal_provider_version"),
+                AnalysisSignal.signal_metadata.label("signal_metadata"),
             )
             .join(MediaFile, MediaFile.analysis_id == Analysis.id)
+            .outerjoin(
+                AnalysisSignal,
+                and_(
+                    AnalysisSignal.analysis_id == Analysis.id,
+                    AnalysisSignal.provider == NVIDIA_PROVIDER,
+                    AnalysisSignal.signal_type == SYNTHETIC_VIDEO_SIGNAL,
+                ),
+            )
             .order_by(Analysis.created_at.desc(), Analysis.id.desc())
             .limit(RECENT_ANALYSES_LIMIT)
         ).all()
@@ -509,6 +598,7 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
             size_bytes=row.size_bytes,
             original_sha256=row.original_sha256,
             was_normalized=row.was_normalized,
+            synthetic_video=synthetic_video_signal(row),
         )
         for row in rows
     ]
