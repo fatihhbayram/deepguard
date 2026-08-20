@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 
-from app.api.analyses import RECENT_ANALYSES_LIMIT
+from app.api.analyses import DASHBOARD_SEGMENTS, RECENT_ANALYSES_LIMIT
 from app.db.session import get_session
 from app.main import app
 
@@ -45,7 +45,12 @@ EXPECTED_SIGNAL_FIELDS = {
     "provider_version",
     "logit",
     "total_clips",
+    "segments",
 }
+
+# One clip of provider evidence: the frame index NVIDIA scored and the logit it gave it.
+# No time range and no probability, because NVIDIA reports neither per clip.
+EXPECTED_SEGMENT_FIELDS = {"clip_index", "logit"}
 
 PROBABILITY = 0.7929722666740417
 FUNCTION_ID = "847b6e53-0133-452d-ab85-d7acf3ace723"
@@ -67,6 +72,7 @@ def listing_row(**overrides):
         "size_bytes": 13054,
         "original_sha256": "a" * 64,
         "was_normalized": False,
+        "signal_id": uuid.uuid4(),
         "signal_provider": "nvidia",
         "signal_type": "synthetic_video",
         "signal_status": "SUCCESS",
@@ -81,6 +87,7 @@ def listing_row(**overrides):
 def unsignalled_row(**overrides):
     """A row for an analysis the outer join found no NVIDIA signal for."""
     return listing_row(
+        signal_id=None,
         signal_provider=None,
         signal_type=None,
         signal_status=None,
@@ -102,11 +109,21 @@ def failed_signal_row(status: str, **overrides):
     )
 
 
-class FakeSession:
-    """Stand-in for a SQLAlchemy session that records the statement it was given."""
+def segment_row(signal_id, clip_index: int, logit: float):
+    """A row shaped like the one the segment select emits."""
+    return SimpleNamespace(signal_id=signal_id, clip_index=clip_index, logit=logit)
 
-    def __init__(self, rows=()):
+
+class FakeSession:
+    """Stand-in for a SQLAlchemy session that records the statements it was given.
+
+    The route issues two: the listing, then the clip evidence for the signals it found.
+    They are answered from separate row sets, in that order.
+    """
+
+    def __init__(self, rows=(), segment_rows=()):
         self.rows = list(rows)
+        self.segment_rows = list(segment_rows)
         self.execute_error = None
         self.statements = []
 
@@ -115,7 +132,9 @@ class FakeSession:
         if self.execute_error is not None:
             raise self.execute_error
 
-        return SimpleNamespace(all=lambda: self.rows)
+        rows = self.rows if len(self.statements) == 1 else self.segment_rows
+
+        return SimpleNamespace(all=lambda: rows)
 
 
 @pytest.fixture
@@ -132,9 +151,9 @@ def client(fake_session):
         yield test_client
 
 
-def compiled(session) -> str:
-    """The single statement the route issued, as literal SQL."""
-    statement = session.statements[0]
+def compiled(session, index: int = 0) -> str:
+    """One statement the route issued, as literal SQL. The listing is the first."""
+    statement = session.statements[index]
 
     return str(statement.compile(compile_kwargs={"literal_binds": True}))
 
@@ -171,6 +190,7 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
                 "provider_version": FUNCTION_ID,
                 "logit": 1.9142135381698608,
                 "total_clips": 7,
+                "segments": [],
             },
         }
     ]
@@ -256,10 +276,32 @@ def test_the_signal_is_read_in_the_same_statement_as_the_listing(client, fake_se
 
     client.get("/api/v1/analyses")
 
-    # One statement for the whole page: a query per analysis is the N+1 this must not be.
+    # The signal rides along on the listing itself rather than being fetched per analysis.
+    assert "LEFT OUTER JOIN analysis_signals" in compiled(fake_session)
+
+
+def test_the_page_costs_the_same_number_of_queries_however_many_analyses_it_holds(
+    client, fake_session
+):
+    """The N+1 guard: two statements for one analysis, and two for twenty."""
+    fake_session.rows = [listing_row()]
+    client.get("/api/v1/analyses")
+    assert len(fake_session.statements) == 2
+
+    fake_session.statements.clear()
+    fake_session.rows = [listing_row() for _ in range(20)]
+    client.get("/api/v1/analyses")
+
+    assert len(fake_session.statements) == 2
+
+
+def test_no_segment_query_is_issued_when_no_analysis_carries_a_signal(client, fake_session):
+    fake_session.rows = [unsignalled_row(), unsignalled_row()]
+
+    client.get("/api/v1/analyses")
+
+    # Nothing to look up, so the second statement is not worth its round trip.
     assert len(fake_session.statements) == 1
-    sql = compiled(fake_session)
-    assert "LEFT OUTER JOIN analysis_signals" in sql
 
 
 def test_the_signal_join_is_restricted_to_the_nvidia_synthetic_video_signal(
@@ -361,4 +403,136 @@ def test_database_failure_returns_a_controlled_503(client, fake_session):
 
     assert response.status_code == 503
     # No statement, connection string or driver detail reaches the client.
+    assert response.json() == {"detail": "analyses are temporarily unavailable"}
+
+
+def test_segment_evidence_is_exposed_on_the_signal(client, fake_session):
+    row = listing_row()
+    fake_session.rows = [row]
+    fake_session.segment_rows = [
+        segment_row(row.signal_id, 45, 2.5),
+        segment_row(row.signal_id, 12, 1.25),
+    ]
+
+    signal = client.get("/api/v1/analyses").json()[0]["synthetic_video"]
+
+    assert signal["segments"] == [
+        {"clip_index": 45, "logit": 2.5},
+        {"clip_index": 12, "logit": 1.25},
+    ]
+
+
+def test_a_segment_exposes_no_field_beyond_what_the_provider_reported(client, fake_session):
+    row = listing_row()
+    fake_session.rows = [row]
+    fake_session.segment_rows = [segment_row(row.signal_id, 45, 2.5)]
+
+    segment = client.get("/api/v1/analyses").json()[0]["synthetic_video"]["segments"][0]
+
+    # No start_time, no end_time, no score, no risk_level: NVIDIA reports a frame index
+    # and a logit for a clip, and anything else here would have been invented.
+    assert set(segment) == EXPECTED_SEGMENT_FIELDS
+
+
+def test_segment_logits_are_exposed_untransformed(client, fake_session):
+    row = listing_row()
+    fake_session.rows = [row]
+    # A raw model logit: negative, and on no bounded scale.
+    fake_session.segment_rows = [segment_row(row.signal_id, 3, -1.4362945556640625)]
+
+    segment = client.get("/api/v1/analyses").json()[0]["synthetic_video"]["segments"][0]
+
+    assert segment["logit"] == -1.4362945556640625
+
+
+def test_segments_are_capped_at_the_display_count(client, fake_session):
+    row = listing_row()
+    fake_session.rows = [row]
+    fake_session.segment_rows = [
+        segment_row(row.signal_id, index, 3.0 - index) for index in range(DASHBOARD_SEGMENTS + 4)
+    ]
+
+    signal = client.get("/api/v1/analyses").json()[0]["synthetic_video"]
+
+    assert len(signal["segments"]) == DASHBOARD_SEGMENTS
+    # The strongest survive the cap; the weakest are the ones dropped.
+    assert [segment["clip_index"] for segment in signal["segments"]] == list(
+        range(DASHBOARD_SEGMENTS)
+    )
+
+
+def test_each_analysis_receives_only_its_own_segments(client, fake_session):
+    first, second = listing_row(), listing_row()
+    fake_session.rows = [first, second]
+    fake_session.segment_rows = [
+        segment_row(first.signal_id, 1, 2.0),
+        segment_row(second.signal_id, 9, 1.0),
+        segment_row(second.signal_id, 8, 0.5),
+    ]
+
+    body = client.get("/api/v1/analyses").json()
+
+    assert body[0]["synthetic_video"]["segments"] == [{"clip_index": 1, "logit": 2.0}]
+    assert [s["clip_index"] for s in body[1]["synthetic_video"]["segments"]] == [9, 8]
+
+
+def test_a_signal_with_no_stored_segments_reports_an_empty_list(client, fake_session):
+    fake_session.rows = [listing_row()]
+    fake_session.segment_rows = []
+
+    signal = client.get("/api/v1/analyses").json()[0]["synthetic_video"]
+
+    # Empty, not null: the signal exists and simply carries no clip evidence.
+    assert signal["segments"] == []
+
+
+def test_a_failed_signal_carries_no_segments(client, fake_session):
+    fake_session.rows = [failed_signal_row("FAILED")]
+
+    signal = client.get("/api/v1/analyses").json()[0]["synthetic_video"]
+
+    assert signal["segments"] == []
+
+
+def test_the_segment_query_asks_only_for_the_listed_signals(client, fake_session):
+    row = listing_row()
+    fake_session.rows = [row, unsignalled_row()]
+
+    client.get("/api/v1/analyses")
+
+    sql = compiled(fake_session, index=1)
+    assert "analysis_segments.signal_id IN" in sql
+    # Rendered without its dashes by the literal bind.
+    assert row.signal_id.hex in sql
+    # The analysis carrying no signal contributes no id to look up.
+    assert sql.count("'") == 2
+
+
+def test_the_segment_query_orders_the_strongest_clip_first(client, fake_session):
+    fake_session.rows = [listing_row()]
+
+    client.get("/api/v1/analyses")
+
+    sql = compiled(fake_session, index=1)
+    # The clip index breaks ties, so the same evidence always reads back in one order.
+    assert (
+        "ORDER BY analysis_segments.signal_id, analysis_segments.logit DESC, "
+        "analysis_segments.clip_index" in sql
+    )
+
+
+def test_a_segment_query_failure_returns_the_same_controlled_503(client, fake_session):
+    fake_session.rows = [listing_row()]
+
+    def fail_on_the_segment_query(statement):
+        fake_session.statements.append(statement)
+        if len(fake_session.statements) == 1:
+            return SimpleNamespace(all=lambda: fake_session.rows)
+        raise OperationalError("SELECT", None, Exception("connection lost"))
+
+    fake_session.execute = fail_on_the_segment_query
+
+    response = client.get("/api/v1/analyses")
+
+    assert response.status_code == 503
     assert response.json() == {"detail": "analyses are temporarily unavailable"}

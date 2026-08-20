@@ -14,12 +14,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import inspect
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api.analyses import RECENT_ANALYSES_LIMIT
+from app.api.analyses import DASHBOARD_SEGMENTS, RECENT_ANALYSES_LIMIT
 from app.db.models import (
     ANALYSIS_STATUS_COMPLETED,
     SIGNAL_STATUS_FAILED,
     SIGNAL_STATUS_SUCCESS,
     Analysis,
+    AnalysisSegment,
     AnalysisSignal,
     MediaFile,
 )
@@ -84,7 +85,12 @@ def media_file(analysis_id: uuid.UUID, **overrides) -> MediaFile:
 def test_migration_created_the_analysis_schema(database):
     inspector = inspect(database)
 
-    assert {"analyses", "media_files", "analysis_signals"} <= set(inspector.get_table_names())
+    assert {
+        "analyses",
+        "media_files",
+        "analysis_signals",
+        "analysis_segments",
+    } <= set(inspector.get_table_names())
     assert {column["name"] for column in inspector.get_columns("analyses")} == {
         "id",
         "status",
@@ -120,6 +126,16 @@ def test_migration_created_the_analysis_schema(database):
         "provider_version",
         "status",
         "metadata",
+        "created_at",
+    }
+    # Clip evidence carries the two facts NVIDIA reports and nothing else: no start_time,
+    # no end_time, no score, no risk_level. Times would have to be invented, and a clip
+    # logit is not a probability (D019).
+    assert {column["name"] for column in inspector.get_columns("analysis_segments")} == {
+        "id",
+        "signal_id",
+        "clip_index",
+        "logit",
         "created_at",
     }
 
@@ -447,3 +463,162 @@ def test_a_failed_signal_reaches_the_listing_without_a_score(session):
     assert listed["synthetic_video"]["score"] is None
     # The provider's failure detail stays in the database and the server log.
     assert "NvidiaAuthenticationError" not in response.text
+
+
+def nvidia_segment(signal_id: uuid.UUID, clip_index: int, logit: float) -> AnalysisSegment:
+    """A clip evidence row shaped exactly like the one a detection persists."""
+    return AnalysisSegment(signal_id=signal_id, clip_index=clip_index, logit=logit)
+
+
+def test_clip_evidence_round_trips_through_postgresql(session):
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    signal = nvidia_signal(analysis.id)
+    db.add(signal)
+    db.flush()
+    db.add_all(
+        [
+            nvidia_segment(signal.id, 8, 3.5),
+            nvidia_segment(signal.id, 0, -2.25),
+        ]
+    )
+    db.commit()
+
+    with SessionLocal() as reader:
+        stored = (
+            reader.query(AnalysisSegment)
+            .filter(AnalysisSegment.signal_id == signal.id)
+            .order_by(AnalysisSegment.logit.desc())
+            .all()
+        )
+
+        assert [(row.clip_index, row.logit) for row in stored] == [(8, 3.5), (0, -2.25)]
+        # Full double precision, negative logits included, straight back out again.
+        assert stored[1].logit == -2.25
+        assert stored[0].created_at is not None
+        assert stored[0].created_at.tzinfo is not None
+
+
+def test_a_wide_frame_index_survives_postgresql(session):
+    """NVIDIA's clip index is a uint32, which overflows a 32-bit integer column."""
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    signal = nvidia_signal(analysis.id)
+    db.add(signal)
+    db.flush()
+    db.add(nvidia_segment(signal.id, 4294967295, 0.5))
+    db.commit()
+
+    with SessionLocal() as reader:
+        stored = (
+            reader.query(AnalysisSegment)
+            .filter(AnalysisSegment.signal_id == signal.id)
+            .one()
+        )
+
+        assert stored.clip_index == 4294967295
+
+
+def test_deleting_an_analysis_takes_its_clip_evidence_with_it(session):
+    """The cascade has to reach through the signal to the evidence beneath it."""
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    db.add(media_file(analysis.id))
+    signal = nvidia_signal(analysis.id)
+    db.add(signal)
+    db.flush()
+    signal_id = signal.id
+    db.add(nvidia_segment(signal_id, 8, 3.5))
+    db.commit()
+
+    db.query(Analysis).filter(Analysis.id == analysis.id).delete()
+    db.commit()
+
+    with SessionLocal() as reader:
+        assert (
+            reader.query(AnalysisSegment)
+            .filter(AnalysisSegment.signal_id == signal_id)
+            .count()
+            == 0
+        )
+
+
+def test_clip_evidence_reaches_the_listing_endpoint(session):
+    """The dashboard's segment read path, end to end against real PostgreSQL.
+
+    The fake-session suite proves the second query's shape; only a real database proves
+    the grouping hands each analysis its own evidence, strongest clip first.
+    """
+    db, created = session
+    with_clips = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    without_clips = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add_all([with_clips, without_clips])
+    db.flush()
+    created.extend([with_clips.id, without_clips.id])
+    db.add_all([media_file(with_clips.id), media_file(without_clips.id)])
+    signal = nvidia_signal(with_clips.id)
+    db.add_all([signal, nvidia_signal(without_clips.id)])
+    db.flush()
+    db.add_all(
+        [
+            nvidia_segment(signal.id, 0, -2.25),
+            nvidia_segment(signal.id, 8, 3.5),
+            nvidia_segment(signal.id, 4, 1.75),
+        ]
+    )
+    db.commit()
+
+    with TestClient(app) as client:
+        body = client.get("/api/v1/analyses").json()
+
+    listed = next(row for row in body if row["id"] == str(with_clips.id))["synthetic_video"]
+    assert listed["segments"] == [
+        {"clip_index": 8, "logit": 3.5},
+        {"clip_index": 4, "logit": 1.75},
+        {"clip_index": 0, "logit": -2.25},
+    ]
+
+    # A signal with no stored evidence claims none.
+    other = next(row for row in body if row["id"] == str(without_clips.id))
+    assert other["synthetic_video"]["segments"] == []
+
+
+def test_the_listing_returns_at_most_the_display_count_of_clips(session):
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    signal = nvidia_signal(analysis.id)
+    db.add(signal)
+    db.flush()
+    db.add_all(
+        [
+            nvidia_segment(signal.id, index, float(index))
+            for index in range(DASHBOARD_SEGMENTS + 3)
+        ]
+    )
+    db.commit()
+
+    with TestClient(app) as client:
+        body = client.get("/api/v1/analyses").json()
+
+    segments = next(row for row in body if row["id"] == str(analysis.id))["synthetic_video"][
+        "segments"
+    ]
+    assert len(segments) == DASHBOARD_SEGMENTS
+    # Trimmed from the weak end: the strongest clips are the ones that survive.
+    assert [segment["clip_index"] for segment in segments] == list(
+        range(DASHBOARD_SEGMENTS + 2, 2, -1)
+    )

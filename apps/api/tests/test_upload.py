@@ -13,8 +13,13 @@ from minio.error import S3Error
 
 from app import media, normalization, nvidia_video, request_limits, storage
 from app.api import analyses
-from app.api.analyses import CHUNK_SIZE, MAX_UPLOAD_BYTES, TEMP_FILE_PREFIX
-from app.db.models import Analysis, AnalysisSignal, MediaFile
+from app.api.analyses import (
+    CHUNK_SIZE,
+    MAX_PERSISTED_SEGMENTS,
+    MAX_UPLOAD_BYTES,
+    TEMP_FILE_PREFIX,
+)
+from app.db.models import Analysis, AnalysisSegment, AnalysisSignal, MediaFile
 from app.db.session import get_session
 from app.main import app
 from app.normalization import DERIVATIVE_TEMP_PREFIX
@@ -184,6 +189,8 @@ def fake_nvidia(monkeypatch):
     class Recorder:
         def __init__(self):
             self.error = None
+            # The per-clip evidence the provider reports back, overridable per test.
+            self.clips = (nvidia_video.NvidiaClipResult(index=0, logit=-2.25),)
             self.paths = []
             self.analysed_bytes = []
             # What the session had done by the time the detector was called. Detection
@@ -205,7 +212,7 @@ def fake_nvidia(monkeypatch):
                 total_clips=7,
                 csv_data="0,-2.25\n8,3.5\n",
                 function_id=NVIDIA_FUNCTION_ID,
-                clips=(nvidia_video.NvidiaClipResult(index=0, logit=-2.25),),
+                clips=self.clips,
             )
 
     recorder = Recorder()
@@ -230,6 +237,9 @@ class FakeSession:
 
     def add(self, instance):
         self.added.append(instance)
+
+    def add_all(self, instances):
+        self.added.extend(instances)
 
     def flush(self):
         # The real flush is what assigns the Python-side UUID defaults.
@@ -1225,6 +1235,141 @@ def test_signal_metadata_keeps_the_aggregate_figures_only(
         "logit": NVIDIA_LOGIT,
         "total_clips": 7,
     }
+
+
+def _all_added(session, model):
+    return [row for row in session.added if isinstance(row, model)]
+
+
+def test_clip_evidence_is_persisted_as_segments(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    fake_nvidia.clips = (
+        nvidia_video.NvidiaClipResult(index=0, logit=-2.25),
+        nvidia_video.NvidiaClipResult(index=8, logit=3.5),
+    )
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 200
+    segments = _all_added(fake_session, AnalysisSegment)
+    # Strongest first, exactly the figures NVIDIA reported for those clips.
+    assert [(s.clip_index, s.logit) for s in segments] == [(8, 3.5), (0, -2.25)]
+
+
+def test_segments_belong_to_the_signal_that_produced_them(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    signal = _added(fake_session, AnalysisSignal)
+    assert signal.id is not None
+    for segment in _all_added(fake_session, AnalysisSegment):
+        assert segment.signal_id == signal.id
+
+
+def test_segments_are_written_in_the_same_transaction_as_the_analysis(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    # One commit covers analysis, media, signal and evidence: either all of it is stored
+    # or none of it is. A signal whose clips went missing would misreport the detection.
+    assert fake_session.commits == 1
+    assert _all_added(fake_session, AnalysisSegment)
+
+
+def test_persisted_segments_are_capped(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    # A long video scores far more clips than may be kept.
+    fake_nvidia.clips = tuple(
+        nvidia_video.NvidiaClipResult(index=index, logit=float(index))
+        for index in range(MAX_PERSISTED_SEGMENTS + 50)
+    )
+
+    post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    segments = _all_added(fake_session, AnalysisSegment)
+    assert len(segments) == MAX_PERSISTED_SEGMENTS
+    # The cap keeps the strongest evidence and drops the weakest.
+    assert segments[0].logit == float(MAX_PERSISTED_SEGMENTS + 49)
+    assert min(s.logit for s in segments) == float(50)
+
+
+def test_the_full_clip_count_is_still_reported_when_segments_were_capped(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    fake_nvidia.clips = tuple(
+        nvidia_video.NvidiaClipResult(index=index, logit=float(index))
+        for index in range(MAX_PERSISTED_SEGMENTS + 50)
+    )
+
+    post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    # `total_clips` is the provider's own count, so a truncated set of rows can never be
+    # mistaken for the whole of what NVIDIA scored.
+    assert _added(fake_session, AnalysisSignal).signal_metadata["total_clips"] == 7
+
+
+def test_segment_logits_are_persisted_untransformed(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    fake_nvidia.clips = (nvidia_video.NvidiaClipResult(index=3, logit=-1.4362945556640625),)
+
+    post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    segment = _all_added(fake_session, AnalysisSegment)[0]
+    # A raw model logit, not rescaled into a probability and not rounded.
+    assert segment.logit == -1.4362945556640625
+    assert segment.clip_index == 3
+
+
+def test_ties_are_broken_by_clip_index_so_the_selection_is_deterministic(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    fake_nvidia.clips = (
+        nvidia_video.NvidiaClipResult(index=9, logit=1.5),
+        nvidia_video.NvidiaClipResult(index=2, logit=1.5),
+        nvidia_video.NvidiaClipResult(index=5, logit=1.5),
+    )
+
+    post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    segments = _all_added(fake_session, AnalysisSegment)
+    assert [s.clip_index for s in segments] == [2, 5, 9]
+
+
+def test_a_detection_reporting_no_clips_persists_no_segments(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia
+):
+    fake_nvidia.clips = ()
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 200
+    # The signal still stands on its own aggregate figures.
+    assert _added(fake_session, AnalysisSignal).status == "SUCCESS"
+    assert _all_added(fake_session, AnalysisSegment) == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        nvidia_video.NvidiaProviderTimeout("deadline exceeded"),
+        nvidia_video.NvidiaAuthenticationError("rejected"),
+    ],
+)
+def test_a_failed_detection_persists_no_segments(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_nvidia, error
+):
+    fake_nvidia.error = error
+
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 200
+    # A detector that did not answer produced no clip evidence, and none is invented.
+    assert _all_added(fake_session, AnalysisSegment) == []
 
 
 def test_detector_timeout_still_returns_the_analysis(

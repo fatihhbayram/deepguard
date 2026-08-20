@@ -52,6 +52,7 @@ Stores normalized provider evidence:
 provider
 signal_type
 score nullable
+logit nullable
 risk_level
 provider_version
 status
@@ -64,9 +65,11 @@ Stores timeline evidence:
 
 ```text
 signal_id
-start_time
-end_time
+frame_index nullable
+start_time nullable
+end_time nullable
 score nullable
+logit nullable
 risk_level nullable
 metadata JSON
 ```

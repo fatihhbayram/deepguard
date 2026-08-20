@@ -29,9 +29,13 @@ persisted, and the resulting analysis is listed in the dashboard. What runs toda
 - a detector that fails, times out or is misconfigured does not fail the upload: the failure
   is itself persisted as a signal, so the gap in the evidence is visible rather than silent —
   a fault on this server's own side is not treated that way and still surfaces as an error;
-- the completed analysis, its media facts and that signal are written to PostgreSQL in one
-  transaction, after detection has finished — no transaction is held open across the call;
-- `GET /api/v1/analyses` returns the most recent analyses;
+- the clips NVIDIA scored inside the video are kept as evidence in their own right, capped at
+  the strongest twenty per detection, each with the provider's frame index and raw logit;
+- the completed analysis, its media facts, that signal and its clip evidence are written to
+  PostgreSQL in one transaction, after detection has finished — no transaction is held open
+  across the call;
+- `GET /api/v1/analyses` returns the most recent analyses with their signal and its strongest
+  clips;
 - the Next.js dashboard renders that list beside the connectivity status.
 
 No provenance, risk classification or reporting functionality is implemented yet. Signals
@@ -154,12 +158,18 @@ metadata, `was_normalized`, and the derivative's storage key and SHA-256. When t
 is already provider-compatible, no derivative is produced: `was_normalized` is `false`,
 `derivative_storage_key` is the original's key and `derivative_sha256` is `null`.
 
-The NVIDIA signal is not in that response — it is evidence attached to the analysis, and the
-dashboard has yet to display it. It can be read directly:
+The NVIDIA signal is not in that response — it is evidence attached to the analysis, returned
+by `GET /api/v1/analyses` and shown on the dashboard. It can also be read directly:
 
 ```sql
 SELECT provider, signal_type, status, score, metadata FROM analysis_signals;
+
+SELECT clip_index, logit FROM analysis_segments ORDER BY logit DESC;
 ```
+
+A segment is one clip the detector scored. NVIDIA reports a frame index and a raw logit per
+clip and no timestamps, so those two figures are what is stored — the logit is not a
+probability and is not comparable with the signal's `score`.
 
 Detection needs `NVIDIA_API_KEY` and `NVIDIA_SVD_FUNCTION_ID` in `.env`. Without them the
 upload still succeeds and the analysis records a `FAILED` signal instead of a score.
