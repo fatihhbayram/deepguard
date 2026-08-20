@@ -18,6 +18,14 @@ type HealthResult =
 // Mirrors the API's AnalysisSummary. The MIME string is the one the client declared —
 // ffprobe proves the bytes are video but never confirms this value — so the field keeps
 // the name that says so.
+// One clip NVIDIA scored inside the video. `clip_index` is the provider's frame index for
+// the clip's middle frame and `logit` its raw model output — there is no time range and no
+// probability here, because NVIDIA reports neither per clip.
+type SegmentEvidence = {
+  clip_index: number;
+  logit: number;
+};
+
 // The NVIDIA synthetic-video signal the API joined onto the analysis. `score` is the
 // provider's own probability, on the provider's own scale: it is displayed as returned
 // and never turned into a verdict or a risk band. It is null for every status other than
@@ -30,6 +38,9 @@ type SyntheticVideoSignal = {
   provider_version: string | null;
   logit: number | null;
   total_clips: number | null;
+  // The strongest few clips behind the aggregate, highest logit first. Empty whenever the
+  // detection produced none.
+  segments: SegmentEvidence[];
 };
 
 type AnalysisSummary = {
@@ -78,6 +89,40 @@ function parseOptionalNumber(value: unknown): number | null | undefined {
 }
 
 /**
+ * The clip evidence on one signal, or `undefined` if it is not a list of real clips.
+ *
+ * A malformed entry invalidates the whole list rather than being skipped: silently
+ * dropping one clip would misrepresent what the detector reported, and evidence that
+ * cannot be trusted is not shown at all.
+ */
+function parseSegments(payload: unknown): SegmentEvidence[] | undefined {
+  if (!Array.isArray(payload)) {
+    return undefined;
+  }
+
+  const segments: SegmentEvidence[] = [];
+  for (const entry of payload) {
+    if (typeof entry !== "object" || entry === null) {
+      return undefined;
+    }
+
+    const { clip_index, logit } = entry as Record<string, unknown>;
+    if (
+      typeof clip_index !== "number" ||
+      !Number.isFinite(clip_index) ||
+      typeof logit !== "number" ||
+      !Number.isFinite(logit)
+    ) {
+      return undefined;
+    }
+
+    segments.push({ clip_index, logit });
+  }
+
+  return segments;
+}
+
+/**
  * The signal on one analysis: `null` when the API reported none, `undefined` when the
  * payload was not a signal at all. The two are kept apart because an absent signal is a
  * real state to render, while a malformed one means the response cannot be trusted.
@@ -91,12 +136,21 @@ function parseSignal(payload: unknown): SyntheticVideoSignal | null | undefined 
     return undefined;
   }
 
-  const { provider, signal_type, status, score, provider_version, logit, total_clips } =
-    payload as Record<string, unknown>;
+  const {
+    provider,
+    signal_type,
+    status,
+    score,
+    provider_version,
+    logit,
+    total_clips,
+    segments,
+  } = payload as Record<string, unknown>;
 
   const parsedScore = parseOptionalNumber(score);
   const parsedLogit = parseOptionalNumber(logit);
   const parsedClips = parseOptionalNumber(total_clips);
+  const parsedSegments = parseSegments(segments);
 
   if (
     typeof provider !== "string" ||
@@ -105,6 +159,7 @@ function parseSignal(payload: unknown): SyntheticVideoSignal | null | undefined 
     parsedScore === undefined ||
     parsedLogit === undefined ||
     parsedClips === undefined ||
+    parsedSegments === undefined ||
     !(typeof provider_version === "string" || provider_version === null)
   ) {
     return undefined;
@@ -118,6 +173,7 @@ function parseSignal(payload: unknown): SyntheticVideoSignal | null | undefined 
     provider_version,
     logit: parsedLogit,
     total_clips: parsedClips,
+    segments: parsedSegments,
   };
 }
 
@@ -268,6 +324,35 @@ function probabilityTitle(signal: SyntheticVideoSignal | null): string | undefin
   return `NVIDIA score: ${signal.score}`;
 }
 
+/**
+ * The strongest clips the detector scored inside one video, highest logit first.
+ *
+ * Deliberately a plain list. The figure shown is NVIDIA's raw per-clip logit, on the
+ * model's own unbounded scale — it is not a percentage and is not comparable with the
+ * aggregate probability beside it, so it is neither rescaled nor bucketed. The frame index
+ * is shown as the frame index it is: NVIDIA reports no timestamps for a clip, and turning
+ * one into a time would be inventing a figure the provider never gave.
+ */
+function ClipEvidence({ signal }: { signal: SyntheticVideoSignal | null }) {
+  if (signal === null) {
+    return <>{ABSENT}</>;
+  }
+
+  if (signal.segments.length === 0) {
+    return <>{UNAVAILABLE}</>;
+  }
+
+  return (
+    <ul className="space-y-0.5">
+      {signal.segments.map((segment) => (
+        <li key={segment.clip_index} title={`NVIDIA clip logit: ${segment.logit}`}>
+          frame {segment.clip_index} · {segment.logit.toFixed(2)}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
   return (
     <div className="overflow-x-auto">
@@ -282,6 +367,7 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
             <th className="py-2 pr-4 font-medium">NVIDIA SVD</th>
             <th className="py-2 pr-4 font-medium">Synthetic probability</th>
             <th className="py-2 pr-4 font-medium">Clips</th>
+            <th className="py-2 pr-4 font-medium">Strongest clips (logit)</th>
             <th className="py-2 font-medium">Created</th>
           </tr>
         </thead>
@@ -319,6 +405,9 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
               </td>
               <td className="py-2 pr-4 font-mono text-xs">
                 {analysis.synthetic_video?.total_clips ?? ABSENT}
+              </td>
+              <td className="py-2 pr-4 align-top font-mono text-xs whitespace-nowrap">
+                <ClipEvidence signal={analysis.synthetic_video} />
               </td>
               <td className="py-2 font-mono text-xs">{analysis.created_at}</td>
             </tr>
@@ -379,6 +468,11 @@ export default async function Home() {
         <p className="mt-1 text-sm opacity-70">
           Synthetic probability is NVIDIA&apos;s own score for its synthetic-video detector,
           shown as returned. It is not a verdict.
+        </p>
+        <p className="mt-1 text-sm opacity-70">
+          Strongest clips are the highest-scoring of the clips NVIDIA examined, identified by
+          frame index because the detector reports no timestamps. The figure is its raw model
+          logit, not a probability and not comparable with the percentage beside it.
         </p>
 
         {!analysesResult.ok ? (

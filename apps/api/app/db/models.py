@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -140,10 +140,56 @@ class AnalysisSignal(Base):
 
     # The provider's supporting figures, kept as the small JSON document they are rather
     # than as columns invented per provider. Timeline evidence is not stored here; it
-    # belongs in the `analysis_segments` table of a later phase.
+    # belongs in `analysis_segments`.
     signal_metadata: Mapped[dict[str, Any] | None] = mapped_column(
         "metadata", JSONB, nullable=True
     )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AnalysisSegment(Base):
+    """One piece of within-video evidence behind a signal, as the provider reported it.
+
+    NVIDIA's synthetic-video detector scores the video in clips and reports, per clip, a
+    frame index and a raw model logit — and nothing else. Those two facts are the columns
+    here, because they are the two facts that exist.
+
+    There is deliberately no `start_time`/`end_time` pair. `docs/planning/DATA_MODEL.md`
+    describes a segment in seconds, but this provider reports no times, and converting a
+    frame index into one would mean inventing a figure NVIDIA never gave. The frame index
+    is stored as the frame index it is; a provider that really does report time ranges can
+    add those columns when one exists (D019).
+
+    There is likewise no `score` column. The clip figure is a raw logit on the model's own
+    scale, not a probability like `AnalysisSignal.score`, and putting the two in
+    identically named columns would invite exactly the comparison that rule 11 forbids.
+
+    Rows hang off the signal rather than the analysis, because a clip logit is only
+    meaningful as evidence for the detector run that produced it.
+    """
+
+    __tablename__ = "analysis_segments"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    signal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("analysis_signals.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # The frame index of the clip's middle frame, exactly as NVIDIA reported it. The
+    # provider's field is a uint32, which outgrows a 32-bit column, so it is stored wide.
+    clip_index: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    # The provider's raw model output for this clip. Untransformed: not a probability,
+    # not rescaled, not rounded.
+    logit: Mapped[float] = mapped_column(Float, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

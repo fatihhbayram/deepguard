@@ -20,6 +20,7 @@ from app.db.models import (
     SIGNAL_STATUS_SUCCESS,
     SIGNAL_STATUS_TIMEOUT,
     Analysis,
+    AnalysisSegment,
     AnalysisSignal,
     MediaFile,
 )
@@ -31,7 +32,12 @@ from app.normalization import (
     needs_normalization,
     normalize_to_mp4,
 )
-from app.nvidia_video import NvidiaProviderError, NvidiaProviderTimeout, analyze_video
+from app.nvidia_video import (
+    NvidiaClipResult,
+    NvidiaProviderError,
+    NvidiaProviderTimeout,
+    analyze_video,
+)
 from app.storage import derivative_key, store_derivative, store_original
 
 logger = logging.getLogger(__name__)
@@ -51,6 +57,18 @@ RECENT_ANALYSES_LIMIT = 50
 # question — whether the video is synthetic — so the pair is a constant, not a lookup.
 NVIDIA_PROVIDER = "nvidia"
 SYNTHETIC_VIDEO_SIGNAL = "synthetic_video"
+
+# How many clip results one detection may leave behind. NVIDIA scores a clip every few
+# frames, so a long video produces thousands and persisting all of them would let one
+# provider's output grow the database without limit. The strongest evidence is kept and
+# the rest is dropped; `total_clips` on the signal records how many there were, so a
+# truncated set is never mistaken for the whole one (D019).
+MAX_PERSISTED_SEGMENTS = 20
+
+# How many of those the listing hands to the dashboard per analysis. The list view shows
+# the strongest few as evidence that the detector looked inside the video; a full timeline
+# needs a detail page, which no phase has built yet.
+DASHBOARD_SEGMENTS = 5
 
 
 def discard_temp_file(path: str | Path) -> None:
@@ -99,6 +117,18 @@ class CreatedAnalysis(BaseModel):
     derivative_sha256: str | None = None
 
 
+class SegmentEvidence(BaseModel):
+    """One clip the provider scored, as the provider scored it.
+
+    `clip_index` is NVIDIA's frame index for the clip's middle frame, and `logit` its raw
+    model output. There is no time range and no probability here, because NVIDIA reports
+    neither for a clip; both would have to be invented to appear.
+    """
+
+    clip_index: int
+    logit: float
+
+
 class SyntheticVideoSignal(BaseModel):
     """The persisted NVIDIA synthetic-video signal, as the dashboard may see it.
 
@@ -121,6 +151,10 @@ class SyntheticVideoSignal(BaseModel):
     # detection succeeded and the provider reported them.
     logit: float | None
     total_clips: int | None
+    # The strongest few clips behind the aggregate, highest logit first. Empty for a
+    # detection that produced none — a failure, or a provider that reported no clips.
+    # Compare against `total_clips` to see how much of the evidence this is.
+    segments: list[SegmentEvidence]
 
 
 class AnalysisSummary(BaseModel):
@@ -245,7 +279,27 @@ async def create_derivative(
     return key, derivative.sha256, derivative.path
 
 
-async def detect_synthetic_video(file_path: Path) -> AnalysisSignal:
+def strongest_clips(clips: tuple[NvidiaClipResult, ...]) -> list[AnalysisSegment]:
+    """The provider's most strongly scored clips, capped at what may be persisted.
+
+    Ranking is by NVIDIA's own logit, descending: a higher logit is the provider saying
+    this clip looks more synthetic, so keeping the top of that ordering keeps the evidence
+    a reader would actually want to see when the aggregate looks suspicious. The clip
+    index breaks ties, so the same detection always yields the same rows.
+
+    This is a selection, not a judgement. No threshold decides which clips are "suspicious"
+    and nothing here is classified — the figures are handed on exactly as NVIDIA sent them,
+    and what they mean is still nobody's call in this codebase.
+    """
+    ranked = sorted(clips, key=lambda clip: (-clip.logit, clip.index))
+
+    return [
+        AnalysisSegment(clip_index=clip.index, logit=clip.logit)
+        for clip in ranked[:MAX_PERSISTED_SEGMENTS]
+    ]
+
+
+async def detect_synthetic_video(file_path: Path) -> tuple[AnalysisSignal, list[AnalysisSegment]]:
     """Ask NVIDIA about the local artifact and turn the outcome into forensic evidence.
 
     Every *provider* failure becomes a signal rather than an exception. A detector that
@@ -260,9 +314,12 @@ async def detect_synthetic_video(file_path: Path) -> AnalysisSignal:
 
     NVIDIA's probability is written down exactly as returned, on NVIDIA's own scale.
     Interpreting it — the `risk_level` column — is not this task's, or this layer's, job,
-    so it stays null. `metadata` keeps only NVIDIA's two aggregate figures; the clip
-    table it also returns is timeline evidence and belongs in `analysis_segments`, not
-    dumped here as unbounded provider output.
+    so it stays null. `metadata` keeps only NVIDIA's two aggregate figures; the clip table
+    it also returns is timeline evidence and travels separately, as `analysis_segments`
+    rows, rather than being dumped into the JSON column as unbounded provider output.
+
+    Returns the signal and the clip evidence behind it. A failure has no clip evidence:
+    the list is empty, never a placeholder row.
     """
     signal = AnalysisSignal(
         provider=NVIDIA_PROVIDER,
@@ -277,7 +334,7 @@ async def detect_synthetic_video(file_path: Path) -> AnalysisSignal:
         logger.warning("NVIDIA synthetic-video detection timed out.", exc_info=True)
         signal.status = SIGNAL_STATUS_TIMEOUT
         signal.signal_metadata = {"error": type(error).__name__}
-        return signal
+        return signal, []
     except NvidiaProviderError as error:
         # Every other provider-side outcome — rejected credentials, an unreachable
         # service, a truncated stream — is one status. Telling them apart in the schema
@@ -287,7 +344,7 @@ async def detect_synthetic_video(file_path: Path) -> AnalysisSignal:
         signal.status = SIGNAL_STATUS_FAILED
         # The failure kind, never NVIDIA's message: that text can quote request detail.
         signal.signal_metadata = {"error": type(error).__name__}
-        return signal
+        return signal, []
 
     signal.status = SIGNAL_STATUS_SUCCESS
     # Untransformed and unrounded. This is NVIDIA's number, not DeepGuard's.
@@ -295,7 +352,7 @@ async def detect_synthetic_video(file_path: Path) -> AnalysisSignal:
     signal.provider_version = result.function_id
     signal.signal_metadata = {"logit": result.logit, "total_clips": result.total_clips}
 
-    return signal
+    return signal, strongest_clips(result.clips)
 
 
 def persist_analysis(
@@ -310,13 +367,15 @@ def persist_analysis(
     derivative_storage_key: str,
     derivative_sha256: str | None,
     signal: AnalysisSignal,
+    segments: list[AnalysisSegment],
 ) -> Analysis:
-    """Write the completed analysis, its media and its detector signal in one transaction.
+    """Write the completed analysis, its media and its detector evidence in one transaction.
 
     Called only once the whole pipeline has run, so the row is complete the moment it
     exists — including the evidence, which is why the signal is written here rather than
-    appended afterwards. Either all three rows exist or none does; an analysis whose
-    detector result silently went missing would be worse than no analysis at all.
+    appended afterwards. Either every row exists or none does; an analysis whose detector
+    result silently went missing would be worse than no analysis at all, and a signal
+    whose clip evidence went missing would misreport how much the detector actually said.
 
     Detection has already finished by the time this is called, so the transaction lasts
     as long as three inserts and never spans the minutes NVIDIA can take.
@@ -354,6 +413,14 @@ def persist_analysis(
     signal.analysis_id = analysis.id
     session.add(signal)
 
+    if segments:
+        # The segments hang off the signal, so its id has to exist before they can name
+        # it — a second flush inside the same transaction, not a second transaction.
+        session.flush()
+        for segment in segments:
+            segment.signal_id = signal.id
+        session.add_all(segments)
+
     session.commit()
 
     return analysis
@@ -380,8 +447,9 @@ async def create_analysis(
     A failure to read our own staged artifact is a server fault, not a detector one, and
     is the exception: it surfaces as a 500 like any other broken-machine condition.
 
-    The analysis, its media and the signal are persisted last, in one transaction, once
-    nothing is left on local disk. On failure the temp files are dropped; the stored
+    The analysis, its media, the signal and the clip evidence behind it are persisted
+    last, in one transaction, once nothing is left on local disk. On failure the temp
+    files are dropped; the stored
     objects are kept, because their content-addressed keys may be shared with an earlier
     analysis.
     """
@@ -442,7 +510,7 @@ async def create_analysis(
         inference_path = stored.path
 
     try:
-        signal = await detect_synthetic_video(inference_path)
+        signal, segments = await detect_synthetic_video(inference_path)
     finally:
         # Detection is the last step that reads local media, so nothing may survive it —
         # not on the success path, and not when it raised something unforeseen.
@@ -462,6 +530,7 @@ async def create_analysis(
             derivative_storage_key=canonical_key,
             derivative_sha256=derivative_sha256,
             signal=signal,
+            segments=segments,
         )
     except SQLAlchemyError:
         try:
@@ -512,7 +581,9 @@ def signal_figure(metadata: object, key: str, expected: type | tuple[type, ...])
     return value
 
 
-def synthetic_video_signal(row: Any) -> SyntheticVideoSignal | None:
+def synthetic_video_signal(
+    row: Any, segments: list[SegmentEvidence]
+) -> SyntheticVideoSignal | None:
     """Turn the joined signal columns into the response's signal, or nothing.
 
     The outer join leaves every signal column null when an analysis carries no NVIDIA
@@ -530,7 +601,48 @@ def synthetic_video_signal(row: Any) -> SyntheticVideoSignal | None:
         # A logit that happens to be whole round-trips through JSON as an int.
         logit=signal_figure(row.signal_metadata, "logit", (int, float)),
         total_clips=signal_figure(row.signal_metadata, "total_clips", int),
+        segments=segments,
     )
+
+
+def strongest_segments(
+    session: Session, signal_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[SegmentEvidence]]:
+    """Fetch the top clips for every listed signal at once, grouped by signal.
+
+    One statement covers the whole page, however many analyses it holds: the listing must
+    not issue a query per analysis, and a correlated per-signal limit would do exactly
+    that. Persisted evidence is already capped per signal (`MAX_PERSISTED_SEGMENTS`), so
+    the bounded set is read back and trimmed to the display count here rather than in SQL.
+
+    Signals with no stored evidence are simply absent from the result.
+    """
+    if not signal_ids:
+        return {}
+
+    rows = session.execute(
+        select(
+            AnalysisSegment.signal_id,
+            AnalysisSegment.clip_index,
+            AnalysisSegment.logit,
+        )
+        .where(AnalysisSegment.signal_id.in_(signal_ids))
+        # The same ordering the evidence was selected by, so the strongest clip leads and
+        # the sequence never shifts between calls.
+        .order_by(
+            AnalysisSegment.signal_id,
+            AnalysisSegment.logit.desc(),
+            AnalysisSegment.clip_index,
+        )
+    ).all()
+
+    grouped: dict[uuid.UUID, list[SegmentEvidence]] = {}
+    for row in rows:
+        found = grouped.setdefault(row.signal_id, [])
+        if len(found) < DASHBOARD_SEGMENTS:
+            found.append(SegmentEvidence(clip_index=row.clip_index, logit=row.logit))
+
+    return grouped
 
 
 @router.get("/analyses", response_model=list[AnalysisSummary])
@@ -542,7 +654,10 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
     exist. The signal is a second, outer join, because it can genuinely be missing —
     analyses stored before the detector existed have none — and the join condition names
     the one detector wired in, so a later provider's signal cannot multiply these rows.
-    One statement returns everything: the listing must not issue a query per analysis.
+
+    Two statements serve the whole page — the analyses, then the clip evidence for every
+    signal on it. Both are fixed in number: neither grows with how many analyses are
+    listed, so there is no query per analysis.
 
     Ordering falls back to the id because `created_at` defaults to the transaction
     timestamp, which two analyses committed together can share — without the tiebreak
@@ -561,6 +676,7 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
                 MediaFile.was_normalized,
                 # Labelled, because `status` and `created_at` exist on both tables and the
                 # unlabelled columns would collide in the result row.
+                AnalysisSignal.id.label("signal_id"),
                 AnalysisSignal.provider.label("signal_provider"),
                 AnalysisSignal.signal_type.label("signal_type"),
                 AnalysisSignal.status.label("signal_status"),
@@ -580,6 +696,10 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
             .order_by(Analysis.created_at.desc(), Analysis.id.desc())
             .limit(RECENT_ANALYSES_LIMIT)
         ).all()
+
+        segments = strongest_segments(
+            session, [row.signal_id for row in rows if row.signal_id is not None]
+        )
     except SQLAlchemyError:
         # Statements, connection strings and driver errors stay in the server log.
         logger.exception("Reading the analysis listing failed.")
@@ -598,7 +718,7 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
             size_bytes=row.size_bytes,
             original_sha256=row.original_sha256,
             was_normalized=row.was_normalized,
-            synthetic_video=synthetic_video_signal(row),
+            synthetic_video=synthetic_video_signal(row, segments.get(row.signal_id, [])),
         )
         for row in rows
     ]
