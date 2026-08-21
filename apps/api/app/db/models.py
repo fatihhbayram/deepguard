@@ -245,22 +245,34 @@ class AnalysisSignal(Base):
 class AnalysisSegment(Base):
     """One piece of within-video evidence behind a signal, as the provider reported it.
 
-    NVIDIA's synthetic-video detector scores the video in clips and reports, per clip, a
-    frame index and a raw model logit — and nothing else. Those two facts are the columns
-    here, because they are the two facts that exist.
+    Two evidence sources write rows here and they describe the video in different units,
+    so the columns come in two groups and a row fills exactly one of them. Which group is
+    populated follows from the parent signal's `signal_type`; nothing is duplicated into
+    the other group's columns to make the table look uniform, because a filled-in figure
+    a provider never gave is a fabricated one (rule 11).
 
-    There is deliberately no `start_time`/`end_time` pair. `docs/planning/DATA_MODEL.md`
-    describes a segment in seconds, but this provider reports no times, and converting a
-    frame index into one would mean inventing a figure NVIDIA never gave. The frame index
-    is stored as the frame index it is; a provider that really does report time ranges can
-    add those columns when one exists (D019).
+    Clip evidence — `synthetic_video`. NVIDIA's synthetic-video detector scores the video
+    in clips and reports, per clip, a frame index and a raw model logit, and nothing else.
+    It reports no times at all, so `start_time`/`end_time` stay null on these rows:
+    converting its frame index into seconds would mean inventing a figure NVIDIA never
+    gave (D019). This is why `clip_index` and `logit` are nullable rather than required —
+    they were `NOT NULL` while this was the only source, and P5-T3 widened them rather
+    than making the second source carry placeholder values.
 
-    There is likewise no `score` column. The clip figure is a raw logit on the model's own
-    scale, not a probability like `AnalysisSignal.score`, and putting the two in
-    identically named columns would invite exactly the comparison that rule 11 forbids.
+    Temporal evidence — `active_speaker`. NVIDIA's Active Speaker NIM reports per *frame*
+    whether a tracked face is speaking, and contiguous runs of that are aggregated into
+    real time ranges before they reach this table. Those rows carry `start_time`/`end_time`
+    in seconds plus the identity the range is about, and leave `clip_index`/`logit` null:
+    there is no clip and no logit in an active-speaker result.
 
-    Rows hang off the signal rather than the analysis, because a clip logit is only
-    meaningful as evidence for the detector run that produced it.
+    There is deliberately no `score` column for either. The clip figure is a raw logit on
+    the model's own scale rather than a probability like `AnalysisSignal.score`, and an
+    active-speaker range has no number attached at all — NVIDIA's per-frame
+    `face_detection_confidence` is confidence in having found a face, not in that face
+    speaking, and storing it in a `score` column would advertise it as the latter.
+
+    Rows hang off the signal rather than the analysis, because either kind of evidence is
+    only meaningful for the detector run that produced it.
     """
 
     __tablename__ = "analysis_segments"
@@ -277,11 +289,29 @@ class AnalysisSegment(Base):
 
     # The frame index of the clip's middle frame, exactly as NVIDIA reported it. The
     # provider's field is a uint32, which outgrows a 32-bit column, so it is stored wide.
-    clip_index: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # Null on evidence that is not clip-scored.
+    clip_index: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     # The provider's raw model output for this clip. Untransformed: not a probability,
-    # not rescaled, not rounded.
-    logit: Mapped[float] = mapped_column(Float, nullable=False)
+    # not rescaled, not rounded. Null on evidence that carries no logit.
+    logit: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # The time range this row covers, in seconds from the start of the analysed video.
+    # Null on evidence the provider reported no times for.
+    start_time: Mapped[float | None] = mapped_column(Float, nullable=True)
+    end_time: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Who the range is about, which is what makes an active-speaker segment readable: a
+    # time range on its own only says "someone was speaking".
+    #
+    # `face_id` is NVIDIA's own identifier for the face it tracked across frames, stored
+    # wide for the same uint32 reason as `clip_index`. `speaker_label` is pyannote's label
+    # for the voice NVIDIA matched that face to — its own string, kept as produced, never
+    # the integer this codebase assigned it for NVIDIA's wire format. It is null when
+    # NVIDIA matched the face to no diarized voice at all, which is a real observation
+    # about the frame rather than missing data.
+    face_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    speaker_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
