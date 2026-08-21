@@ -197,6 +197,35 @@ def test_analysis_and_media_round_trip_through_postgresql(session):
         assert stored_media.derivative_sha256 == original.derivative_sha256
 
 
+def test_a_media_row_may_be_committed_before_its_derivative_exists(session):
+    """The schema has to be able to say "a derivative is owed but does not exist yet".
+
+    Since P4-F2 the transcode runs in the worker, so an upload that needs a derivative
+    commits before there is one. A NOT NULL column would have forced a placeholder key
+    naming an object nobody ever stored.
+    """
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_QUEUED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(
+        media_file(
+            analysis.id,
+            was_normalized=True,
+            derivative_storage_key=None,
+            derivative_sha256=None,
+        )
+    )
+    db.commit()
+
+    with SessionLocal() as reader:
+        stored = reader.query(MediaFile).filter_by(analysis_id=analysis.id).one()
+        assert stored.was_normalized is True
+        assert stored.derivative_storage_key is None
+        assert stored.derivative_sha256 is None
+
+
 def test_media_without_a_derivative_persists_null(session):
     db, created = session
     analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)

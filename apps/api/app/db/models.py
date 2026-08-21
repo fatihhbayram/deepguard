@@ -114,11 +114,25 @@ class MediaFile(Base):
     pix_fmt: Mapped[str | None] = mapped_column(String(32), nullable=True)
     constant_frame_rate: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
-    # The object downstream inference should read. When the original was already
-    # canonical no second artifact exists, so this is the original's key and the
-    # derivative hash stays empty rather than repeating the original's identity.
+    # Whether this media has to be transcoded before a detector can read it. Decided at
+    # upload from the probe, because that decision needs `major_brand` and no column
+    # holds it — the worker could not re-derive it from this table. Past tense is
+    # deliberate even though the transcode happens later: it describes the artifact the
+    # analysis ends up being detected against, and an analysis whose transcode never
+    # succeeded never completes.
     was_normalized: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    derivative_storage_key: Mapped[str] = mapped_column(String(512), nullable=False)
+
+    # The object downstream inference should read.
+    #
+    # Null while a derivative is still owed. Since P4-F2 the transcode runs in the worker,
+    # so an upload that needs one commits without it and the worker fills both columns in
+    # the transaction that finishes the job — writing a key here beforehand would name an
+    # object that does not exist and might never (D020).
+    #
+    # When the original was already canonical no second artifact is ever produced, so this
+    # is the original's own key from the moment of upload and the derivative hash stays
+    # empty rather than repeating the original's identity.
+    derivative_storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     derivative_sha256: Mapped[str | None] = mapped_column(
         String(SHA256_HEX_LENGTH), nullable=True
     )

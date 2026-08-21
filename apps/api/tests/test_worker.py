@@ -9,6 +9,7 @@ The loop tests at the bottom need no database — what they check is when the wo
 for work again, not what it finds.
 """
 
+import hashlib
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -18,7 +19,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import detection, nvidia_video, storage, worker
+from app import detection, normalization, nvidia_video, storage, worker
 from app.c2pa_extractor import C2paEvidence
 from app.db.models import (
     Analysis,
@@ -31,6 +32,9 @@ from app.db.session import SessionLocal, engine
 
 VIDEO_BYTES = b"canonical-mp4-bytes"
 ORIGINAL_BYTES = b"as-uploaded-original-bytes"
+# What the stand-in transcoder writes. Distinct from both of the above, so a test can
+# tell which artifact a detector was actually handed.
+DERIVATIVE_BYTES = b"normalized-mp4-bytes"
 NVIDIA_PROBABILITY = 0.8734567165374756
 NVIDIA_LOGIT = 1.9142135381698608
 NVIDIA_FUNCTION_ID = "847b6e53-0133-452d-ab85-d7acf3ace723"
@@ -84,10 +88,10 @@ def queue(database):
                     pix_fmt="yuv420p",
                     constant_frame_rate=True,
                     was_normalized=was_normalized,
-                    derivative_storage_key=(
-                        f"derivatives/{digest}.mp4" if was_normalized else f"originals/{digest}"
-                    ),
-                    derivative_sha256=digest if was_normalized else None,
+                    # Exactly as the upload commits it: null while a derivative is owed,
+                    # the original's own key when none will ever be produced.
+                    derivative_storage_key=None if was_normalized else f"originals/{digest}",
+                    derivative_sha256=None,
                 )
             )
             job = AnalysisJob(
@@ -112,15 +116,30 @@ def queue(database):
 
 @pytest.fixture
 def fake_storage(monkeypatch):
-    """Stand in for MinIO, writing plausible video bytes wherever the worker asks."""
+    """Stand in for MinIO: hands the worker plausible bytes, and takes what it stores.
+
+    Both directions matter now. The worker downloads the forensic original and, when the
+    media needs one, uploads the derivative it transcoded — so this records uploads as
+    well as fetches, and a test can check that a derivative was really stored before any
+    row claimed it exists.
+    """
 
     class Recorder:
         def __init__(self):
             self.error = None
+            self.upload_error = None
             self.fetched = []
             # Where the artifact was written, captured during the call: the worker
             # deletes it before returning, so looking afterwards would prove nothing.
             self.paths = []
+            self.uploads = []
+            self.uploaded_bytes = {}
+            # Content-addressed objects are never deleted; this proves nothing tries to.
+            self.removed = []
+
+        @property
+        def stored_keys(self):
+            return [key for key, _ in self.uploads]
 
         def fget_object(self, bucket, key, file_path):
             self.fetched.append(key)
@@ -133,8 +152,51 @@ def fake_storage(monkeypatch):
                 ORIGINAL_BYTES if key.startswith("originals/") else VIDEO_BYTES
             )
 
+        def bucket_exists(self, bucket):
+            return True
+
+        def make_bucket(self, bucket):
+            raise AssertionError("The bucket already exists.")
+
+        def fput_object(self, bucket, key, file_path, content_type=None):
+            if self.upload_error:
+                raise self.upload_error
+            # Captured while the file still exists: the worker deletes its temp files as
+            # soon as the block that produced them ends.
+            self.uploaded_bytes[key] = Path(file_path).read_bytes()
+            self.uploads.append((key, content_type))
+
+        def remove_object(self, bucket, key):
+            self.removed.append(key)
+
     recorder = Recorder()
     monkeypatch.setattr(storage, "client", recorder)
+    return recorder
+
+
+@pytest.fixture(autouse=True)
+def fake_ffmpeg(monkeypatch):
+    """Replace only the transcode call, writing plausible derivative bytes.
+
+    Everything around it — the decision to transcode at all, hashing, key derivation,
+    storage and cleanup — is the real code under test. Autouse because a worker that
+    reached the real ffmpeg would spend minutes on bytes that are not video.
+    """
+
+    class Recorder:
+        def __init__(self):
+            self.output = DERIVATIVE_BYTES
+            self.error = None
+            self.calls = []
+
+        async def run(self, source, destination, frame_rate):
+            self.calls.append((Path(source), Path(destination), frame_rate))
+            if self.error:
+                raise self.error
+            Path(destination).write_bytes(self.output)
+
+    recorder = Recorder()
+    monkeypatch.setattr(normalization, "_run_ffmpeg", recorder.run)
     return recorder
 
 
@@ -243,6 +305,12 @@ def read_signals(analysis_id) -> dict[str, AnalysisSignal]:
     return {row.provider: row for row in rows}
 
 
+def read_media(analysis_id) -> MediaFile:
+    """The media row as another connection sees it, derivative columns included."""
+    with SessionLocal() as reader:
+        return reader.query(MediaFile).filter_by(analysis_id=analysis_id).one()
+
+
 @pytest.mark.integration
 def test_claiming_a_job_marks_it_processing_and_commits(queue):
     analysis_id, job_id = queue()
@@ -258,16 +326,29 @@ def test_claiming_a_job_marks_it_processing_and_commits(queue):
 
 
 @pytest.mark.integration
-def test_claiming_carries_the_canonical_storage_key_out_of_the_transaction(queue):
+def test_claiming_carries_what_the_work_needs_out_of_the_transaction(queue):
     _, job_id = queue(was_normalized=True)
 
     with SessionLocal() as session:
         claimed = worker.claim_job(session)
 
-    # The provider-compatible artifact, which for normalized media is the derivative.
-    assert claimed.storage_key.startswith("derivatives/")
-    # And the forensic original beside it, because provenance is read from that one.
+    # The forensic original: the only artifact that exists yet, and the one provenance
+    # must be read from.
     assert claimed.original_storage_key.startswith("originals/")
+    # The decision the upload made from the probe, which this worker carries out, and the
+    # rate the transcode has to hold constant. Neither can be re-derived here: the
+    # decision needs `major_brand`, and no column holds it.
+    assert claimed.normalization_required is True
+    assert claimed.frame_rate == 30.0
+
+
+def test_claiming_media_that_needs_no_derivative_says_so(queue):
+    queue(was_normalized=False)
+
+    with SessionLocal() as session:
+        claimed = worker.claim_job(session)
+
+    assert claimed.normalization_required is False
 
 
 @pytest.mark.integration
@@ -367,17 +448,31 @@ def test_a_processed_job_completes_with_its_evidence(queue, fake_storage):
 
 
 @pytest.mark.integration
-def test_the_worker_detects_the_canonical_object_it_fetched(queue, fake_storage, fake_nvidia):
+def test_the_worker_detects_the_derivative_it_produced(queue, fake_storage, fake_nvidia):
     queue(was_normalized=True)
 
     with SessionLocal() as session:
         worker.process_one(session)
 
-    # Nothing is handed between the upload and the worker but a storage key, so the
-    # object store is what the detector's input has to come from — and for normalized
-    # media the object to fetch is the derivative, not the original.
-    assert [key for key in fake_storage.fetched if key.startswith("derivatives/")] != []
-    assert fake_nvidia.analysed_bytes == [VIDEO_BYTES]
+    # Only the original is ever fetched — the derivative did not exist to be fetched, and
+    # once transcoded it is already on this disk, so downloading it back would be a round
+    # trip to fetch bytes the worker just wrote.
+    assert fake_storage.fetched == [key for key in fake_storage.fetched if key.startswith("originals/")]
+    assert fake_nvidia.analysed_bytes == [DERIVATIVE_BYTES]
+
+
+def test_the_worker_detects_the_original_when_no_derivative_is_needed(
+    queue, fake_storage, fake_nvidia, fake_ffmpeg
+):
+    queue(was_normalized=False)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    # Already canonical: nothing is transcoded and the bytes as uploaded are what the
+    # detector sees.
+    assert fake_ffmpeg.calls == []
+    assert fake_nvidia.analysed_bytes == [ORIGINAL_BYTES]
 
 
 @pytest.mark.integration
@@ -617,3 +712,213 @@ def test_the_loop_stops_when_shutdown_is_requested(monkeypatch):
     # SIGTERM from `docker compose down`: stop asking for new work rather than being
     # killed ten seconds later, mid-job.
     assert called == []
+
+
+# Normalization. It ran on the upload request until P4-F2, where a 4K HEVC file passed
+# validation and was then rejected as unprocessable because a deadline meant for a
+# waiting client expired mid-transcode. It happens here now, between the claim and the
+# detection, and the derivative it produces is named in the database only once it exists.
+
+
+@pytest.mark.integration
+def test_the_transcode_reads_the_fetched_original_at_its_source_rate(
+    queue, fake_storage, fake_ffmpeg
+):
+    queue(was_normalized=True)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    assert len(fake_ffmpeg.calls) == 1
+    source, destination, frame_rate = fake_ffmpeg.calls[0]
+    # The forensic original as downloaded — the same file provenance was read from.
+    assert source == fake_storage.paths[0]
+    assert destination.suffix == ".mp4"
+    # The source's own rate, from `media_files`, not a default imposed here.
+    assert frame_rate == 30.0
+
+
+@pytest.mark.integration
+def test_the_derivative_is_hashed_and_keyed_on_its_own_bytes(queue, fake_storage):
+    analysis_id, _ = queue(was_normalized=True)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    media = read_media(analysis_id)
+    expected = hashlib.sha256(DERIVATIVE_BYTES).hexdigest()
+    # A different artifact from the original, so a different identity: sharing the
+    # original's hash would say the two sets of bytes were the same.
+    assert media.derivative_sha256 == expected
+    assert media.derivative_sha256 != media.original_sha256
+    assert media.derivative_storage_key == f"derivatives/{expected}.mp4"
+
+
+@pytest.mark.integration
+def test_the_derivative_is_stored_as_mp4_beside_the_original(queue, fake_storage):
+    queue(was_normalized=True)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    # One upload, and it is the derivative: the original was already stored by the
+    # request that accepted it and is only read here.
+    assert len(fake_storage.uploads) == 1
+    key, content_type = fake_storage.uploads[0]
+    assert key.startswith("derivatives/")
+    assert content_type == "video/mp4"
+    assert fake_storage.uploaded_bytes[key] == DERIVATIVE_BYTES
+    assert fake_storage.removed == []
+
+
+@pytest.mark.integration
+def test_the_derivative_is_stored_before_anything_records_it(queue, fake_storage):
+    analysis_id, _ = queue(was_normalized=True)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    # The row names an object that provably exists, because the upload happened first.
+    media = read_media(analysis_id)
+    assert media.derivative_storage_key in fake_storage.uploaded_bytes
+
+
+@pytest.mark.integration
+def test_media_needing_no_derivative_keeps_the_key_the_upload_wrote(queue, fake_storage):
+    analysis_id, _ = queue(was_normalized=False)
+    before = read_media(analysis_id).derivative_storage_key
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    media = read_media(analysis_id)
+    # Nothing was transcoded and nothing was stored, so the column is not touched: there
+    # is no second artifact, and overwriting it would say there was.
+    assert media.derivative_storage_key == before == media.original_storage_key
+    assert media.derivative_sha256 is None
+    assert fake_storage.uploads == []
+
+
+@pytest.mark.integration
+def test_the_transcoded_derivative_is_removed_afterwards(queue, fake_storage, fake_ffmpeg):
+    queue(was_normalized=True)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    _, destination, _ = fake_ffmpeg.calls[0]
+    # The derivative is in MinIO; the local copy is not the worker's to keep.
+    assert not destination.exists()
+    assert [path for path in fake_storage.paths if path.exists()] == []
+
+
+@pytest.mark.integration
+def test_media_that_cannot_be_transcoded_does_not_cost_the_analysis_its_provenance(
+    queue, fake_storage, fake_ffmpeg
+):
+    analysis_id, job_id = queue(was_normalized=True)
+    fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+    # NVIDIA takes MP4 and nothing else, so a failed transcode means it was never asked.
+    # That is a gap in one source's evidence, not a reason to throw the job away.
+    assert read_job(job_id).status == "completed"
+    assert read_analysis(analysis_id).status == "completed"
+    assert signals["c2pa"].status == "SUCCESS"
+    assert signals["nvidia"].status == "FAILED"
+    assert signals["nvidia"].score is None
+    assert signals["nvidia"].signal_metadata == {"error": "NormalizationError"}
+
+
+@pytest.mark.integration
+def test_a_transcode_that_ran_out_of_time_is_told_apart_from_one_that_broke(
+    queue, fake_storage, fake_ffmpeg
+):
+    analysis_id, _ = queue(was_normalized=True)
+    fake_ffmpeg.error = normalization.NormalizationTimeout("ffmpeg timed out after 900s")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signal = read_signals(analysis_id)["nvidia"]
+    # `TIMEOUT` is reserved for a provider that may still have been working, which says
+    # nothing about the media. ffmpeg giving up is not that; the failure kind is what
+    # separates the two.
+    assert signal.status == "FAILED"
+    assert signal.signal_metadata == {"error": "NormalizationTimeout"}
+
+
+@pytest.mark.integration
+def test_a_failed_transcode_records_no_derivative(queue, fake_storage, fake_ffmpeg):
+    analysis_id, _ = queue(was_normalized=True)
+    fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    media = read_media(analysis_id)
+    assert media.derivative_storage_key is None
+    assert media.derivative_sha256 is None
+    assert fake_storage.uploads == []
+
+
+@pytest.mark.integration
+def test_a_failed_transcode_leaves_nothing_on_disk(queue, fake_storage, fake_ffmpeg):
+    queue(was_normalized=True)
+    fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    assert [path for path in fake_storage.paths if path.exists()] == []
+
+
+@pytest.mark.integration
+def test_a_missing_ffmpeg_binary_fails_the_job_rather_than_the_media(
+    queue, fake_storage, fake_ffmpeg
+):
+    analysis_id, job_id = queue(was_normalized=True)
+    fake_ffmpeg.error = normalization.NormalizationUnavailable("ffmpeg could not be executed")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    # A container without its media processor is a broken machine, not evidence about a
+    # video. Recording it as a signal would leave a real defect looking like a routine gap.
+    assert read_job(job_id).status == "failed"
+    assert read_job(job_id).error_message == "NormalizationUnavailable"
+    assert read_analysis(analysis_id).status == "failed"
+    assert read_signals(analysis_id) == {}
+
+
+@pytest.mark.integration
+def test_a_derivative_that_cannot_be_stored_fails_the_job(queue, fake_storage):
+    analysis_id, job_id = queue(was_normalized=True)
+    fake_storage.upload_error = RuntimeError("object storage is unreachable")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    # The transcode worked; putting it where the evidence can point at it did not. That
+    # is this side failing, so the job says so and no signal claims otherwise.
+    assert read_job(job_id).status == "failed"
+    assert read_analysis(analysis_id).status == "failed"
+    assert read_signals(analysis_id) == {}
+
+
+@pytest.mark.integration
+def test_a_derivative_upload_failure_leaves_nothing_on_disk(
+    queue, fake_storage, fake_ffmpeg
+):
+    queue(was_normalized=True)
+    fake_storage.upload_error = RuntimeError("object storage is unreachable")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    _, destination, _ = fake_ffmpeg.calls[0]
+    assert not destination.exists()
+    assert [path for path in fake_storage.paths if path.exists()] == []

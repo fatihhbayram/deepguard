@@ -5,7 +5,9 @@ handed to the downstream detector as-is, this module produces a separate derivat
 the canonical shape the NVIDIA Synthetic Video Detector accepts: an MP4 container,
 H.264 video, constant frame rate and a broadly decodable pixel format.
 
-Nothing here calls a detector; it only prepares the media a detector could consume.
+Nothing here calls a detector; it only prepares the media a detector could consume, and
+since P4-F2 nothing calls *this* on an HTTP request either — transcoding happens in the
+worker, beside inference, for the same reason inference does (D020).
 """
 
 import asyncio
@@ -21,7 +23,22 @@ from app.media import MediaMetadata
 logger = logging.getLogger(__name__)
 
 FFMPEG_BINARY = "ffmpeg"
-FFMPEG_TIMEOUT_SECONDS = 60
+
+# How long one transcode may run before it is killed.
+#
+# This used to be 60 seconds, and the figure was set by a constraint that no longer
+# exists: normalization ran on the upload request, so the bound was really "how long may
+# a client be made to wait". A 4K HEVC upload blew straight through it and was rejected
+# with a 422 before anything had been analysed — the media was fine, the deadline was not.
+#
+# The work now happens in the worker, where the only thing waiting is the queue, so the
+# bound answers a different question: how long may a single job hold the worker before it
+# is written off. The file that exposed the old limit — 86 MiB of 3840x2160 HEVC, 13.8
+# seconds long — transcodes in 60.2 s on this machine, so the old ceiling was missed by
+# fractions of a second. Fifteen minutes is an order of magnitude above that, which leaves
+# room for a longer file inside the 100 MiB upload ceiling and for a machine under load,
+# without letting one pathological input stall the queue indefinitely.
+FFMPEG_TIMEOUT_SECONDS = 900
 DERIVATIVE_TEMP_PREFIX = "deepguard-normalized-"
 DERIVATIVE_TEMP_SUFFIX = ".mp4"
 
@@ -174,8 +191,14 @@ def _sha256_of(path: Path) -> str:
     return hasher.hexdigest()
 
 
-async def normalize_to_mp4(source: Path, metadata: MediaMetadata) -> NormalizedMedia:
+async def normalize_to_mp4(source: Path, frame_rate: float) -> NormalizedMedia:
     """Produce a canonical MP4/H.264 derivative of the staged original.
+
+    Takes the source's frame rate rather than the whole `MediaMetadata`, because that is
+    the only field the transcode uses and the caller is now the worker, which reads its
+    facts back out of `media_files` — a table that holds no `major_brand` and so cannot
+    reconstruct the probe result. Passing the one figure that matters avoids assembling a
+    metadata object out of columns that only half of it came from.
 
     The original file is only read. On any failure the half-written derivative is
     removed here, so a failed transcode never leaves a temp file behind.
@@ -187,7 +210,7 @@ async def normalize_to_mp4(source: Path, metadata: MediaMetadata) -> NormalizedM
     destination = Path(name)
 
     try:
-        await _run_ffmpeg(source, destination, metadata.frame_rate)
+        await _run_ffmpeg(source, destination, frame_rate)
         return NormalizedMedia(path=destination, sha256=_sha256_of(destination))
     except BaseException:
         try:

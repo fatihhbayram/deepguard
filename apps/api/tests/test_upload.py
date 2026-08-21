@@ -138,25 +138,25 @@ def fake_ffprobe(monkeypatch):
 DERIVATIVE_BYTES = b"normalized-mp4-bytes"
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def fake_ffmpeg(monkeypatch):
-    """Replace only the transcode call, writing plausible derivative bytes.
+    """A tripwire on the transcoder, not a stand-in for one.
 
-    Everything around it — the compatibility decision, hashing, key derivation, storage
-    and cleanup — is the real code under test.
+    Since P4-F2 the upload decides whether a derivative is needed and never produces one,
+    so nothing in this module should reach this fixture. It is autouse for the same reason
+    `fake_nvidia` is: a regression that put transcoding back on the request would
+    otherwise spend minutes of real ffmpeg time inside the suite, and `calls` staying
+    empty is what proves the route left it alone. What normalization does when it really
+    runs is `tests/test_worker.py`.
     """
 
     class Recorder:
         def __init__(self):
-            self.output = DERIVATIVE_BYTES
-            self.error = None
             self.calls = []
 
         async def run(self, source, destination, frame_rate):
             self.calls.append((Path(source), Path(destination), frame_rate))
-            if self.error:
-                raise self.error
-            Path(destination).write_bytes(self.output)
+            raise AssertionError("The upload route must not transcode.")
 
     recorder = Recorder()
     monkeypatch.setattr(normalization, "_run_ffmpeg", recorder.run)
@@ -536,7 +536,10 @@ def test_unknown_average_frame_rate_falls_back_to_r_frame_rate(
 
 
 def test_unusable_frame_rate_is_rejected(client, new_temp_uploads, fake_minio, fake_ffprobe):
-    fake_ffprobe.output = ffprobe_output(avg_frame_rate="0/0")
+    # Both rates unusable, which is what leaves the media with no frame rate at all. An
+    # unusable average alone is not a rejection — `r_frame_rate` is the documented
+    # fallback, covered by the test below.
+    fake_ffprobe.output = ffprobe_output(avg_frame_rate="0/0", r_frame_rate="0/0")
 
     response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
 
@@ -697,8 +700,11 @@ def test_quicktime_is_normalized_even_when_it_carries_h264(
     response = post_upload(client, "clip.mov", b"payload", "video/quicktime")
 
     assert response.status_code == 202
-    assert response.json()["was_normalized"] is True
-    assert len(fake_ffmpeg.calls) == 1
+    body = response.json()
+    assert body["was_normalized"] is True
+    # A derivative is owed, not made: the worker produces it and names it later.
+    assert body["derivative_storage_key"] is None
+    assert body["derivative_sha256"] is None
 
 
 def test_quicktime_declared_as_mp4_is_still_normalized(
@@ -714,7 +720,7 @@ def test_quicktime_declared_as_mp4_is_still_normalized(
     body = response.json()
     assert body["was_normalized"] is True
     assert body["metadata"]["major_brand"] == "qt"
-    assert len(fake_ffmpeg.calls) == 1
+    assert body["derivative_storage_key"] is None
 
 
 def test_a_container_without_a_brand_is_normalized(
@@ -777,97 +783,6 @@ def test_uncommon_pixel_format_is_normalized(
     assert response.json()["was_normalized"] is True
 
 
-def test_normalization_transcodes_the_staged_original_at_its_source_rate(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
-):
-    payload = b"source-media"
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9", avg_frame_rate="24/1", r_frame_rate="24/1")
-
-    response = post_upload(client, "clip.mp4", payload, "video/mp4")
-
-    assert response.status_code == 202
-    source, destination, frame_rate = fake_ffmpeg.calls[0]
-    assert source.name.startswith(TEMP_FILE_PREFIX)
-    assert source == fake_ffprobe.paths[0]
-    assert destination.name.startswith(DERIVATIVE_TEMP_PREFIX)
-    assert destination.suffix == ".mp4"
-    # The validated source rate is preserved rather than resampled to a fixed default.
-    assert frame_rate == 24.0
-
-
-def test_odd_dimension_source_is_normalized_rather_than_rejected(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
-):
-    # Odd dimensions are an encoder constraint, not bad media: the derivative is padded
-    # to even sides and the upload succeeds.
-    fake_ffprobe.output = ffprobe_output(codec_name="mjpeg", width=321, height=241)
-
-    response = post_upload(client, "odd.mov", b"payload", "video/quicktime")
-
-    assert response.status_code == 202
-    body = response.json()
-    assert body["was_normalized"] is True
-    assert body["metadata"]["width"] == 321
-    assert len(fake_ffmpeg.calls) == 1
-    assert fake_minio.stored_keys == [body["storage_key"], body["derivative_storage_key"]]
-
-
-def test_derivative_is_hashed_independently_of_the_original(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
-):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
-
-    response = post_upload(client, "clip.mp4", b"original-bytes", "video/mp4")
-
-    body = response.json()
-    derivative_sha256 = hashlib.sha256(DERIVATIVE_BYTES).hexdigest()
-    assert body["derivative_sha256"] == derivative_sha256
-    assert len(derivative_sha256) == 64
-    assert derivative_sha256 == derivative_sha256.lower()
-    assert body["derivative_sha256"] != body["sha256"]
-
-
-def test_derivative_key_is_addressed_on_the_derivative_hash(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
-):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
-
-    response = post_upload(client, "clip.mp4", b"original-bytes", "video/mp4")
-
-    body = response.json()
-    assert body["derivative_storage_key"] == f"derivatives/{body['derivative_sha256']}.mp4"
-    assert body["sha256"] not in body["derivative_storage_key"]
-
-
-def test_derivative_is_stored_as_mp4_beside_the_original(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
-):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
-
-    response = post_upload(client, "clip.mp4", b"original-bytes", "video/mp4")
-
-    body = response.json()
-    bucket, key, _, content_type = fake_minio.uploads[1]
-    assert bucket == storage.ORIGINALS_BUCKET
-    assert key == body["derivative_storage_key"]
-    assert content_type == "video/mp4"
-    assert fake_minio.uploaded_bytes[key] == DERIVATIVE_BYTES
-
-
-def test_successful_normalization_keeps_both_minio_objects(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
-):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
-
-    response = post_upload(client, "clip.mp4", b"original-bytes", "video/mp4")
-
-    body = response.json()
-    # D013: the original stays as the forensic artifact, the derivative as the media a
-    # detector can actually consume.
-    assert fake_minio.stored_keys == [body["storage_key"], body["derivative_storage_key"]]
-    assert fake_minio.removed == []
-
-
 def test_success_leaves_no_local_temp_files(client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg):
     compatible = post_upload(client, "clip.mp4", b"payload", "video/mp4")
     assert compatible.json()["was_normalized"] is False
@@ -879,93 +794,6 @@ def test_success_leaves_no_local_temp_files(client, new_temp_uploads, fake_minio
     # No P1 step after this reads local media, so neither the original nor the
     # derivative may survive the request.
     assert new_temp_uploads() == []
-
-
-def test_failed_normalization_is_unprocessable(client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
-    fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
-
-    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
-
-    assert response.status_code == 422
-    assert response.json() == {"detail": "video could not be normalized for analysis"}
-
-
-def test_normalization_timeout_is_a_controlled_rejection(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
-):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
-    fake_ffmpeg.error = normalization.NormalizationTimeout("ffmpeg timed out after 60s")
-
-    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
-
-    assert response.status_code == 422
-    assert response.json() == {"detail": "video could not be normalized for analysis"}
-
-
-def test_missing_ffmpeg_binary_is_reported_as_a_server_failure(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
-):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
-    fake_ffmpeg.error = normalization.NormalizationUnavailable("ffmpeg could not be executed")
-
-    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
-
-    # The client's media may be perfectly fine; the server is missing its processor.
-    assert response.status_code == 503
-    assert response.json() == {"detail": "media processor unavailable"}
-
-
-def test_failed_normalization_cleans_up_local_files(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
-):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
-    fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
-
-    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
-
-    assert response.status_code == 422
-    assert new_temp_uploads() == []
-
-
-def test_failed_normalization_preserves_the_stored_original(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
-):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
-    fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
-
-    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
-
-    assert response.status_code == 422
-    # A transient transcode failure must not delete an object an earlier analysis of
-    # the same bytes already refers to.
-    assert fake_minio.removed == []
-
-
-def test_derivative_upload_failure_returns_a_controlled_503(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
-):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
-    fake_minio.upload_failure_after = 1
-
-    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
-
-    assert response.status_code == 503
-    assert response.json() == {"detail": "media storage unavailable"}
-
-
-def test_derivative_upload_failure_cleans_up_local_files_only(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
-):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
-    fake_minio.upload_failure_after = 1
-
-    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
-
-    assert response.status_code == 503
-    # Local temp files belong to this request alone; the stored objects do not.
-    assert new_temp_uploads() == []
-    assert fake_minio.removed == []
 
 
 def _added(session, model):
@@ -1026,26 +854,40 @@ def test_repeated_upload_of_identical_media_creates_a_second_analysis(
     assert fake_session.commits == 2
 
 
-def test_normalized_upload_persists_the_derivative_identity(
-    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
+def test_an_upload_owed_a_derivative_persists_no_derivative_identity(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
 ):
     fake_ffprobe.output = ffprobe_output(codec_name="vp9")
 
-    response = post_upload(client, "clip.mp4", b"original-bytes", "video/mp4")
+    post_upload(client, "clip.mp4", b"original-bytes", "video/mp4")
 
-    body = response.json()
     media_file = _added(fake_session, MediaFile)
+    # The decision is recorded because only the probe can make it; the artifact it names
+    # does not exist yet, and a key written here would point at nothing.
     assert media_file.was_normalized is True
-    assert media_file.derivative_storage_key == body["derivative_storage_key"]
-    assert media_file.derivative_sha256 == hashlib.sha256(DERIVATIVE_BYTES).hexdigest()
-    assert media_file.derivative_sha256 != media_file.original_sha256
+    assert media_file.derivative_storage_key is None
+    assert media_file.derivative_sha256 is None
+
+
+def test_canonical_media_persists_the_original_as_its_analysis_artifact(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    post_upload(client, "clip.mp4", b"original-bytes", "video/mp4")
+
+    media_file = _added(fake_session, MediaFile)
+    # No second artifact is ever produced for this one, so the answer is already known
+    # and is the original's own key — not a placeholder waiting to be replaced.
+    assert media_file.was_normalized is False
+    assert media_file.derivative_storage_key == media_file.original_storage_key
+    assert media_file.derivative_sha256 is None
 
 
 def test_analysis_is_persisted_only_after_the_media_pipeline_succeeded(
-    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
 ):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
-    fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
+    # Unusable media, which is the last thing that can still stop an upload now that
+    # transcoding has moved off the request.
+    fake_ffprobe.error = media.MediaProbeError("no video stream")
 
     response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
 
@@ -1091,9 +933,10 @@ def test_persistence_failure_preserves_the_stored_objects(
     response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
 
     assert response.status_code == 500
-    # Both keys are content-addressed and may already belong to another analysis.
+    # The key is content-addressed and may already belong to another analysis, so a
+    # failed request never deletes it.
     assert fake_minio.removed == []
-    assert len(fake_minio.stored_keys) == 2
+    assert len(fake_minio.stored_keys) == 1
 
 
 def test_persistence_failure_still_cleans_up_local_temp_files(
@@ -1198,14 +1041,13 @@ def test_exactly_one_job_is_queued_per_upload(
 
 
 def test_no_job_is_queued_when_the_media_pipeline_failed(
-    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
 ):
-    fake_ffprobe.output = ffprobe_output(codec_name="vp9")
-    fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
+    fake_ffprobe.error = media.MediaProbeError("no video stream")
 
     response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
 
-    # There is nothing for a detector to read, so there is nothing to queue.
+    # The media never became an analysis, so there is nothing to queue work against.
     assert response.status_code == 422
     assert _all_added(fake_session, AnalysisJob) == []
 
@@ -1224,16 +1066,16 @@ def test_a_failed_commit_queues_no_job(
     assert fake_session.rollbacks == 1
 
 
-def test_the_upload_leaves_nothing_local_for_the_detector_to_read(
-    client, new_temp_uploads, fake_minio, fake_ffprobe, fake_ffmpeg
+def test_the_upload_leaves_nothing_local_for_the_worker_to_read(
+    client, new_temp_uploads, fake_minio, fake_ffprobe
 ):
     fake_ffprobe.output = ffprobe_output(codec_name="vp9")
 
     response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
 
-    # Both artifacts are in MinIO, so whatever eventually runs the job fetches the
-    # canonical object from there rather than depending on a temp file this request
-    # happened to leave behind.
+    body = response.json()
+    # The original is in MinIO and is the only thing the worker needs: it transcodes from
+    # those bytes rather than depending on a temp file this request left behind.
     assert response.status_code == 202
     assert new_temp_uploads() == []
-    assert len(fake_minio.stored_keys) == 2
+    assert fake_minio.stored_keys == [body["storage_key"]]

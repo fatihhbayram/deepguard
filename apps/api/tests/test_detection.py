@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from app import detection, nvidia_video
+from app import detection, normalization, nvidia_video
 from app.c2pa_extractor import C2paEvidence
 from app.detection import MAX_PERSISTED_SEGMENTS, detect_synthetic_video, extract_provenance
 
@@ -340,3 +340,49 @@ def test_an_unreadable_artifact_is_recorded_rather_than_raised(tmp_path):
 
     assert signal.status == "FAILED"
     assert signal.signal_metadata == {"error": "C2paLocalFileError"}
+
+
+# Media that could not be prepared. NVIDIA takes MP4/H.264 and nothing else, so a
+# transcode that fails means the provider was never reached — and the evidence board has
+# to say so without pretending the provider answered.
+
+
+def test_media_that_could_not_be_prepared_is_a_failed_nvidia_signal():
+    signal = detection.undetectable_media(
+        normalization.NormalizationError("ffmpeg exited with 1")
+    )
+
+    assert signal.provider == "nvidia"
+    assert signal.signal_type == "synthetic_video"
+    assert signal.status == "FAILED"
+    assert signal.signal_metadata == {"error": "NormalizationError"}
+
+
+def test_media_that_could_not_be_prepared_carries_no_figure():
+    signal = detection.undetectable_media(normalization.NormalizationError("boom"))
+
+    # Nothing was scored, so there is nothing to report. A 0.0 would be an answer the
+    # provider never gave, and a risk level is not this layer's to assign either.
+    assert signal.score is None
+    assert signal.risk_level is None
+    assert signal.provider_version is None
+
+
+def test_a_transcode_that_ran_out_of_time_is_not_a_provider_timeout():
+    signal = detection.undetectable_media(
+        normalization.NormalizationTimeout("ffmpeg timed out after 900s")
+    )
+
+    # `TIMEOUT` means a provider that may still be working, which says nothing about the
+    # media either way. ffmpeg giving up is a different fact and is told apart by the
+    # failure kind rather than by borrowing a status that would misdescribe it.
+    assert signal.status == "FAILED"
+    assert signal.signal_metadata == {"error": "NormalizationTimeout"}
+
+
+def test_preparation_failure_never_leaks_the_local_path():
+    signal = detection.undetectable_media(
+        normalization.NormalizationError("ffmpeg failed on /tmp/deepguard-job-abc123")
+    )
+
+    assert "deepguard-job" not in str(signal.signal_metadata)

@@ -134,6 +134,30 @@ def extract_provenance(file_path: Path) -> AnalysisSignal:
     return signal
 
 
+def undetectable_media(error: Exception) -> AnalysisSignal:
+    """Record that NVIDIA could not be asked, because the artifact could not be prepared.
+
+    NVIDIA takes MP4/H.264 and nothing else, so media in any other shape has to be
+    transcoded before there is anything to send. When that transcode fails the provider
+    was never reached — but the outcome for the evidence board is the same one a refused
+    call produces: this source has no answer about this media, and the gap is recorded
+    rather than left silent. Written as a real signal so an analysis that got provenance
+    still keeps it, instead of the whole job being thrown away over one source (D016).
+
+    `status` is `FAILED` even for a transcode that ran out of time. `TIMEOUT` means a
+    provider that may still have been working, which says nothing about the media either
+    way; ffmpeg giving up is not that, and the two are told apart by the failure kind in
+    the metadata rather than by borrowing a status that would misdescribe one of them.
+    """
+    return AnalysisSignal(
+        provider=NVIDIA_PROVIDER,
+        signal_type=SYNTHETIC_VIDEO_SIGNAL,
+        status=SIGNAL_STATUS_FAILED,
+        # The failure kind, never the message: it quotes the local artifact's path.
+        signal_metadata={"error": type(error).__name__},
+    )
+
+
 async def detect_synthetic_video(file_path: Path) -> tuple[AnalysisSignal, list[AnalysisSegment]]:
     """Ask NVIDIA about the local artifact and turn the outcome into forensic evidence.
 

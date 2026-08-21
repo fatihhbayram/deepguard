@@ -19,19 +19,31 @@ analysis is listed in the dashboard. What runs today:
 - `ffprobe` proves the bytes really are video and yields container, codec, dimensions,
   duration, frame rate and pixel format;
 - media that is not already in the provider-compatible shape (MP4 container, H.264,
-  `yuv420p`, constant frame rate) gets a separate MP4/H.264 derivative via `ffmpeg`;
+  `yuv420p`, constant frame rate) is marked as needing a separate MP4/H.264 derivative,
+  which the worker transcodes with `ffmpeg` — not the request. A 4K source can take
+  minutes, and the deadline that used to bound it on the request path rejected perfectly
+  good media before anything had been analysed;
 - original and derivative are kept as distinct artifacts, each with its own SHA-256 and its
   own storage key — the original is never rewritten;
 - the analysis, its media facts and a `queued` job are written to PostgreSQL in one
   transaction, and the upload answers `202 Accepted` — an analysis committed without its job
   would be an upload accepted and then silently forgotten;
-- detection does not run on the request. NVIDIA can take minutes on a video, and no client is
-  made to hold a connection open through them;
+- neither transcoding nor detection runs on the request. Both are unbounded in a way
+  validating, hashing and probing the uploaded bytes are not, and no client is made to
+  hold a connection open through them;
 - a separate worker process claims queued jobs with `SELECT ... FOR UPDATE SKIP LOCKED`,
   marks each `processing` and commits before doing any work, so more than one worker is safe
   and no transaction is held open across inference;
-- the worker fetches the provider-compatible object from MinIO, sends it to NVIDIA's
-  Synthetic Video Detector over gRPC, and deletes the local copy either way;
+- the worker fetches the forensic original from MinIO once, transcodes it if a derivative
+  is owed, stores that derivative under its own content-addressed key, sends the resulting
+  artifact to NVIDIA's Synthetic Video Detector over gRPC, and deletes every local copy
+  either way;
+- the derivative's key and hash are written to the database only once the object exists —
+  a queued analysis that still owes one carries null in both columns rather than a key
+  naming nothing;
+- media that cannot be transcoded is recorded as a failed NVIDIA signal, not a failed job:
+  the provider was never reachable for it, and the provenance already read off the same
+  file is kept;
 - the worker separately reads the C2PA Content Credentials embedded in the *forensic
   original* — never the derivative, because normalization re-encodes the video and strips
   any manifest with it, which would report every normalized upload as unsigned;
@@ -86,19 +98,20 @@ container reaches it over the Docker network at `http://api:8000`. Both API and 
 MinIO over the Docker network at `minio:9000`, never the published host port. NVIDIA is
 reached from the worker over TLS gRPC at its hosted endpoint, addressed by function ID.
 
-Uploads return once the media is staged and the work is queued: storage, probing,
-normalization and persistence run on the request, detection does not. If storage, probing or
-normalization fails, no analysis row and no job are written. Local temp files are always
+Uploads return once the media is staged and the work is queued: storage, probing and
+persistence run on the request, transcoding and detection do not. If storage or probing
+fails, no analysis row and no job are written. Local temp files are always
 removed — the worker reads the canonical object back out of MinIO rather than depending on a
 file the request left behind. Stored MinIO objects are not deleted on failure, because their
 keys are content-addressed and may already be referenced by an earlier analysis of identical
 bytes.
 
 The worker takes each job in three steps, never one transaction: claim it and commit, then
-download, read provenance and detect with nothing open, then write the evidence and close the
-job out. Holding the claim across inference would pin a connection and a row lock for however
-long NVIDIA takes. The two evidence sources read different artifacts — C2PA the forensic
-original, NVIDIA the provider-compatible one — and neither waits on the other's outcome.
+download, read provenance, transcode and detect with nothing open, then write the derivative's
+identity and the evidence and close the job out. Holding the claim across that middle step
+would pin a connection and a row lock for however long ffmpeg and NVIDIA take. The two
+evidence sources read different artifacts — C2PA the forensic original, NVIDIA the
+provider-compatible one — and neither waits on the other's outcome.
 
 A job is claimed once. Retrying a failed job and recovering one whose worker died mid-flight
 are not implemented — a job left `processing` stays there.
@@ -248,7 +261,8 @@ docker compose logs -f api-worker
 
 Rejections are bounded and generic: `415` for an unsupported MIME type, `413` above the
 100 MiB limit, `422` when the bytes are not usable video, `503` when object storage or the
-media processor is unavailable. A provider failure is never one of them.
+media processor is unavailable. Neither a provider failure nor a failed transcode is one of
+them — both happen after the response and are recorded as evidence instead.
 
 ## Tests and quality checks
 

@@ -1,18 +1,25 @@
 """The process that runs queued analyses.
 
-Uploads stage media and record that detection is owed; nothing in the API ever calls a
-detector. This is what does, in its own container, on its own schedule.
+Uploads stage the forensic original and record that the rest is owed; nothing in the API
+ever transcodes or calls a detector. This is what does, in its own container, on its own
+schedule.
 
 Three transactions per job, never one:
 
 1. claim — take a `queued` job, mark it `processing`, commit, release the lock;
-2. nothing — downloads, provenance and inference happen with no transaction open at all;
-3. finish — write the evidence and close the job out.
+2. nothing — the download, provenance, transcoding and inference all happen with no
+   transaction open at all;
+3. finish — write the derivative's identity and the evidence, and close the job out.
 
-The middle step is the reason for the other two. NVIDIA can take minutes on one video,
-and a transaction held open across that would pin a connection and a row lock for the
-whole wait. Claiming is therefore deliberately separate from finishing, and the row a
-worker holds between them is marked `processing` rather than locked.
+The middle step is the reason for the other two. NVIDIA can take minutes on one video and
+ffmpeg can take minutes on a 4K source; a transaction held open across either would pin a
+connection and a row lock for the whole wait. Claiming is therefore deliberately separate
+from finishing, and the row a worker holds between them is marked `processing` rather than
+locked.
+
+Normalization moved here in P4-F2 (D020). It used to run on the upload request under a
+deadline that was really about how long a client would wait, which rejected a perfectly
+good 4K HEVC upload before anything had been analysed.
 
 Run it with `python -m app.worker`.
 """
@@ -45,8 +52,9 @@ from app.db.models import (
     MediaFile,
 )
 from app.db.session import SessionLocal
-from app.detection import detect_synthetic_video, extract_provenance
-from app.storage import fetch_object
+from app.detection import detect_synthetic_video, extract_provenance, undetectable_media
+from app.normalization import NormalizationError, normalize_to_mp4
+from app.storage import fetch_object, store_derivative
 
 logger = logging.getLogger(__name__)
 
@@ -74,22 +82,40 @@ class ClaimedJob:
 
     Everything the work needs is read inside the claim transaction and carried out of it
     by value. After the commit there is no session and no lock, so an ORM row here would
-    be an invitation to touch the database during inference — the one thing the claim is
-    structured to avoid.
+    be an invitation to touch the database during transcoding and inference — the one
+    thing the claim is structured to avoid.
     """
 
     job_id: uuid.UUID
     analysis_id: uuid.UUID
-    # The provider-compatible object to detect against. When the upload normalized the
-    # media this is the derivative; when the original was already canonical, P1 stored
-    # the original's own key in this column, so it is the right object either way and
-    # needs no branch here.
-    storage_key: str
-    # The forensic original, byte-for-byte as uploaded (D013). Provenance has to be read
-    # from this one: normalization re-encodes the video, which strips any C2PA manifest
-    # the upload arrived with, so reading credentials off the derivative would report
-    # every normalized upload as unsigned.
+    # The forensic original, byte-for-byte as uploaded (D013). The only object that
+    # exists for certain at claim time, and the only one provenance may be read from:
+    # normalization re-encodes the video, which strips any C2PA manifest the upload
+    # arrived with, so reading credentials off a derivative would report every normalized
+    # upload as unsigned.
     original_storage_key: str
+    # Whether a derivative has to be produced before a detector can read this media. The
+    # upload decided it from the probe — the decision needs `major_brand`, which no column
+    # holds — and this worker is what carries it out.
+    normalization_required: bool
+    # The rate the transcode has to hold constant. Read from `media_files` rather than
+    # re-probed: it is the original's own rate, established once at upload.
+    frame_rate: float
+
+
+@dataclass(frozen=True)
+class AnalysisArtifact:
+    """The local file a detector should be pointed at, and what it is.
+
+    `storage_key` and `sha256` describe a derivative this worker created and uploaded, and
+    are both null when no derivative was needed — the original was already canonical and
+    is the artifact itself. They are what gets written back to `media_files`, so they name
+    an object that provably exists by the time anything records them.
+    """
+
+    path: Path
+    storage_key: str | None = None
+    sha256: str | None = None
 
 
 def claim_job(session: Session) -> ClaimedJob | None:
@@ -111,8 +137,9 @@ def claim_job(session: Session) -> ClaimedJob | None:
     row = session.execute(
         select(
             AnalysisJob,
-            MediaFile.derivative_storage_key,
             MediaFile.original_storage_key,
+            MediaFile.was_normalized,
+            MediaFile.frame_rate,
         )
         .join(MediaFile, MediaFile.analysis_id == AnalysisJob.analysis_id)
         .where(AnalysisJob.status == JOB_STATUS_QUEUED)
@@ -125,13 +152,14 @@ def claim_job(session: Session) -> ClaimedJob | None:
         session.rollback()
         return None
 
-    job, storage_key, original_storage_key = row
+    job, original_storage_key, normalization_required, frame_rate = row
     job.status = JOB_STATUS_PROCESSING
     claimed = ClaimedJob(
         job_id=job.id,
         analysis_id=job.analysis_id,
-        storage_key=storage_key,
         original_storage_key=original_storage_key,
+        normalization_required=normalization_required,
+        frame_rate=frame_rate,
     )
     session.commit()
 
@@ -160,62 +188,152 @@ def fetched_artifact(storage_key: str, suffix: str = "") -> Iterator[Path]:
         path.unlink(missing_ok=True)
 
 
-def read_provenance(claimed: ClaimedJob) -> AnalysisSignal:
-    """Read the C2PA credentials off the forensic original, whatever they turn out to be.
+@contextmanager
+def prepared_artifact(claimed: ClaimedJob, original: Path) -> Iterator[AnalysisArtifact]:
+    """Produce the artifact a detector should read, and clean up after the block.
 
-    The temp file gets no suffix: the original is whatever container was uploaded, and
-    the reader identifies it from its own bytes rather than from a name invented here.
+    Media that is already canonical needs nothing: the original on disk is the artifact,
+    it is not re-uploaded, and no derivative identity is invented for it.
+
+    Anything else is transcoded here and the result stored in MinIO under its own
+    content-addressed key, so the derivative is a real object before any row claims it
+    exists. The local copy is removed on every path — a container that ran for a week
+    would otherwise fill its disk with every transcode it had ever produced.
+
+    Raises whatever the transcode or the upload raises. Deciding which of those is a
+    broken machine and which is media that cannot be prepared is the caller's job.
     """
-    with fetched_artifact(claimed.original_storage_key) as path:
-        return extract_provenance(path)
+    if not claimed.normalization_required:
+        yield AnalysisArtifact(path=original)
+        return
+
+    # The second asynchronous step, and the only reason this function is not a plain
+    # call: ffmpeg is driven through asyncio, so it owns an event loop for its duration.
+    derivative = asyncio.run(normalize_to_mp4(original, claimed.frame_rate))
+
+    try:
+        key = store_derivative(derivative.path, derivative.sha256)
+        yield AnalysisArtifact(
+            path=derivative.path, storage_key=key, sha256=derivative.sha256
+        )
+    finally:
+        derivative.path.unlink(missing_ok=True)
 
 
-def run_detection(claimed: ClaimedJob):
-    """Detect against the provider-compatible artifact, leaving nothing on disk."""
-    with fetched_artifact(claimed.storage_key, suffix=".mp4") as path:
-        # The one asynchronous step in an otherwise synchronous process. Detection is all
-        # this worker waits on, so it owns an event loop for the length of that call and
-        # nothing else has to be written around one.
-        return asyncio.run(detect_synthetic_video(path))
+def run_detection(path: Path):
+    """Detect against the prepared artifact.
+
+    The one asynchronous step left in an otherwise synchronous process once the transcode
+    is done, so it owns an event loop for the length of that call and nothing else has to
+    be written around one.
+    """
+    return asyncio.run(detect_synthetic_video(path))
+
+
+@dataclass(frozen=True)
+class Detection:
+    """What asking NVIDIA about one job produced, and what preparing it left behind.
+
+    The derivative's identity travels with the detection because the two succeed or fail
+    together: there is no derivative to record when the transcode is what went wrong, and
+    a key recorded without a detection would name an artifact nothing ever read.
+    """
+
+    signal: AnalysisSignal
+    segments: list
+    derivative_storage_key: str | None = None
+    derivative_sha256: str | None = None
+
+
+def detect(claimed: ClaimedJob, original: Path) -> Detection:
+    """Prepare the artifact NVIDIA needs, ask NVIDIA about it, and report both outcomes.
+
+    Media that cannot be transcoded is a fact about the media, so it becomes a failed
+    signal rather than a failed job — the same treatment a provider that refuses gets, and
+    for the same reason: the provenance already read off this file must not be thrown away
+    because ffmpeg could not produce an MP4.
+
+    `NormalizationUnavailable` is deliberately not caught. ffmpeg missing from the image is
+    a broken container, not broken media, and recording it as evidence about the video
+    would leave a real defect looking like a routine gap. It propagates and fails the job,
+    exactly as `NvidiaLocalFileError` does.
+    """
+    try:
+        with prepared_artifact(claimed, original) as artifact:
+            signal, segments = run_detection(artifact.path)
+            return Detection(
+                signal=signal,
+                segments=segments,
+                derivative_storage_key=artifact.storage_key,
+                derivative_sha256=artifact.sha256,
+            )
+    except NormalizationError as error:
+        logger.warning("Preparing the media for detection failed.", exc_info=True)
+        return Detection(signal=undetectable_media(error), segments=[])
 
 
 def complete_job(
     session: Session,
     claimed: ClaimedJob,
-    detection_signal: AnalysisSignal,
-    segments,
+    detection: Detection,
     provenance_signal: AnalysisSignal,
 ) -> None:
-    """Write the evidence and close the job out, in one transaction.
+    """Write the derivative's identity and the evidence, and close the job out, in one
+    transaction.
 
     The evidence and the statuses that claim it exists go in together. A signal committed
     without its job moving on would be detected twice by the next worker; a job marked
     `completed` without its signals would report evidence that is not there.
+
+    The derivative columns go in the same commit for the same reason. They are written
+    here rather than when the object was uploaded because that is the first moment the
+    artifact provably exists *and* something has read it — a key committed earlier would
+    name an object no analysis had used, and a key committed after would leave a completed
+    analysis unable to say what was detected.
 
     Both signals are written as separate rows and neither waits on the other: they are
     independent evidence about different artifacts, and an analysis that got provenance
     but no detection — or the reverse — records exactly that. Only the detection signal
     owns segments; provenance produces no timeline evidence.
 
-    A detector that failed still finishes the job. The provider not answering is a fact
-    about the provider, already recorded as the signal's own status — the work this job
-    was queued to do was done, and calling that a job failure would confuse a broken
-    detector with a broken worker.
+    A detector that failed still finishes the job, and so does media that could not be
+    transcoded for one. Neither is a fact about this worker — both are already recorded as
+    the signal's own status — and the work this job was queued to do was done.
     """
-    for signal in (provenance_signal, detection_signal):
+    if detection.derivative_storage_key is not None:
+        _record_derivative(session, claimed, detection)
+
+    for signal in (provenance_signal, detection.signal):
         signal.analysis_id = claimed.analysis_id
         session.add(signal)
 
-    if segments:
+    if detection.segments:
         # The segments hang off the detection signal, so its id has to exist before they
         # can name it — a second flush inside the same transaction, not a second one.
         session.flush()
-        for segment in segments:
-            segment.signal_id = detection_signal.id
-        session.add_all(segments)
+        for segment in detection.segments:
+            segment.signal_id = detection.signal.id
+        session.add_all(detection.segments)
 
     _set_status(session, claimed, JOB_STATUS_COMPLETED, ANALYSIS_STATUS_COMPLETED)
     session.commit()
+
+
+def _record_derivative(session: Session, claimed: ClaimedJob, detection: Detection) -> None:
+    """Name the artifact this analysis was detected against, now that it exists.
+
+    Only ever called with a derivative this worker created and uploaded. Media that was
+    already canonical had its own key written at upload and is not touched here: there is
+    no second artifact, and overwriting the column would say there was.
+    """
+    session.execute(
+        MediaFile.__table__.update()
+        .where(MediaFile.analysis_id == claimed.analysis_id)
+        .values(
+            derivative_storage_key=detection.derivative_storage_key,
+            derivative_sha256=detection.derivative_sha256,
+        )
+    )
 
 
 def fail_job(session: Session, claimed: ClaimedJob, error: BaseException) -> None:
@@ -275,31 +393,37 @@ def process_one(session: Session) -> bool:
     logger.info("Claimed job %s for analysis %s.", claimed.job_id, claimed.analysis_id)
 
     try:
-        # Provenance first, and on the other artifact: it is read off the forensic
-        # original, while detection runs on the provider-compatible one. Reading
-        # credentials never fails here — `extract_provenance` returns a failed signal
-        # instead — so what can still reach the handler below is fetching the object.
-        provenance_signal = read_provenance(claimed)
-        signal, segments = run_detection(claimed)
+        # One download serves both evidence sources. Provenance is read from these bytes
+        # because they are the forensic original — normalization would strip the manifest
+        # — and detection reads either these bytes or the derivative transcoded from them,
+        # which is why the original is fetched first and kept for the whole job.
+        with fetched_artifact(claimed.original_storage_key) as original:
+            # Reading credentials never raises here: `extract_provenance` returns a failed
+            # signal instead. Nor does media that cannot be transcoded, which `detect`
+            # turns into a failed detection signal. What can still reach the handler below
+            # is the object store, a broken image, or a bug.
+            provenance_signal = extract_provenance(original)
+            detection = detect(claimed, original)
     except Exception as error:
-        # Not a detector saying no — a failure on our own side. It is recorded against
-        # the job and the loop carries on to the next one.
+        # Not a detector saying no and not media that could not be prepared — a failure on
+        # our own side. It is recorded against the job and the loop carries on.
         logger.exception("Job %s failed.", claimed.job_id)
         fail_job(session, claimed, error)
         return True
 
     try:
-        complete_job(session, claimed, signal, segments, provenance_signal)
+        complete_job(session, claimed, detection, provenance_signal)
     except Exception as error:
         logger.exception("Job %s could not be completed.", claimed.job_id)
         fail_job(session, claimed, error)
         return True
 
     logger.info(
-        "Completed job %s with a %s detection signal and a %s provenance signal.",
+        "Completed job %s with a %s detection signal and a %s provenance signal%s.",
         claimed.job_id,
-        signal.status,
+        detection.signal.status,
         provenance_signal.status,
+        " against a normalized derivative" if detection.derivative_storage_key else "",
     )
 
     return True

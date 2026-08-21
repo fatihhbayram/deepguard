@@ -31,13 +31,8 @@ from app.detection import (
     SYNTHETIC_VIDEO_SIGNAL,
 )
 from app.media import MediaMetadata, MediaProbeError, MediaProbeUnavailable, probe_media
-from app.normalization import (
-    NormalizationError,
-    NormalizationUnavailable,
-    needs_normalization,
-    normalize_to_mp4,
-)
-from app.storage import derivative_key, store_derivative, store_original
+from app.normalization import needs_normalization
+from app.storage import store_original
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +94,15 @@ class CreatedAnalysis(BaseModel):
     sha256: str
     storage_key: str
     metadata: MediaMetadata
+    # Whether a derivative is needed at all — decided here, from the probe, but produced
+    # by the worker. True on this response means one is owed, not that one exists.
     was_normalized: bool
-    # The object downstream inference should read. When the original is already
-    # canonical this is the original's key: no second artifact exists, and inventing a
-    # copy of it would only duplicate storage.
-    derivative_storage_key: str
+    # The object downstream inference should read, when that is already settled. Null
+    # whenever a derivative is owed: the transcode has not run, so there is no such object
+    # yet and naming one would be a guess. When the original is already canonical this is
+    # the original's key — no second artifact exists, and copying it would only duplicate
+    # storage.
+    derivative_storage_key: str | None = None
     # Present only when a real derivative exists, since it is that artifact's identity.
     derivative_sha256: str | None = None
 
@@ -287,58 +286,6 @@ async def store_upload(file: UploadFile) -> StoredUpload:
     )
 
 
-async def create_derivative(
-    original_path: Path, storage_key: str, metadata: MediaMetadata
-) -> tuple[str, str, Path]:
-    """Transcode the original into a stored canonical derivative and describe it.
-
-    Returns the derivative's storage key, its own SHA-256, and the local file it still
-    occupies. The derivative is deliberately left on disk: it is the artifact detector
-    inference has to read, and downloading back from MinIO what is already here would be
-    pointless. Deleting it is the caller's job, on every path.
-
-    Any failure cleans up the local temp files and reports the request's stored objects
-    as possible orphans; they are content-addressed and therefore never deleted here. The
-    original file on disk is only read; the original MinIO object is preserved either
-    way (D013).
-    """
-    try:
-        derivative = await normalize_to_mp4(original_path, metadata)
-    except NormalizationUnavailable:
-        discard_temp_file(original_path)
-        report_possible_orphan(storage_key)
-        # The media may well be fine — this is the server missing its media processor.
-        logger.exception("ffmpeg is unavailable in this environment.")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="media processor unavailable",
-        ) from None
-    except NormalizationError:
-        discard_temp_file(original_path)
-        report_possible_orphan(storage_key)
-        logger.info("Could not normalize admitted upload %s.", storage_key, exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="video could not be normalized for analysis",
-        ) from None
-
-    try:
-        key = store_derivative(derivative.path, derivative.sha256)
-    except Exception:
-        discard_temp_file(derivative.path)
-        discard_temp_file(original_path)
-        # The upload may have created the derivative object before failing.
-        report_possible_orphan(storage_key, derivative_key(derivative.sha256))
-        # Endpoints, credentials and SDK errors stay in the server log, not the response.
-        logger.exception("Storing the normalized derivative in MinIO failed.")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="media storage unavailable",
-        ) from None
-
-    return key, derivative.sha256, derivative.path
-
-
 def persist_analysis(
     session: Session,
     *,
@@ -348,19 +295,23 @@ def persist_analysis(
     storage_key: str,
     metadata: MediaMetadata,
     was_normalized: bool,
-    derivative_storage_key: str,
-    derivative_sha256: str | None,
+    derivative_storage_key: str | None,
 ) -> Analysis:
     """Write the queued analysis, its media and the job it is owed in one transaction.
 
-    Called once the media pipeline has run, so everything the detector will need is
-    already stored. The job is written here rather than appended afterwards because
-    either every row exists or none does: an analysis committed without its job would be
-    an upload accepted and then silently forgotten, with no queue entry to notice it and
-    a client holding a `202` for work nobody will ever do.
+    Called once the original is stored and probed, which is everything the worker needs to
+    start: it can fetch those bytes, read their provenance, transcode them if they need it
+    and detect against the result. The job is written here rather than appended afterwards
+    because either every row exists or none does: an analysis committed without its job
+    would be an upload accepted and then silently forgotten, with no queue entry to notice
+    it and a client holding a `202` for work nobody will ever do.
 
-    No detector runs before this, so the transaction lasts as long as three inserts and
-    never spans the minutes NVIDIA can take.
+    `derivative_sha256` is never written here. A derivative has its own content identity
+    and this request has not produced one; the worker writes both derivative columns
+    together, once the artifact they describe actually exists.
+
+    Neither ffmpeg nor a detector runs before this, so the transaction lasts as long as
+    three inserts and never spans the minutes either of them can take.
 
     On failure the session is rolled back and the stored objects are reported rather than
     deleted, since they are content-addressed and may be shared.
@@ -388,7 +339,6 @@ def persist_analysis(
             constant_frame_rate=metadata.constant_frame_rate,
             was_normalized=was_normalized,
             derivative_storage_key=derivative_storage_key,
-            derivative_sha256=derivative_sha256,
         )
     )
 
@@ -411,23 +361,29 @@ async def create_analysis(
     so admission alone never produces a `202`.
 
     The admitted upload is stored in MinIO as the forensic original, then probed with
-    ffprobe to confirm the bytes really are video and to extract the metadata later
-    tasks need. Media that is not already in the canonical provider shape gets a
-    separate normalized derivative (D013) — the original is never rewritten.
+    ffprobe to confirm the bytes really are video and to extract the metadata later steps
+    need. The original is never rewritten (D013).
 
-    No detector is called here. Everything above is bounded work on the uploaded bytes;
-    inference is not, and NVIDIA can take minutes on a video a client is not going to
-    wait through. So the request ends by committing the analysis and a `queued` job, and
-    the answer is `202 Accepted`: the media is stored and the work is recorded as owed,
-    not done. What the detector eventually finds is not in this response, and the status
-    the client gets back is `queued` because that is what is true when it is sent.
+    Neither ffmpeg nor a detector is called here. Both are unbounded in a way the work
+    above is not: reading, hashing and probing scale with the upload, which is already
+    capped, while a transcode of a 4K source and an NVIDIA call both take as long as they
+    take. Normalization used to run here and was bounded by a deadline that really asked
+    "how long may a client wait" — a 4K HEVC upload passed validation, ran out of that
+    deadline mid-transcode and was rejected as unprocessable media, having never been
+    analysed at all. So the request now ends where the bounded work does: it commits the
+    analysis and a `queued` job and answers `202 Accepted`, and the worker transcodes and
+    detects on its own schedule (D020).
 
-    Both staged artifacts are deleted before responding. Nothing local survives the
-    request, and the runner that picks the job up reads the canonical object back out of
-    MinIO rather than depending on a temp file this process happened to leave behind.
+    `was_normalized` is decided here, because the decision needs `major_brand` and no
+    column holds it. It says a derivative is *owed*, not that one exists — the response
+    carries a null `derivative_storage_key` in that case, and the worker fills it in.
 
-    On failure the temp files are dropped; the stored objects are kept, because their
-    content-addressed keys may be shared with an earlier analysis.
+    The staged file is deleted before responding. Nothing local survives the request, and
+    the worker reads the original back out of MinIO rather than depending on a temp file
+    this process happened to leave behind.
+
+    On failure the temp file is dropped; the stored object is kept, because its
+    content-addressed key may be shared with an earlier analysis.
     """
     content_type = (file.content_type or "").strip().lower()
     if content_type not in ALLOWED_CONTENT_TYPES:
@@ -475,21 +431,13 @@ async def create_analysis(
     # Decided from the probed container evidence alone; `content_type` is only what the
     # client claimed, and a MOV declared as `video/mp4` must still be normalized.
     was_normalized = needs_normalization(metadata)
-    if was_normalized:
-        canonical_key, derivative_sha256, inference_path = await create_derivative(
-            stored.path, storage_key, metadata
-        )
-    else:
-        # Already canonical: no transcode, and no duplicate object of the original. The
-        # staged original is itself the artifact the detector should read.
-        canonical_key, derivative_sha256 = storage_key, None
-        inference_path = stored.path
+    # Null while a derivative is owed. Already-canonical media needs no second artifact,
+    # so the original's own key is the answer and is known now.
+    canonical_key = None if was_normalized else storage_key
 
-    # Normalization is now the last step that reads local media: both artifacts are in
-    # MinIO, and the detector will fetch what it needs from there.
+    # Probing is the last step that reads local media here. The original is in MinIO, and
+    # the worker fetches it from there.
     discard_temp_file(stored.path)
-    if was_normalized:
-        discard_temp_file(inference_path)
 
     try:
         analysis = persist_analysis(
@@ -501,7 +449,6 @@ async def create_analysis(
             metadata=metadata,
             was_normalized=was_normalized,
             derivative_storage_key=canonical_key,
-            derivative_sha256=derivative_sha256,
         )
     except SQLAlchemyError:
         try:
@@ -512,7 +459,7 @@ async def create_analysis(
             logger.exception("Rolling the analysis transaction back failed.")
         # Statements, connection strings and driver errors stay in the server log.
         logger.exception("Persisting the analysis failed.")
-        report_possible_orphan(storage_key, canonical_key)
+        report_possible_orphan(storage_key)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="analysis could not be persisted",
@@ -529,7 +476,6 @@ async def create_analysis(
         metadata=metadata,
         was_normalized=was_normalized,
         derivative_storage_key=canonical_key,
-        derivative_sha256=derivative_sha256,
     )
 
 
