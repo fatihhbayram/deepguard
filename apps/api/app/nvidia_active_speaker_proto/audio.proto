@@ -1,0 +1,62 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+// AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
+// Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+syntax = "proto3";
+
+package nvidia.ai4m.audio.v1;
+
+// Configuration which describes Audio properties
+message AudioConfig {
+  // The audio codec
+  AudioCodec encoding = 1;
+  // Audio format
+  optional AudioFormat format = 2;
+  // Bitrate in kbps
+  optional uint32 bitrate_kbps = 3;
+}
+
+// Enum representing supported audio codecs
+enum AudioCodec {
+  // Audio codec not specified
+  AUDIO_CODEC_UNSPECIFIED = 0;
+  // MP3 codec
+  AUDIO_CODEC_MP3 = 1;
+  // WAV codec
+  AUDIO_CODEC_WAV = 2;
+  // OPUS codec
+  AUDIO_CODEC_OPUS = 3;
+}
+
+// Enum representing supported audio formats
+enum AudioFormat {
+  AUDIO_FORMAT_UNSPECIFIED = 0;
+
+  // Signed formats (little-endian)
+  AUDIO_FORMAT_S16LE = 1;   // 16-bit signed
+}
+
+// AudioEncoding specifies parameters for encoding audio
+// Applicable to opus and mp3 only.
+message AudioEncoding {
+  // Bitrate in kbps
+  uint32 bitrate_kbps = 1;
+}

@@ -1,0 +1,155 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+// AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
+// Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+syntax = "proto3";
+
+package nvidia.ai4m.activespeakerdetection.v1;
+
+import "google/protobuf/empty.proto";
+import "app/nvidia_active_speaker_proto/audio.proto";
+import "app/nvidia_active_speaker_proto/common.proto";
+import "app/nvidia_active_speaker_proto/video.proto";
+
+// ActiveSpeakerDetectionService provides APIs for active speaker detection
+//
+// The service takes video, audio and diarization files as inputs
+// and generates Region of Interest bounding box
+// corresponding to the active speaker and returns it
+// along with the speaker metadata for each frame.
+//
+// The DetectActiveSpeaker API supports both transactional
+// and streaming processing through gRPC.
+
+service ActiveSpeakerDetectionService {
+  // DetectActiveSpeaker is a bidirectional streaming RPC that takes audio file,
+  // video file and diarization file as inputs and returns a bounding box
+  // corresponding to the active speaker and its speaker tag for each frame.
+  // request: Stream of DetectActiveSpeakerRequest messages containing
+  // either configuration or input data
+  // response: Stream of DetectActiveSpeakerResponse messages
+  // containing either configuration, bounding box
+  // and speaker tag for each frame, or keepalive
+  rpc DetectActiveSpeaker(stream DetectActiveSpeakerRequest) returns (stream DetectActiveSpeakerResponse) {} // protolint:disable:this MAX_LINE_LENGTH
+}
+
+message DetectActiveSpeakerRequest {
+  oneof active_speaker_detection_request {
+    // Configuration for the speaker detection
+    ActiveSpeakerDetectionConfig config = 1;
+    // Input data for the speaker detection
+    ActiveSpeakerDetectionData data = 2;
+  }
+}
+
+// Source of audio data for active speaker detection.
+enum AudioSourceConfig {
+  // Unspecified; defaults to separate stream behavior.
+  AUDIO_SOURCE_CONFIG_UNSPECIFIED = 0;
+  // Client provides a separate audio stream alongside video.
+  AUDIO_SOURCE_CONFIG_SEPARATE_STREAM = 1;
+  // Audio is demuxed from the video container (no separate audio needed).
+  AUDIO_SOURCE_CONFIG_EMBEDDED_IN_VIDEO = 2;
+}
+
+message ActiveSpeakerDetectionConfig {
+  // Input audio configuration
+  nvidia.ai4m.audio.v1.AudioConfig input_audio_config = 1;
+  // Input video configuration
+  nvidia.ai4m.video.v1.VideoConfig input_video_config = 2;
+  // Where audio originates: separate stream or embedded in video container.
+  // Defaults to AUDIO_SOURCE_CONFIG_UNSPECIFIED (treated as separate stream).
+  AudioSourceConfig audio_source_config = 3;
+  // Speaker detection threshold
+  // Minimum confidence score in (0, 1) to consider a face as speaking
+  // Default: 0.5986
+  optional float speaker_detection_threshold = 4;
+}
+
+message ActiveSpeakerDetectionData {
+  // Video data
+  optional bytes video_data = 1;
+  // Audio data
+  optional bytes audio_data = 2;
+  // Diarization information
+  optional AudioDiarizationInfo diarization_info = 3;
+}
+
+message AudioDiarizationInfo {
+  // List of segment-level timing and speaker information
+  repeated AudioSegmentInfo segments = 1;
+  // Reserved for future use: Transcript of the audio
+  optional string transcript = 2;
+}
+
+// Timing Segment-specific information.
+message AudioSegmentInfo {
+  // Time offset relative to the beginning of the audio in ms
+  // and corresponding to the start of the segment
+  uint32 start_time = 1;
+
+  // Time offset relative to the beginning of the audio in ms
+  // and corresponding to the end of the segment.
+  uint32 end_time = 2;
+
+  // A distinct integer value is assigned for every speaker within
+  // the audio stream.
+  int32 speaker_id = 3;
+
+  // Reserved for future use: the word corresponding to this segment.
+  optional string word = 4;
+
+  // Reserved for future use: the language code of the word (e.g. en-US).
+  optional string language_code = 5;
+}
+
+message SpeakerInfo {
+  // Bounding box corresponding to the active speaker
+  nvidia.ai4m.common.v1.BoundingBox speaker_bbox = 1;
+  // Audio Track ID
+  // Based on diarized data in a multi-speaker scenario
+  int32 diarized_speaker_id = 2;
+  // Unique Face ID assigned to each face detected
+  // Face IDs start from 0.
+  int32 face_id = 3;
+  // Flag to indicate if the speaker is speaking in this frame
+  bool is_speaking = 4;
+  // Face Detection confidence score (0.0 to 1.0)
+  float face_detection_confidence = 5;
+}
+
+message DetectActiveSpeakerResponse {
+  oneof response {
+    // Echoed configuration parameters
+    ActiveSpeakerDetectionConfig config = 1;
+    // Active speaker region of interest bounding box and speaker ID
+    ActiveSpeakerDetectionResult active_speaker_detection_result = 2;
+    // Empty message used to maintain connection
+    google.protobuf.Empty keepalive = 3;
+  }
+}
+
+message ActiveSpeakerDetectionResult {
+  // Frame ID
+  uint32 frame_id = 1;
+  // Detected Speaker Info per frame
+  repeated SpeakerInfo speaker_data = 2;
+}
