@@ -271,6 +271,18 @@ def test_persisted_analyses_can_be_read_back_through_the_listing_endpoint(sessio
     assert listed["size_bytes"] == 4096
     assert listed["original_sha256"] == hashlib.sha256(b"original").hexdigest()
     assert listed["was_normalized"] is True
+    # The probed facts survive the round trip through real columns, so the container and
+    # codec evidence the dashboard renders is the evidence the database holds.
+    assert listed["media"] == {
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "codec_name": "h264",
+        "width": 1920,
+        "height": 1080,
+        "duration": pytest.approx(12.34),
+        "frame_rate": pytest.approx(30000 / 1001, rel=1e-12),
+        "pix_fmt": "yuv420p",
+        "constant_frame_rate": True,
+    }
     # The timestamp survives as a real value from the database default.
     assert listed["created_at"] is not None
 

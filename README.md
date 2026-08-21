@@ -6,10 +6,10 @@ body of evidence, rather than returning a single verdict on whether media is fak
 
 ## Current status
 
-The upload pipeline exists end to end and detection runs asynchronously behind it. A video can
-be submitted, validated, stored, described, queued, analysed by NVIDIA's synthetic video
-detector in a background worker and persisted, and the resulting analysis is listed in the
-dashboard. What runs today:
+The upload pipeline exists end to end and analysis runs asynchronously behind it. A video can
+be submitted, validated, stored, described, queued, analysed in a background worker by NVIDIA's
+synthetic video detector and by the C2PA provenance reader, and persisted, and the resulting
+analysis is listed in the dashboard. What runs today:
 
 - `POST /api/v1/analyses` accepts a video upload;
 - the upload is admitted only by declared MIME type (`video/mp4`, `video/quicktime`) and a
@@ -32,22 +32,39 @@ dashboard. What runs today:
   and no transaction is held open across inference;
 - the worker fetches the provider-compatible object from MinIO, sends it to NVIDIA's
   Synthetic Video Detector over gRPC, and deletes the local copy either way;
+- the worker separately reads the C2PA Content Credentials embedded in the *forensic
+  original* — never the derivative, because normalization re-encodes the video and strips
+  any manifest with it, which would report every normalized upload as unsigned;
+- what C2PA reports is passed through in C2PA's own words: whether a manifest exists at all,
+  the SDK's validation state (`Trusted`, `Valid`, `Invalid`), its failure codes, the claim
+  generator and the signature issuer. Remote manifest fetching and OCSP revocation lookups
+  are switched off, so an uploaded file can never steer a request out of the worker; a
+  remote manifest URL is recorded as evidence and not visited;
+- absent Content Credentials are a successful reading, not a failure and not a finding. Most
+  media carries none, and neither their absence nor an invalid signature is treated as
+  evidence that the media is fake;
 - NVIDIA's probability is recorded as returned, on NVIDIA's own scale, as one signal among
   the several a full analysis will eventually carry;
+- provenance is persisted as its own independent signal beside it, with no score and no risk
+  level: it is the state of a signature, not a figure on a scale;
 - the clips NVIDIA scored inside the video are kept as evidence in their own right, capped at
   the strongest twenty per detection, each with the provider's clip index and raw logit;
 - a detector that fails, times out or is misconfigured does not fail the job: the failure is
   itself persisted as a signal, so the gap in the evidence is visible rather than silent. A
   fault on this side — object storage unreachable, an unreadable artifact — fails the job and
   the analysis instead, with the failure kind on the job row;
-- the signal, its clip evidence and the `completed` statuses are written in one final
+- one evidence source breaking does not cost the analysis the other: an analysis can carry a
+  failed detection beside a successful provenance reading, or the reverse, and the job still
+  completes;
+- both signals, the clip evidence and the `completed` statuses are written in one final
   transaction;
-- `GET /api/v1/analyses` returns the most recent analyses with their signal and its strongest
-  clips;
+- `GET /api/v1/analyses` returns the most recent analyses with both signals, the detection's
+  strongest clips, and the container/codec facts ffprobe established about the original;
 - the Next.js dashboard renders that list beside the connectivity status.
 
-No provenance, risk classification or reporting functionality is implemented yet. Signals
-carry a provider score but no risk level; deciding what a score means is a later phase.
+No risk classification or reporting functionality is implemented yet. Signals carry a
+provider's own figures but no risk level; deciding what a score or a validation state means
+is a later phase.
 
 ## Architecture
 
@@ -56,7 +73,7 @@ Next.js (web)
    ↓ REST
 FastAPI (api) ──→ PostgreSQL ←── worker (api-worker)
    ↓                  ↑              ↓
- MinIO ───────────────┘         NVIDIA SVD
+ MinIO ───────────────┘         NVIDIA SVD + C2PA
 ```
 
 The API and the worker are the same image with different commands. They never call each
@@ -78,9 +95,10 @@ keys are content-addressed and may already be referenced by an earlier analysis 
 bytes.
 
 The worker takes each job in three steps, never one transaction: claim it and commit, then
-download and detect with nothing open, then write the evidence and close the job out.
-Holding the claim across inference would pin a connection and a row lock for however long
-NVIDIA takes.
+download, read provenance and detect with nothing open, then write the evidence and close the
+job out. Holding the claim across inference would pin a connection and a row lock for however
+long NVIDIA takes. The two evidence sources read different artifacts — C2PA the forensic
+original, NVIDIA the provider-compatible one — and neither waits on the other's outcome.
 
 A job is claimed once. Retrying a failed job and recovering one whose worker died mid-flight
 are not implemented — a job left `processing` stays there.
@@ -88,22 +106,23 @@ are not implemented — a job left `processing` stays there.
 ## Repository structure
 
 ```text
-apps/api/              FastAPI service and the worker that shares its image
-  app/main.py          /health endpoint, router wiring
-  app/api/analyses.py  upload pipeline and analysis listing
-  app/worker.py        job claiming and the background processing loop
-  app/detection.py     one detector's answer, turned into evidence
-  app/media.py         ffprobe validation and metadata extraction
-  app/normalization.py provider-compatible MP4/H.264 derivatives
-  app/nvidia_video.py  NVIDIA Synthetic Video Detector gRPC client
-  app/storage.py       MinIO object storage
-  app/db/              SQLAlchemy models, engine and session
-  alembic/             database migrations
-  tests/               pytest suite
-apps/web/              Next.js application
-  app/page.tsx         connectivity status and recent analyses
-docs/planning/         product, API and data-model scope
-docker-compose.yml     service definitions
+apps/api/                FastAPI service and the worker that shares its image
+  app/main.py            /health endpoint, router wiring
+  app/api/analyses.py    upload pipeline and analysis listing
+  app/worker.py          job claiming and the background processing loop
+  app/detection.py       each evidence source's answer, turned into a signal
+  app/c2pa_extractor.py  C2PA Content Credentials read from a local file
+  app/media.py           ffprobe validation and metadata extraction
+  app/normalization.py   provider-compatible MP4/H.264 derivatives
+  app/nvidia_video.py    NVIDIA Synthetic Video Detector gRPC client
+  app/storage.py         MinIO object storage
+  app/db/                SQLAlchemy models, engine and session
+  alembic/               database migrations
+  tests/                 pytest suite
+apps/web/                Next.js application
+  app/page.tsx           connectivity status and recent analyses
+docs/planning/           product, API and data-model scope
+docker-compose.yml       service definitions
 ```
 
 ## Prerequisites
@@ -190,8 +209,8 @@ yet. The queued work is a row of its own:
 SELECT status, error_message, created_at, updated_at FROM analysis_jobs;
 ```
 
-The NVIDIA signal is not in the upload response — it is evidence attached to the analysis,
-returned by `GET /api/v1/analyses` and shown on the dashboard. It can also be read directly:
+Neither signal is in the upload response — they are evidence attached to the analysis,
+returned by `GET /api/v1/analyses` and shown on the dashboard. They can also be read directly:
 
 ```sql
 SELECT provider, signal_type, status, score, metadata FROM analysis_signals;
@@ -201,7 +220,21 @@ SELECT clip_index, logit FROM analysis_segments ORDER BY logit DESC;
 
 A segment is one clip the detector scored. NVIDIA reports a frame index and a raw logit per
 clip and no timestamps, so those two figures are what is stored — the logit is not a
-probability and is not comparable with the signal's `score`.
+probability and is not comparable with the signal's `score`. Provenance produces no segments:
+a signature has no timeline.
+
+Each analysis carries one row per evidence source — `nvidia`/`synthetic_video` and
+`c2pa`/`provenance` — and the dashboard shows them in separate columns. The provenance column
+keeps five outcomes apart: `No provenance` (the file was read and carries no credentials),
+`Remote provenance (not fetched)` (the file names a manifest kept elsewhere, and that URL was
+recorded and deliberately never visited), the C2PA validation state verbatim,
+`Extraction failed` (the file could not be read), and `—` (no reading was ever made). None of
+them is a verdict about the media.
+
+The dashboard also shows what ffprobe read out of the original — codec, resolution, frame rate
+and container — beside the MIME type the client declared. The container is reported as
+ffprobe's demuxer family, one name covering MOV and MP4 alike, because only `major_brand`
+separates them and no column holds it.
 
 Detection needs `NVIDIA_API_KEY` and `NVIDIA_SVD_FUNCTION_ID` in `.env`, read by the worker
 rather than the API. Missing or wrong credentials never fail an upload and never fail a job:

@@ -59,6 +59,26 @@ type ProvenanceSignal = {
   validation_state: string | null;
   claim_generator: string | null;
   signature_issuer: string | null;
+  // Where the file says its manifest lives when it is not inside the file. Present
+  // alongside `manifest_exists: false`, and the two together are a different fact from a
+  // file that claims no provenance at all. The URL was recorded and never visited.
+  remote_manifest_url: string | null;
+};
+
+// What ffprobe established about the forensic original, as the database kept it. These
+// are facts about the bytes, unlike `declared_content_type`, which is only what the client
+// said about them. `format_name` is ffprobe's own name for the demuxer family — one string
+// covers MOV and MP4 alike — so it is shown as ffprobe worded it rather than narrowed to a
+// container this page cannot prove.
+type MediaFacts = {
+  format_name: string;
+  codec_name: string;
+  width: number;
+  height: number;
+  duration: number;
+  frame_rate: number;
+  pix_fmt: string | null;
+  constant_frame_rate: boolean;
 };
 
 type AnalysisSummary = {
@@ -68,6 +88,8 @@ type AnalysisSummary = {
   original_filename: string | null;
   declared_content_type: string;
   was_normalized: boolean;
+  // Never null: an analysis and its media are written in one transaction.
+  media: MediaFacts;
   // Null when the analysis carries no such signal at all — a different fact from a
   // detector that ran and failed.
   synthetic_video: SyntheticVideoSignal | null;
@@ -83,11 +105,13 @@ const UNAVAILABLE = "N/A";
 // Shown where there is no detector result to speak of.
 const ABSENT = "—";
 
-// The two provenance outcomes that are not a C2PA state: the file was read and carries no
-// credentials, and the file could not be read. Kept apart on purpose — "we looked and
-// found nothing" and "we could not look" are different facts, and neither means the media
-// is fake.
+// The three provenance outcomes that are not a C2PA state: the file was read and carries
+// no credentials, the file names a manifest kept somewhere else, and the file could not be
+// read. Kept apart on purpose — "we looked and found nothing", "provenance was claimed but
+// is not in these bytes" and "we could not look" are different facts, and none of them
+// means the media is fake.
 const NO_PROVENANCE = "No provenance";
+const REMOTE_PROVENANCE = "Remote provenance (not fetched)";
 const EXTRACTION_FAILED = "Extraction failed";
 
 type AnalysesResult =
@@ -245,6 +269,7 @@ function parseProvenance(payload: unknown): ProvenanceSignal | null | undefined 
     validation_state,
     claim_generator,
     signature_issuer,
+    remote_manifest_url,
   } = payload as Record<string, unknown>;
 
   const parsedVersion = parseOptionalString(provider_version);
@@ -252,6 +277,7 @@ function parseProvenance(payload: unknown): ProvenanceSignal | null | undefined 
   const parsedState = parseOptionalString(validation_state);
   const parsedGenerator = parseOptionalString(claim_generator);
   const parsedIssuer = parseOptionalString(signature_issuer);
+  const parsedRemoteUrl = parseOptionalString(remote_manifest_url);
 
   if (
     typeof provider !== "string" ||
@@ -261,7 +287,8 @@ function parseProvenance(payload: unknown): ProvenanceSignal | null | undefined 
     parsedExists === undefined ||
     parsedState === undefined ||
     parsedGenerator === undefined ||
-    parsedIssuer === undefined
+    parsedIssuer === undefined ||
+    parsedRemoteUrl === undefined
   ) {
     return undefined;
   }
@@ -275,6 +302,59 @@ function parseProvenance(payload: unknown): ProvenanceSignal | null | undefined 
     validation_state: parsedState,
     claim_generator: parsedGenerator,
     signature_issuer: parsedIssuer,
+    remote_manifest_url: parsedRemoteUrl,
+  };
+}
+
+/**
+ * The probed media facts on one analysis, or `undefined` if the payload is not a set of
+ * them. There is no `null` case: every listed analysis has media, so an absent or
+ * malformed object means the response cannot be trusted rather than a state to render.
+ */
+function parseMedia(payload: unknown): MediaFacts | undefined {
+  if (typeof payload !== "object" || payload === null) {
+    return undefined;
+  }
+
+  const {
+    format_name,
+    codec_name,
+    width,
+    height,
+    duration,
+    frame_rate,
+    pix_fmt,
+    constant_frame_rate,
+  } = payload as Record<string, unknown>;
+
+  const parsedPixFmt = parseOptionalString(pix_fmt);
+
+  if (
+    typeof format_name !== "string" ||
+    typeof codec_name !== "string" ||
+    typeof width !== "number" ||
+    !Number.isFinite(width) ||
+    typeof height !== "number" ||
+    !Number.isFinite(height) ||
+    typeof duration !== "number" ||
+    !Number.isFinite(duration) ||
+    typeof frame_rate !== "number" ||
+    !Number.isFinite(frame_rate) ||
+    typeof constant_frame_rate !== "boolean" ||
+    parsedPixFmt === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    format_name,
+    codec_name,
+    width,
+    height,
+    duration,
+    frame_rate,
+    pix_fmt: parsedPixFmt,
+    constant_frame_rate,
   };
 }
 
@@ -290,12 +370,14 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     original_filename,
     declared_content_type,
     was_normalized,
+    media,
     synthetic_video,
     provenance,
   } = payload as Record<string, unknown>;
 
   const signal = parseSignal(synthetic_video);
   const provenanceSignal = parseProvenance(provenance);
+  const mediaFacts = parseMedia(media);
 
   if (
     typeof id !== "string" ||
@@ -305,6 +387,7 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     typeof was_normalized !== "boolean" ||
     signal === undefined ||
     provenanceSignal === undefined ||
+    mediaFacts === undefined ||
     !(typeof original_filename === "string" || original_filename === null)
   ) {
     return null;
@@ -317,6 +400,7 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     original_filename,
     declared_content_type,
     was_normalized,
+    media: mediaFacts,
     synthetic_video: signal,
     provenance: provenanceSignal,
   };
@@ -461,12 +545,19 @@ function ClipEvidence({ signal }: { signal: SyntheticVideoSignal | null }) {
 /**
  * What the C2PA reading found, in C2PA's own words where it has any.
  *
- * Four outcomes, deliberately never merged into fewer:
- * no signal at all, a reading that failed, a reading that found no credentials, and a
- * reading that found some — where the C2PA validation state is shown verbatim rather than
- * being translated into "authentic" or "tampered". A file with no Content Credentials is
- * the ordinary case, not a suspicious one, and an invalid signature means the credentials
- * do not verify — not that the video is fake. No part of this product owns that judgement.
+ * Five outcomes, deliberately never merged into fewer:
+ * no signal at all, a reading that failed, a reading that found no credentials, a reading
+ * that found a manifest kept outside the file, and a reading that found one inside it —
+ * where the C2PA validation state is shown verbatim rather than being translated into
+ * "authentic" or "tampered". A file with no Content Credentials is the ordinary case, not
+ * a suspicious one, and an invalid signature means the credentials do not verify — not
+ * that the video is fake. No part of this product owns that judgement.
+ *
+ * The remote case is separated from the absent one because they are different facts. A
+ * file that names a manifest stored elsewhere did claim provenance; the manifest simply is
+ * not in these bytes, and DeepGuard deliberately did not go and get it — fetching a URL an
+ * uploaded file supplies would let that file steer a request out of the worker. Reporting
+ * it as "No provenance" would credit the file with a claim it never made.
  */
 function provenanceText(signal: ProvenanceSignal | null): string {
   if (signal === null) {
@@ -478,11 +569,30 @@ function provenanceText(signal: ProvenanceSignal | null): string {
   }
 
   if (signal.manifest_exists === false) {
-    return NO_PROVENANCE;
+    return signal.remote_manifest_url === null ? NO_PROVENANCE : REMOTE_PROVENANCE;
   }
 
   // A manifest the reading could not describe, which the API reports rather than guesses.
   return signal.validation_state ?? UNAVAILABLE;
+}
+
+/**
+ * The hover detail behind one provenance cell: which SDK read the file, and — for a remote
+ * manifest — the URL it named. The URL is shown as text and never as a link: it comes out
+ * of an uploaded file, and offering it as something to click would hand the reader the
+ * fetch the worker refused to make.
+ */
+function provenanceTitle(signal: ProvenanceSignal | null): string | undefined {
+  if (signal === null) {
+    return undefined;
+  }
+
+  const parts = [
+    signal.provider_version ? `C2PA SDK: ${signal.provider_version}` : null,
+    signal.remote_manifest_url ? `Manifest URL (not fetched): ${signal.remote_manifest_url}` : null,
+  ].filter((part) => part !== null);
+
+  return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 /** Who the manifest says made the media, or who signed for it. Absent unless named. */
@@ -499,11 +609,42 @@ function Provenance({ signal }: { signal: ProvenanceSignal | null }) {
 
   return (
     <>
-      <div title={signal?.provider_version ? `C2PA SDK: ${signal.provider_version}` : undefined}>
-        {provenanceText(signal)}
-      </div>
+      <div title={provenanceTitle(signal)}>{provenanceText(signal)}</div>
       {source && <div className="opacity-60">{source}</div>}
     </>
+  );
+}
+
+/** The provider's frame rate as text, without inventing precision it does not have. */
+function frameRateText(rate: number): string {
+  return Number.isInteger(rate) ? `${rate}` : rate.toFixed(2);
+}
+
+/**
+ * The container and codec evidence ffprobe read out of the original.
+ *
+ * A compact summary, not the whole record: codec, resolution and frame rate on one line
+ * and the container beneath, with the rest on hover. Every figure is ffprobe's, shown as
+ * ffprobe reported it — `format_name` in particular is the demuxer family, one string
+ * covering MOV and MP4 alike, and it is not narrowed to a container name the stored
+ * evidence does not establish.
+ */
+function Media({ media }: { media: MediaFacts }) {
+  const detail = [
+    `${media.duration.toFixed(2)}s`,
+    media.pix_fmt,
+    media.constant_frame_rate ? "constant frame rate" : "variable frame rate",
+  ]
+    .filter((part) => part !== null)
+    .join(" · ");
+
+  return (
+    <div title={detail}>
+      <div>
+        {media.codec_name} · {media.width}×{media.height} · {frameRateText(media.frame_rate)} fps
+      </div>
+      <div className="opacity-60">{media.format_name}</div>
+    </div>
   );
 }
 
@@ -515,7 +656,8 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
           <tr>
             <th className="py-2 pr-4 font-medium">ID</th>
             <th className="py-2 pr-4 font-medium">File</th>
-            <th className="py-2 pr-4 font-medium">Type</th>
+            <th className="py-2 pr-4 font-medium">Declared type</th>
+            <th className="py-2 pr-4 font-medium">Media (ffprobe)</th>
             <th className="py-2 pr-4 font-medium">Status</th>
             <th className="py-2 pr-4 font-medium">Normalized</th>
             <th className="py-2 pr-4 font-medium">NVIDIA SVD</th>
@@ -538,6 +680,11 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
               </td>
               <td className="py-2 pr-4">{analysis.original_filename ?? "—"}</td>
               <td className="py-2 pr-4 font-mono text-xs">{analysis.declared_content_type}</td>
+              {/* What the bytes actually are, as opposed to what the client declared them
+                  to be. ffprobe established these before any detector ran. */}
+              <td className="py-2 pr-4 align-top font-mono text-xs whitespace-nowrap">
+                <Media media={analysis.media} />
+              </td>
               <td className="py-2 pr-4">{analysis.status}</td>
               <td className="py-2 pr-4">{analysis.was_normalized ? "yes" : "no"}</td>
               {/* The detector's own state, verbatim: SUCCESS, FAILED or TIMEOUT are three
@@ -634,7 +781,15 @@ export default async function Home() {
           the forensic original and shown in C2PA&apos;s own words. Most media carries none,
           so <span className="font-mono">{NO_PROVENANCE}</span> is the ordinary case and not
           a finding — and an invalid manifest means the credentials do not verify, not that
-          the media is fake.
+          the media is fake. <span className="font-mono">{REMOTE_PROVENANCE}</span> means the
+          file named a manifest stored somewhere else; that URL was recorded and deliberately
+          never visited, so nothing is known about what it holds.
+        </p>
+        <p className="mt-1 text-sm opacity-70">
+          Media is what ffprobe read out of the original before any detector ran, shown as
+          ffprobe reported it. The container is its demuxer family — one name covers MOV and
+          MP4 alike — and it is not narrowed to a container the stored evidence cannot prove.
+          The declared type beside it is only what the client claimed.
         </p>
         <p className="mt-1 text-sm opacity-70">
           Strongest clips are the highest-scoring of the clips NVIDIA examined, identified by

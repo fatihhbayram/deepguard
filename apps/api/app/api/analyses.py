@@ -155,7 +155,7 @@ class ProvenanceSignal(BaseModel):
     score: provenance is the state of a signature, not a figure on a scale, and one here
     would sit beside NVIDIA's probability as though the two were comparable.
 
-    The three states a reader has to tell apart are carried, never merged:
+    The states a reader has to tell apart are carried, never merged:
     `status` is `SUCCESS` when the file was read — including when it holds no credentials,
     which `manifest_exists` reports — and `FAILED` when reading it did not work, which is
     not the same as media that carries nothing. `validation_state` is the C2PA SDK's own
@@ -177,14 +177,46 @@ class ProvenanceSignal(BaseModel):
     # absent whenever the manifest does not name them.
     claim_generator: str | None
     signature_issuer: str | None
+    # Where the file says its manifest lives, when it keeps it somewhere other than inside
+    # itself. Present alongside `manifest_exists = false`, and the pair is a fourth fact in
+    # its own right: provenance was claimed, it is simply not in these bytes. The URL was
+    # recorded and deliberately never visited — fetching it would let an uploaded file
+    # steer a request out of the worker — so nothing here says whether it resolves.
+    remote_manifest_url: str | None
+
+
+class MediaFacts(BaseModel):
+    """What ffprobe established about the forensic original, as it was persisted.
+
+    Kept as a nested object rather than flattened beside `declared_content_type`, because
+    that is exactly the distinction worth preserving: everything here was read out of the
+    bytes, while the declared MIME is only what the client claimed about them.
+
+    Deliberately not `MediaMetadata`, the dataclass the upload response carries. That one
+    is what ffprobe returned; this one is what the database kept, and the two differ —
+    `major_brand` has no column, so the container evidence available here is
+    `format_name`, ffprobe's name for the demuxer family. It is reported as ffprobe words
+    it: `mov,mp4,m4a,3gp,3g2,mj2` covers MOV and MP4 alike, and narrowing that to "MP4"
+    would be this layer claiming something the stored evidence does not establish.
+    """
+
+    format_name: str
+    codec_name: str
+    width: int
+    height: int
+    duration: float
+    frame_rate: float
+    # Null whenever ffprobe reported no pixel format for the stream.
+    pix_fmt: str | None
+    constant_frame_rate: bool
 
 
 class AnalysisSummary(BaseModel):
     """One row of the dashboard listing.
 
     Deliberately narrower than `CreatedAnalysis`: only what the list view renders. The
-    storage keys, ffprobe geometry and derivative identity are not shown there, and
-    risk and report fields do not exist yet.
+    storage keys and derivative identity are not shown there, and risk and report fields
+    do not exist yet.
     """
 
     id: uuid.UUID
@@ -197,6 +229,9 @@ class AnalysisSummary(BaseModel):
     size_bytes: int
     original_sha256: str
     was_normalized: bool
+    # Never null: an analysis and its media row are written in one transaction, and the
+    # listing joins them inner, so a listed analysis always has these facts.
+    media: MediaFacts
     # Null for an analysis that carries no such signal — anything stored before the
     # detector was wired in, and any later analysis whose signal row is absent.
     synthetic_video: SyntheticVideoSignal | None
@@ -554,6 +589,9 @@ def provenance_signal(row: Any) -> ProvenanceSignal | None:
         validation_state=signal_figure(row.provenance_metadata, "validation_state", str),
         claim_generator=signal_figure(row.provenance_metadata, "claim_generator", str),
         signature_issuer=signal_figure(row.provenance_metadata, "signature_issuer", str),
+        remote_manifest_url=signal_figure(
+            row.provenance_metadata, "remote_manifest_url", str
+        ),
     )
 
 
@@ -655,6 +693,16 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
                 MediaFile.size_bytes,
                 MediaFile.original_sha256,
                 MediaFile.was_normalized,
+                # The probed facts about the original. Already on the joined row, so
+                # naming them costs no extra statement.
+                MediaFile.format_name,
+                MediaFile.codec_name,
+                MediaFile.width,
+                MediaFile.height,
+                MediaFile.duration,
+                MediaFile.frame_rate,
+                MediaFile.pix_fmt,
+                MediaFile.constant_frame_rate,
                 # Labelled, because `status` and `created_at` exist on both tables and the
                 # unlabelled columns would collide in the result row.
                 AnalysisSignal.id.label("signal_id"),
@@ -712,6 +760,16 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
             size_bytes=row.size_bytes,
             original_sha256=row.original_sha256,
             was_normalized=row.was_normalized,
+            media=MediaFacts(
+                format_name=row.format_name,
+                codec_name=row.codec_name,
+                width=row.width,
+                height=row.height,
+                duration=row.duration,
+                frame_rate=row.frame_rate,
+                pix_fmt=row.pix_fmt,
+                constant_frame_rate=row.constant_frame_rate,
+            ),
             synthetic_video=synthetic_video_signal(row, segments.get(row.signal_id, [])),
             provenance=provenance_signal(row),
         )

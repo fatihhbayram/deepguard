@@ -31,8 +31,23 @@ EXPECTED_FIELDS = {
     "size_bytes",
     "original_sha256",
     "was_normalized",
+    "media",
     "synthetic_video",
     "provenance",
+}
+
+# What ffprobe established about the original, as the database kept it. `major_brand` is
+# absent because no column holds it — the listing reports the stored evidence, not the
+# probe's full output.
+EXPECTED_MEDIA_FIELDS = {
+    "format_name",
+    "codec_name",
+    "width",
+    "height",
+    "duration",
+    "frame_rate",
+    "pix_fmt",
+    "constant_frame_rate",
 }
 
 # The signal object the dashboard receives: the provider's own identity, state and
@@ -61,6 +76,7 @@ EXPECTED_PROVENANCE_FIELDS = {
     "validation_state",
     "claim_generator",
     "signature_issuer",
+    "remote_manifest_url",
 }
 
 # One clip of provider evidence: the frame index NVIDIA scored and the logit it gave it.
@@ -88,6 +104,15 @@ def listing_row(**overrides):
         "size_bytes": 13054,
         "original_sha256": "a" * 64,
         "was_normalized": False,
+        # What ffprobe established about the original, exactly as `media_files` holds it.
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "codec_name": "h264",
+        "width": 1280,
+        "height": 720,
+        "duration": 5.0,
+        "frame_rate": 30.0,
+        "pix_fmt": "yuv420p",
+        "constant_frame_rate": True,
         "signal_id": uuid.uuid4(),
         "signal_provider": "nvidia",
         "signal_type": "synthetic_video",
@@ -228,6 +253,16 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
             "size_bytes": 13054,
             "original_sha256": "a" * 64,
             "was_normalized": False,
+            "media": {
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "codec_name": "h264",
+                "width": 1280,
+                "height": 720,
+                "duration": 5.0,
+                "frame_rate": 30.0,
+                "pix_fmt": "yuv420p",
+                "constant_frame_rate": True,
+            },
             "synthetic_video": {
                 "provider": "nvidia",
                 "signal_type": "synthetic_video",
@@ -247,6 +282,7 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
                 "validation_state": "Valid",
                 "claim_generator": "test-camera",
                 "signature_issuer": "Test Signing Cert",
+                "remote_manifest_url": None,
             },
         }
     ]
@@ -283,6 +319,76 @@ def test_normalized_analysis_reports_it(client, fake_session):
     response = client.get("/api/v1/analyses")
 
     assert response.json()[0]["was_normalized"] is True
+
+
+# Media facts. What ffprobe read out of the original, as distinct from what the client
+# declared about it. Established before any detector ran and stored since P1.
+
+
+def test_the_probed_media_facts_are_exposed(client, fake_session):
+    fake_session.rows = [listing_row()]
+
+    media = client.get("/api/v1/analyses").json()[0]["media"]
+
+    assert set(media) == EXPECTED_MEDIA_FIELDS
+    assert media["format_name"] == "mov,mp4,m4a,3gp,3g2,mj2"
+    assert media["codec_name"] == "h264"
+    assert media["width"] == 1280
+    assert media["height"] == 720
+    assert media["duration"] == 5.0
+    assert media["frame_rate"] == 30.0
+    assert media["pix_fmt"] == "yuv420p"
+    assert media["constant_frame_rate"] is True
+
+
+def test_the_container_is_reported_as_ffprobe_worded_it(client, fake_session):
+    """The demuxer family, not a container name narrowed out of it.
+
+    One ffprobe format name covers MOV and MP4 alike. Only `major_brand` separates them and
+    no column holds it, so calling this row an MP4 would be the listing claiming something
+    the stored evidence does not establish.
+    """
+    fake_session.rows = [listing_row(format_name="matroska,webm", codec_name="vp9")]
+
+    media = client.get("/api/v1/analyses").json()[0]["media"]
+
+    assert media["format_name"] == "matroska,webm"
+    assert media["codec_name"] == "vp9"
+
+
+def test_media_facts_are_reported_untransformed(client, fake_session):
+    """A fractional NTSC rate is not rounded on the way out; presentation owns that."""
+    fake_session.rows = [listing_row(frame_rate=30000 / 1001, width=1920, height=1080)]
+
+    media = client.get("/api/v1/analyses").json()[0]["media"]
+
+    assert media["frame_rate"] == pytest.approx(30000 / 1001, rel=1e-12)
+    assert (media["width"], media["height"]) == (1920, 1080)
+
+
+def test_media_without_a_pixel_format_reports_null(client, fake_session):
+    fake_session.rows = [listing_row(pix_fmt=None)]
+
+    # ffprobe reported none. An empty string would read as a format called "".
+    assert client.get("/api/v1/analyses").json()[0]["media"]["pix_fmt"] is None
+
+
+def test_variable_frame_rate_media_reports_it(client, fake_session):
+    fake_session.rows = [listing_row(constant_frame_rate=False)]
+
+    assert client.get("/api/v1/analyses").json()[0]["media"]["constant_frame_rate"] is False
+
+
+def test_the_media_facts_ride_the_listing_statement(client, fake_session):
+    """The N+1 guard for the media columns: they are already on the joined row."""
+    fake_session.rows = [listing_row() for _ in range(20)]
+
+    client.get("/api/v1/analyses")
+
+    assert len(fake_session.statements) == 2
+    sql = compiled(fake_session)
+    for column in ("format_name", "codec_name", "media_files.width", "media_files.height"):
+        assert column in sql
 
 
 def test_every_persisted_analysis_is_returned(client, fake_session):
@@ -712,3 +818,56 @@ def test_unusable_provenance_metadata_does_not_break_the_listing(client, fake_se
     for row in response.json():
         assert row["provenance"]["manifest_exists"] is None
         assert row["provenance"]["validation_state"] is None
+
+
+def test_a_remote_manifest_url_is_exposed_beside_the_absent_manifest(client, fake_session):
+    """Claimed provenance kept outside the file is not the same as none at all.
+
+    The file named a manifest; it simply is not in these bytes, and the reader deliberately
+    did not go and get it. Reporting only `manifest_exists: false` would leave the two
+    indistinguishable and credit the file with a claim it never made.
+    """
+    url = "https://provenance.example/manifest.c2pa"
+    fake_session.rows = [
+        provenance_row({"manifest_exists": False, "remote_manifest_url": url})
+    ]
+
+    provenance = client.get("/api/v1/analyses").json()[0]["provenance"]
+
+    assert provenance["status"] == "SUCCESS"
+    assert provenance["manifest_exists"] is False
+    assert provenance["remote_manifest_url"] == url
+    # Nothing was fetched, so there is no signature to have a state.
+    assert provenance["validation_state"] is None
+
+
+def test_media_with_no_credentials_at_all_carries_no_remote_url(client, fake_session):
+    fake_session.rows = [
+        provenance_row({"manifest_exists": False, "remote_manifest_url": None})
+    ]
+
+    provenance = client.get("/api/v1/analyses").json()[0]["provenance"]
+
+    # The pair that separates the two: no manifest, and no URL claiming one elsewhere.
+    assert provenance["manifest_exists"] is False
+    assert provenance["remote_manifest_url"] is None
+
+
+def test_an_embedded_manifest_carries_no_remote_url(client, fake_session):
+    fake_session.rows = [listing_row()]
+
+    assert client.get("/api/v1/analyses").json()[0]["provenance"]["remote_manifest_url"] is None
+
+
+def test_an_unusable_remote_manifest_url_reads_as_absent(client, fake_session):
+    fake_session.rows = [
+        provenance_row({"manifest_exists": False, "remote_manifest_url": 7}),
+        provenance_row({"manifest_exists": False}),
+    ]
+
+    response = client.get("/api/v1/analyses")
+
+    assert response.status_code == 200
+    # A figure that is not a URL is not turned into one; the row still lists.
+    for row in response.json():
+        assert row["provenance"]["remote_manifest_url"] is None
