@@ -6,7 +6,7 @@ detector. This is what does, in its own container, on its own schedule.
 Three transactions per job, never one:
 
 1. claim — take a `queued` job, mark it `processing`, commit, release the lock;
-2. nothing — download and inference happen with no transaction open at all;
+2. nothing — downloads, provenance and inference happen with no transaction open at all;
 3. finish — write the evidence and close the job out.
 
 The middle step is the reason for the other two. NVIDIA can take minutes on one video,
@@ -24,6 +24,8 @@ import signal
 import tempfile
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,10 +41,11 @@ from app.db.models import (
     JOB_STATUS_QUEUED,
     Analysis,
     AnalysisJob,
+    AnalysisSignal,
     MediaFile,
 )
 from app.db.session import SessionLocal
-from app.detection import detect_synthetic_video
+from app.detection import detect_synthetic_video, extract_provenance
 from app.storage import fetch_object
 
 logger = logging.getLogger(__name__)
@@ -82,6 +85,11 @@ class ClaimedJob:
     # the original's own key in this column, so it is the right object either way and
     # needs no branch here.
     storage_key: str
+    # The forensic original, byte-for-byte as uploaded (D013). Provenance has to be read
+    # from this one: normalization re-encodes the video, which strips any C2PA manifest
+    # the upload arrived with, so reading credentials off the derivative would report
+    # every normalized upload as unsigned.
+    original_storage_key: str
 
 
 def claim_job(session: Session) -> ClaimedJob | None:
@@ -101,7 +109,11 @@ def claim_job(session: Session) -> ClaimedJob | None:
     Oldest first, so a queue under load stays a queue rather than a stack.
     """
     row = session.execute(
-        select(AnalysisJob, MediaFile.derivative_storage_key)
+        select(
+            AnalysisJob,
+            MediaFile.derivative_storage_key,
+            MediaFile.original_storage_key,
+        )
         .join(MediaFile, MediaFile.analysis_id == AnalysisJob.analysis_id)
         .where(AnalysisJob.status == JOB_STATUS_QUEUED)
         .order_by(AnalysisJob.created_at)
@@ -113,59 +125,93 @@ def claim_job(session: Session) -> ClaimedJob | None:
         session.rollback()
         return None
 
-    job, storage_key = row
+    job, storage_key, original_storage_key = row
     job.status = JOB_STATUS_PROCESSING
     claimed = ClaimedJob(
-        job_id=job.id, analysis_id=job.analysis_id, storage_key=storage_key
+        job_id=job.id,
+        analysis_id=job.analysis_id,
+        storage_key=storage_key,
+        original_storage_key=original_storage_key,
     )
     session.commit()
 
     return claimed
 
 
-def run_detection(claimed: ClaimedJob):
-    """Fetch the media, detect against it, and leave nothing on disk either way.
+@contextmanager
+def fetched_artifact(storage_key: str, suffix: str = "") -> Iterator[Path]:
+    """Download one stored object to a temp file for the block, and remove it after.
 
     The artifact is downloaded rather than passed along, because the process that stored
     it was a different one on a different machine's filesystem. The object store is the
     only thing the upload and this worker share.
+
+    Removal happens on every path, failures included: a container that ran for a week
+    would otherwise fill its disk with every video it had ever been asked about.
     """
-    handle = tempfile.NamedTemporaryFile(prefix=TEMP_FILE_PREFIX, suffix=".mp4", delete=False)
+    handle = tempfile.NamedTemporaryFile(prefix=TEMP_FILE_PREFIX, suffix=suffix, delete=False)
     handle.close()
     path = Path(handle.name)
 
     try:
-        fetch_object(claimed.storage_key, path)
-
-        # The one asynchronous step in an otherwise synchronous process. Detection is all
-        # this worker waits on, so it owns an event loop for the length of that call and
-        # nothing else has to be written around one.
-        return asyncio.run(detect_synthetic_video(path))
+        fetch_object(storage_key, path)
+        yield path
     finally:
         path.unlink(missing_ok=True)
 
 
-def complete_job(session: Session, claimed: ClaimedJob, signal, segments) -> None:
+def read_provenance(claimed: ClaimedJob) -> AnalysisSignal:
+    """Read the C2PA credentials off the forensic original, whatever they turn out to be.
+
+    The temp file gets no suffix: the original is whatever container was uploaded, and
+    the reader identifies it from its own bytes rather than from a name invented here.
+    """
+    with fetched_artifact(claimed.original_storage_key) as path:
+        return extract_provenance(path)
+
+
+def run_detection(claimed: ClaimedJob):
+    """Detect against the provider-compatible artifact, leaving nothing on disk."""
+    with fetched_artifact(claimed.storage_key, suffix=".mp4") as path:
+        # The one asynchronous step in an otherwise synchronous process. Detection is all
+        # this worker waits on, so it owns an event loop for the length of that call and
+        # nothing else has to be written around one.
+        return asyncio.run(detect_synthetic_video(path))
+
+
+def complete_job(
+    session: Session,
+    claimed: ClaimedJob,
+    detection_signal: AnalysisSignal,
+    segments,
+    provenance_signal: AnalysisSignal,
+) -> None:
     """Write the evidence and close the job out, in one transaction.
 
     The evidence and the statuses that claim it exists go in together. A signal committed
     without its job moving on would be detected twice by the next worker; a job marked
-    `completed` without its signal would report evidence that is not there.
+    `completed` without its signals would report evidence that is not there.
+
+    Both signals are written as separate rows and neither waits on the other: they are
+    independent evidence about different artifacts, and an analysis that got provenance
+    but no detection — or the reverse — records exactly that. Only the detection signal
+    owns segments; provenance produces no timeline evidence.
 
     A detector that failed still finishes the job. The provider not answering is a fact
     about the provider, already recorded as the signal's own status — the work this job
     was queued to do was done, and calling that a job failure would confuse a broken
     detector with a broken worker.
     """
-    signal.analysis_id = claimed.analysis_id
-    session.add(signal)
+    for signal in (provenance_signal, detection_signal):
+        signal.analysis_id = claimed.analysis_id
+        session.add(signal)
 
     if segments:
-        # The segments hang off the signal, so its id has to exist before they can name
-        # it — a second flush inside the same transaction, not a second transaction.
+        # The segments hang off the detection signal, so its id has to exist before they
+        # can name it — a second flush inside the same transaction, not a second one.
         session.flush()
         for segment in segments:
-            segment.signal_id = signal.id
+            segment.signal_id = detection_signal.id
         session.add_all(segments)
 
     _set_status(session, claimed, JOB_STATUS_COMPLETED, ANALYSIS_STATUS_COMPLETED)
@@ -229,6 +275,11 @@ def process_one(session: Session) -> bool:
     logger.info("Claimed job %s for analysis %s.", claimed.job_id, claimed.analysis_id)
 
     try:
+        # Provenance first, and on the other artifact: it is read off the forensic
+        # original, while detection runs on the provider-compatible one. Reading
+        # credentials never fails here — `extract_provenance` returns a failed signal
+        # instead — so what can still reach the handler below is fetching the object.
+        provenance_signal = read_provenance(claimed)
         signal, segments = run_detection(claimed)
     except Exception as error:
         # Not a detector saying no — a failure on our own side. It is recorded against
@@ -238,13 +289,18 @@ def process_one(session: Session) -> bool:
         return True
 
     try:
-        complete_job(session, claimed, signal, segments)
+        complete_job(session, claimed, signal, segments, provenance_signal)
     except Exception as error:
         logger.exception("Job %s could not be completed.", claimed.job_id)
         fail_job(session, claimed, error)
         return True
 
-    logger.info("Completed job %s with a %s signal.", claimed.job_id, signal.status)
+    logger.info(
+        "Completed job %s with a %s detection signal and a %s provenance signal.",
+        claimed.job_id,
+        signal.status,
+        provenance_signal.status,
+    )
 
     return True
 

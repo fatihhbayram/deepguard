@@ -19,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import detection, nvidia_video, storage, worker
+from app.c2pa_extractor import C2paEvidence
 from app.db.models import (
     Analysis,
     AnalysisJob,
@@ -29,9 +30,13 @@ from app.db.models import (
 from app.db.session import SessionLocal, engine
 
 VIDEO_BYTES = b"canonical-mp4-bytes"
+ORIGINAL_BYTES = b"as-uploaded-original-bytes"
 NVIDIA_PROBABILITY = 0.8734567165374756
 NVIDIA_LOGIT = 1.9142135381698608
 NVIDIA_FUNCTION_ID = "847b6e53-0133-452d-ab85-d7acf3ace723"
+
+C2PA_SDK_VERSION = "0.90.14"
+C2PA_SIGNATURE_ISSUER = "Test Signing Cert"
 
 # Test jobs are backdated so that oldest-first claiming reaches them before anything a
 # real upload left in the queue. It makes these tests deterministic against a shared
@@ -122,7 +127,11 @@ def fake_storage(monkeypatch):
             self.paths.append(Path(file_path))
             if self.error:
                 raise self.error
-            Path(file_path).write_bytes(VIDEO_BYTES)
+            # Distinguishable per artifact, so a test can tell which object was handed to
+            # which evidence source rather than trusting the key it was asked for.
+            Path(file_path).write_bytes(
+                ORIGINAL_BYTES if key.startswith("originals/") else VIDEO_BYTES
+            )
 
     recorder = Recorder()
     monkeypatch.setattr(storage, "client", recorder)
@@ -160,6 +169,43 @@ def fake_nvidia(monkeypatch):
     return recorder
 
 
+@pytest.fixture(autouse=True)
+def fake_c2pa(monkeypatch):
+    """Stand in for the C2PA reader, which would reject the fake video bytes outright.
+
+    What these tests are about is the flow around it — which artifact it is handed, and
+    what becomes of its answer. Reading real credentials out of real media is covered
+    against real media in `test_c2pa.py`.
+    """
+
+    class Recorder:
+        def __init__(self):
+            self.error = None
+            self.read_bytes = []
+            self.evidence = C2paEvidence(
+                manifest_exists=True,
+                sdk_version=C2PA_SDK_VERSION,
+                validation_state="Valid",
+                validation_failures=("signingCredential.untrusted",),
+                is_embedded=True,
+                active_manifest_label="urn:c2pa:6f0e1a2b",
+                claim_generator="test-camera",
+                signature_issuer=C2PA_SIGNATURE_ISSUER,
+                assertion_labels=("c2pa.actions.v2",),
+                manifest_json='{"active_manifest": "urn:c2pa:6f0e1a2b"}',
+            )
+
+        def extract(self, file_path):
+            self.read_bytes.append(Path(file_path).read_bytes())
+            if self.error:
+                raise self.error
+            return self.evidence
+
+    recorder = Recorder()
+    monkeypatch.setattr(detection, "extract_c2pa_evidence", recorder.extract)
+    return recorder
+
+
 def release(claimed) -> None:
     """Put a job this test did not create back the way it found it.
 
@@ -189,6 +235,14 @@ def read_analysis(analysis_id) -> Analysis:
         return reader.query(Analysis).filter(Analysis.id == analysis_id).one()
 
 
+def read_signals(analysis_id) -> dict[str, AnalysisSignal]:
+    """The analysis's persisted signals, keyed by the provider that produced them."""
+    with SessionLocal() as reader:
+        rows = reader.query(AnalysisSignal).filter_by(analysis_id=analysis_id).all()
+
+    return {row.provider: row for row in rows}
+
+
 @pytest.mark.integration
 def test_claiming_a_job_marks_it_processing_and_commits(queue):
     analysis_id, job_id = queue()
@@ -212,6 +266,8 @@ def test_claiming_carries_the_canonical_storage_key_out_of_the_transaction(queue
 
     # The provider-compatible artifact, which for normalized media is the derivative.
     assert claimed.storage_key.startswith("derivatives/")
+    # And the forensic original beside it, because provenance is read from that one.
+    assert claimed.original_storage_key.startswith("originals/")
 
 
 @pytest.mark.integration
@@ -293,8 +349,8 @@ def test_a_processed_job_completes_with_its_evidence(queue, fake_storage):
     # The analysis moves with its job: detection is the work it was waiting for.
     assert read_analysis(analysis_id).status == "completed"
 
+    signal = read_signals(analysis_id)["nvidia"]
     with SessionLocal() as reader:
-        signal = reader.query(AnalysisSignal).filter_by(analysis_id=analysis_id).one()
         segments = (
             reader.query(AnalysisSegment)
             .filter_by(signal_id=signal.id)
@@ -302,7 +358,7 @@ def test_a_processed_job_completes_with_its_evidence(queue, fake_storage):
             .all()
         )
 
-    assert signal.provider == "nvidia"
+    assert signal.signal_type == "synthetic_video"
     assert signal.status == "SUCCESS"
     # NVIDIA's own number, on NVIDIA's own scale.
     assert signal.score == NVIDIA_PROBABILITY
@@ -320,9 +376,88 @@ def test_the_worker_detects_the_canonical_object_it_fetched(queue, fake_storage,
     # Nothing is handed between the upload and the worker but a storage key, so the
     # object store is what the detector's input has to come from — and for normalized
     # media the object to fetch is the derivative, not the original.
-    assert len(fake_storage.fetched) == 1
-    assert fake_storage.fetched[0].startswith("derivatives/")
+    assert [key for key in fake_storage.fetched if key.startswith("derivatives/")] != []
     assert fake_nvidia.analysed_bytes == [VIDEO_BYTES]
+
+
+@pytest.mark.integration
+def test_both_evidence_sources_are_persisted_as_independent_signals(queue, fake_storage):
+    analysis_id, job_id = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert sorted(signals) == ["c2pa", "nvidia"]
+    assert read_job(job_id).status == "completed"
+
+    provenance = signals["c2pa"]
+    assert provenance.signal_type == "provenance"
+    assert provenance.status == "SUCCESS"
+    # Provenance is a set of facts about a signature, not a figure on a scale. A number
+    # here would sit next to NVIDIA's probability as if the two could be compared.
+    assert provenance.score is None
+    assert provenance.risk_level is None
+    assert provenance.provider_version == C2PA_SDK_VERSION
+    assert provenance.signal_metadata["manifest_exists"] is True
+    assert provenance.signal_metadata["validation_state"] == "Valid"
+    assert provenance.signal_metadata["validation_failures"] == ["signingCredential.untrusted"]
+    assert provenance.signal_metadata["signature_issuer"] == C2PA_SIGNATURE_ISSUER
+    assert provenance.signal_metadata["assertion_labels"] == ["c2pa.actions.v2"]
+
+
+@pytest.mark.integration
+def test_media_carrying_no_credentials_is_still_a_successful_reading(
+    queue, fake_storage, fake_c2pa
+):
+    analysis_id, _ = queue()
+    fake_c2pa.evidence = C2paEvidence(manifest_exists=False, sdk_version=C2PA_SDK_VERSION)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    provenance = read_signals(analysis_id)["c2pa"]
+
+    # Most media carries no credentials. Recording that as a failure would hide the most
+    # common answer there is behind a status that means something went wrong.
+    assert provenance.status == "SUCCESS"
+    assert provenance.signal_metadata["manifest_exists"] is False
+    assert provenance.signal_metadata["validation_state"] is None
+
+
+@pytest.mark.integration
+def test_provenance_is_read_from_the_forensic_original(queue, fake_storage, fake_c2pa):
+    queue(was_normalized=True)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    # Normalization re-encodes the video and strips any manifest with it, so reading
+    # credentials off the derivative would report every normalized upload as unsigned.
+    assert fake_c2pa.read_bytes == [ORIGINAL_BYTES]
+    assert [key for key in fake_storage.fetched if key.startswith("originals/")] != []
+
+
+@pytest.mark.integration
+def test_a_broken_provenance_reading_does_not_cost_the_analysis_its_detection(
+    queue, fake_storage, fake_c2pa
+):
+    analysis_id, job_id = queue()
+    fake_c2pa.error = RuntimeError("the native library gave up on /tmp/deepguard-job-xyz")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    # One evidence source breaking must not destroy the analysis the others succeeded on.
+    assert read_job(job_id).status == "completed"
+    assert read_analysis(analysis_id).status == "completed"
+    assert signals["nvidia"].status == "SUCCESS"
+    assert signals["c2pa"].status == "FAILED"
+    # The failure kind and nothing else: the message quotes a local artifact path.
+    assert signals["c2pa"].signal_metadata == {"error": "RuntimeError"}
 
 
 @pytest.mark.integration
@@ -351,8 +486,7 @@ def test_a_provider_failure_still_completes_the_job(queue, fake_storage, fake_nv
     assert read_job(job_id).status == "completed"
     assert read_analysis(analysis_id).status == "completed"
 
-    with SessionLocal() as reader:
-        signal = reader.query(AnalysisSignal).filter_by(analysis_id=analysis_id).one()
+    signal = read_signals(analysis_id)["nvidia"]
 
     assert signal.status == "TIMEOUT"
     assert signal.score is None

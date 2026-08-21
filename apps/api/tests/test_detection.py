@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from app import detection, nvidia_video
-from app.detection import MAX_PERSISTED_SEGMENTS, detect_synthetic_video
+from app.c2pa_extractor import C2paEvidence
+from app.detection import MAX_PERSISTED_SEGMENTS, detect_synthetic_video, extract_provenance
 
 NVIDIA_PROBABILITY = 0.8734567165374756
 NVIDIA_LOGIT = 1.9142135381698608
@@ -215,3 +216,127 @@ def test_an_unreadable_artifact_is_not_recorded_as_a_provider_failure(tmp_path, 
     # among routine evidence, so it propagates instead.
     with pytest.raises(nvidia_video.NvidiaLocalFileError):
         run_detection(tmp_path)
+
+
+# Provenance. A different evidence source, a different artifact, and — unlike a detector
+# — one that can legitimately answer "there is nothing here".
+
+
+UNSIGNED_MEDIA = Path(__file__).parent / "fixtures" / "still.mp4"
+
+
+def evidence(**overrides) -> C2paEvidence:
+    fields = {
+        "manifest_exists": True,
+        "sdk_version": "0.90.14",
+        "validation_state": "Trusted",
+        "validation_failures": (),
+        "is_embedded": True,
+        "active_manifest_label": "urn:c2pa:6f0e1a2b",
+        "claim_generator": "test-camera",
+        "signature_issuer": "Test Signing Cert",
+        "signature_time": "2026-08-21T09:15:00Z",
+        "assertion_labels": ("c2pa.actions.v2",),
+        "manifest_json": '{"active_manifest": "urn:c2pa:6f0e1a2b"}',
+    }
+    fields.update(overrides)
+
+    return C2paEvidence(**fields)
+
+
+def fake_extraction(monkeypatch, result):
+    """Answer the next extraction with `result`, or raise it if it is an exception."""
+
+    def extract(_file_path):
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(detection, "extract_c2pa_evidence", extract)
+
+
+def test_provenance_becomes_a_c2pa_signal_of_its_own(monkeypatch, tmp_path):
+    fake_extraction(monkeypatch, evidence())
+
+    signal = extract_provenance(tmp_path / "original.mp4")
+
+    assert signal.provider == "c2pa"
+    assert signal.signal_type == "provenance"
+    assert signal.status == "SUCCESS"
+    assert signal.provider_version == "0.90.14"
+
+
+def test_a_provenance_signal_carries_no_score_and_no_risk_level(monkeypatch, tmp_path):
+    fake_extraction(monkeypatch, evidence())
+
+    signal = extract_provenance(tmp_path / "original.mp4")
+
+    # There is no number here. One would end up beside NVIDIA's probability as though a
+    # signature and a model output were figures of the same kind.
+    assert signal.score is None
+    assert signal.risk_level is None
+
+
+def test_the_signal_metadata_reports_the_extractor_facts(monkeypatch, tmp_path):
+    fake_extraction(monkeypatch, evidence(validation_failures=("timeStamp.untrusted",)))
+
+    signal = extract_provenance(tmp_path / "original.mp4")
+
+    assert signal.signal_metadata["manifest_exists"] is True
+    assert signal.signal_metadata["validation_state"] == "Trusted"
+    assert signal.signal_metadata["validation_failures"] == ["timeStamp.untrusted"]
+    assert signal.signal_metadata["claim_generator"] == "test-camera"
+    assert signal.signal_metadata["signature_issuer"] == "Test Signing Cert"
+    assert signal.signal_metadata["signature_time"] == "2026-08-21T09:15:00Z"
+    assert signal.signal_metadata["assertion_labels"] == ["c2pa.actions.v2"]
+
+
+def test_the_verbatim_manifest_is_not_dumped_into_the_signal(monkeypatch, tmp_path):
+    fake_extraction(monkeypatch, evidence())
+
+    signal = extract_provenance(tmp_path / "original.mp4")
+
+    # Unbounded provider output does not belong in a column that holds a small supporting
+    # document — the same reason the clip table travels as segment rows.
+    assert "manifest_json" not in signal.signal_metadata
+
+
+def test_media_with_no_credentials_reads_successfully():
+    """Against the real reader and real media, with nothing stood in for."""
+    signal = extract_provenance(UNSIGNED_MEDIA)
+
+    assert signal.status == "SUCCESS"
+    assert signal.signal_metadata["manifest_exists"] is False
+    assert signal.signal_metadata["validation_state"] is None
+    # Absent credentials say nothing about the media. This is a missing signal, not a
+    # finding, and every key is still present so a reader never has to guess which.
+    assert signal.signal_metadata["validation_failures"] == []
+    assert signal.signal_metadata["assertion_labels"] == []
+
+
+def test_a_broken_reading_becomes_a_failed_signal_rather_than_an_exception(
+    monkeypatch, tmp_path
+):
+    fake_extraction(monkeypatch, RuntimeError("native library gave up on /tmp/deepguard-job-x"))
+
+    signal = extract_provenance(tmp_path / "original.mp4")
+
+    # One evidence source breaking must not cost the analysis the others, so this never
+    # propagates. The failure kind is persisted; the message quotes a local path.
+    assert signal.status == "FAILED"
+    assert signal.signal_metadata == {"error": "RuntimeError"}
+
+
+def test_an_unreadable_artifact_is_recorded_rather_than_raised(tmp_path):
+    """Deliberately unlike the detector, which propagates the same condition.
+
+    Losing the artifact is still a fault on this side either way. The difference is what
+    it costs: NVIDIA is the work the job exists to do, while provenance is one source
+    among several, and taking the whole analysis down over it would trade a known gap for
+    no evidence at all. The job's own failure path still catches a fetch that never
+    produced a file.
+    """
+    signal = extract_provenance(tmp_path / "absent.mp4")
+
+    assert signal.status == "FAILED"
+    assert signal.signal_metadata == {"error": "C2paLocalFileError"}

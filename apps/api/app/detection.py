@@ -1,8 +1,13 @@
-"""Turning one detector's answer about one video into forensic evidence.
+"""Turning what one evidence source says about one artifact into forensic evidence.
 
 This is what the worker runs. It sits beside `media.py` and `normalization.py` as another
 step that takes a local artifact and describes it — it opens no transaction, writes no
 row, and does not know a job exists.
+
+Two sources are wired in and they answer different questions about different artifacts:
+NVIDIA is asked whether the canonical derivative looks synthetic, C2PA is read off the
+forensic original to see what provenance travels with the bytes as uploaded. Each becomes
+its own signal row and neither is ever folded into the other (rule 11).
 
 It lived in the upload route until P3-T2, back when detection happened on the request.
 """
@@ -10,6 +15,7 @@ It lived in the upload route until P3-T2, back when detection happened on the re
 import logging
 from pathlib import Path
 
+from app.c2pa_extractor import C2paEvidence, extract_c2pa_evidence
 from app.db.models import (
     SIGNAL_STATUS_FAILED,
     SIGNAL_STATUS_SUCCESS,
@@ -30,6 +36,12 @@ logger = logging.getLogger(__name__)
 # question — whether the video is synthetic — so the pair is a constant, not a lookup.
 NVIDIA_PROVIDER = "nvidia"
 SYNTHETIC_VIDEO_SIGNAL = "synthetic_video"
+
+# Identity of the provenance signal. C2PA is not a provider that can be asked anything —
+# the credentials are in the file or they are not — so the "provider" is the standard
+# whose data was read, and `provider_version` records the SDK that read it.
+C2PA_PROVIDER = "c2pa"
+PROVENANCE_SIGNAL = "provenance"
 
 # How many clip results one detection may leave behind. NVIDIA scores a clip every few
 # frames, so a long video produces thousands and persisting all of them would let one
@@ -57,6 +69,69 @@ def strongest_clips(clips: tuple[NvidiaClipResult, ...]) -> list[AnalysisSegment
         AnalysisSegment(clip_index=clip.index, logit=clip.logit)
         for clip in ranked[:MAX_PERSISTED_SEGMENTS]
     ]
+
+
+def provenance_metadata(evidence: C2paEvidence) -> dict:
+    """The extractor's facts, flattened for the signal's JSON column.
+
+    Every key is present on every successful reading, including one that found no
+    credentials at all, so a reader never has to tell "absent field" from "absent
+    provenance": `manifest_exists` is the field that answers that, and the rest are null.
+
+    The extractor's verbatim `manifest_json` is deliberately left out. It is unbounded
+    provider output, and the column holds a small supporting document — the same reason
+    NVIDIA's clip table travels as `analysis_segments` rows rather than JSON.
+    """
+    return {
+        "manifest_exists": evidence.manifest_exists,
+        "validation_state": evidence.validation_state,
+        "validation_failures": list(evidence.validation_failures),
+        "is_embedded": evidence.is_embedded,
+        "remote_manifest_url": evidence.remote_manifest_url,
+        "active_manifest_label": evidence.active_manifest_label,
+        "claim_generator": evidence.claim_generator,
+        "signature_issuer": evidence.signature_issuer,
+        "signature_time": evidence.signature_time,
+        "assertion_labels": list(evidence.assertion_labels),
+    }
+
+
+def extract_provenance(file_path: Path) -> AnalysisSignal:
+    """Read the artifact's C2PA provenance and turn it into forensic evidence.
+
+    Media carrying no credentials is a successful reading, not a failure: the question
+    "what provenance travels with these bytes?" was answered, and the answer is "none".
+    Recording that as a failed signal would hide the most common answer there is, and
+    reading it as suspicion would be a verdict this layer has no business forming — most
+    cameras and editors write no credentials at all.
+
+    `score` stays null. There is no number here: provenance is a set of facts about a
+    signature, not a figure on a scale, and inventing one would put it next to NVIDIA's
+    probability as if the two could be compared (rule 11).
+
+    Nothing raises. Extraction that goes wrong is recorded as a `FAILED` signal with the
+    failure kind and nothing else — the same treatment a provider failure gets, for the
+    same reason: one evidence source breaking must not cost the analysis the others.
+    """
+    signal = AnalysisSignal(provider=C2PA_PROVIDER, signal_type=PROVENANCE_SIGNAL)
+
+    try:
+        evidence = extract_c2pa_evidence(file_path)
+    except Exception as error:
+        # Broad on purpose. Below this line is a third-party SDK over a native library,
+        # and the failure that matters to the caller is that provenance is unknown, not
+        # which of the SDK's exceptions said so.
+        logger.warning("C2PA extraction failed for the analysed artifact.", exc_info=True)
+        signal.status = SIGNAL_STATUS_FAILED
+        # The failure kind, never the message: it quotes the local artifact's path.
+        signal.signal_metadata = {"error": type(error).__name__}
+        return signal
+
+    signal.status = SIGNAL_STATUS_SUCCESS
+    signal.provider_version = evidence.sdk_version
+    signal.signal_metadata = provenance_metadata(evidence)
+
+    return signal
 
 
 async def detect_synthetic_video(file_path: Path) -> tuple[AnalysisSignal, list[AnalysisSegment]]:
