@@ -147,10 +147,36 @@ def test_migration_created_the_analysis_schema(database):
     assert {column["name"] for column in inspector.get_columns("analysis_segments")} == {
         "id",
         "signal_id",
+        # Clip evidence, from the synthetic-video detector.
         "clip_index",
         "logit",
+        # Temporal evidence, from Active Speaker Detection. A row fills one group or the
+        # other; neither is required, because neither provider reports the other's facts.
+        "start_time",
+        "end_time",
+        "face_id",
+        "speaker_label",
         "created_at",
     }
+
+
+def test_neither_kind_of_segment_evidence_is_required(database):
+    """Clip columns stopped being mandatory when a second source began writing rows.
+
+    They were `NOT NULL` while clip evidence was the only evidence there was. An
+    active-speaker row has no clip and no logit, and requiring them would have forced a
+    placeholder figure into a column that is supposed to hold provider output.
+    """
+    columns = {
+        column["name"]: column for column in inspect(database).get_columns("analysis_segments")
+    }
+
+    assert columns["clip_index"]["nullable"] is True
+    assert columns["logit"]["nullable"] is True
+    assert columns["start_time"]["nullable"] is True
+    assert columns["end_time"]["nullable"] is True
+    assert columns["face_id"]["nullable"] is True
+    assert columns["speaker_label"]["nullable"] is True
 
 
 def test_analysis_and_media_round_trip_through_postgresql(session):

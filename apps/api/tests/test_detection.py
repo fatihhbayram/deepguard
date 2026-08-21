@@ -349,7 +349,8 @@ def test_an_unreadable_artifact_is_recorded_rather_than_raised(tmp_path):
 
 def test_media_that_could_not_be_prepared_is_a_failed_nvidia_signal():
     signal = detection.undetectable_media(
-        normalization.NormalizationError("ffmpeg exited with 1")
+        normalization.NormalizationError("ffmpeg exited with 1"),
+        detection.SYNTHETIC_VIDEO_SIGNAL,
     )
 
     assert signal.provider == "nvidia"
@@ -359,7 +360,9 @@ def test_media_that_could_not_be_prepared_is_a_failed_nvidia_signal():
 
 
 def test_media_that_could_not_be_prepared_carries_no_figure():
-    signal = detection.undetectable_media(normalization.NormalizationError("boom"))
+    signal = detection.undetectable_media(
+        normalization.NormalizationError("boom"), detection.SYNTHETIC_VIDEO_SIGNAL
+    )
 
     # Nothing was scored, so there is nothing to report. A 0.0 would be an answer the
     # provider never gave, and a risk level is not this layer's to assign either.
@@ -370,7 +373,8 @@ def test_media_that_could_not_be_prepared_carries_no_figure():
 
 def test_a_transcode_that_ran_out_of_time_is_not_a_provider_timeout():
     signal = detection.undetectable_media(
-        normalization.NormalizationTimeout("ffmpeg timed out after 900s")
+        normalization.NormalizationTimeout("ffmpeg timed out after 900s"),
+        detection.SYNTHETIC_VIDEO_SIGNAL,
     )
 
     # `TIMEOUT` means a provider that may still be working, which says nothing about the
@@ -382,7 +386,8 @@ def test_a_transcode_that_ran_out_of_time_is_not_a_provider_timeout():
 
 def test_preparation_failure_never_leaks_the_local_path():
     signal = detection.undetectable_media(
-        normalization.NormalizationError("ffmpeg failed on /tmp/deepguard-job-abc123")
+        normalization.NormalizationError("ffmpeg failed on /tmp/deepguard-job-abc123"),
+        detection.SYNTHETIC_VIDEO_SIGNAL,
     )
 
     assert "deepguard-job" not in str(signal.signal_metadata)

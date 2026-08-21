@@ -5,12 +5,26 @@ and matches the voices it is handed onto the faces it sees; handed nothing, it r
 face with `diarized_speaker_id == -1`. So the speaker turns have to come from somewhere, and
 this module is that somewhere: `pyannote/speaker-diarization-community-1`, running locally.
 
-Two steps, in order:
+Two steps, and since P5-T3 they are two separate calls:
 
-1. FFmpeg extracts a temporary mono 16 kHz PCM WAV. The model wants that shape, and going
-   through FFmpeg means the codec inside the uploaded container stops mattering — AAC in an
-   MP4, Opus in a WebM and a bare MP3 all arrive at the model as the same thing.
-2. pyannote runs over that WAV and returns its own speech turns.
+1. `prepared_audio` has FFmpeg extract a temporary mono 16 kHz PCM WAV. The model wants that
+   shape, and going through FFmpeg means the codec inside the uploaded container stops
+   mattering — AAC in an MP4, Opus in a WebM and a bare MP3 all arrive at the model as the
+   same thing.
+2. `diarize_speakers` runs pyannote over that WAV and returns its own speech turns.
+
+They used to be one call. They were split because NVIDIA's ASD NIM wants the same audio as a
+separate stream alongside the video, and extracting it twice would mean decoding the same
+media twice to produce two identical files — so the caller prepares the WAV once and hands it
+to both. The extraction still lives here rather than somewhere neutral because this is where
+the shape it produces is specified, and moving it would be a larger change than the sharing
+requires.
+
+One consequence of the split is worth stating: the Hugging Face token is checked when
+`diarize_speakers` is called, which is after the WAV exists. An unconfigured token therefore
+costs one wasted extraction per job rather than being caught before any work. That is the
+honest cost of the audio being shared — the WAV is owed to NVIDIA whether or not pyannote can
+run — and it is wasted work, never a wrong answer.
 
 What comes back is pyannote's own output, unchanged: its timestamps and its speaker labels
 (rule 11). This module invents no confidence score — the pipeline reports none — merges no
@@ -28,8 +42,10 @@ import asyncio
 import logging
 import os
 import tempfile
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import AsyncIterator
 
 from dotenv import load_dotenv
 
@@ -248,41 +264,58 @@ def _run_pipeline(pipeline, audio_path: Path) -> tuple[SpeakerTurn, ...]:
     )
 
 
-async def diarize_speakers(
-    media_path: Path,
-    *,
-    auth_token: str | None = None,
-    model: str = DIARIZATION_MODEL,
-) -> tuple[SpeakerTurn, ...]:
-    """Return who spoke when in a local media file, as pyannote reported it.
+@asynccontextmanager
+async def prepared_audio(media_path: Path) -> AsyncIterator[Path]:
+    """Extract the analysable audio once, for the block, and remove it afterwards.
 
     `media_path` may be any container FFmpeg can demux — the uploaded original or a
-    normalized derivative, video or audio-only. Its audio codec does not matter; a mono
-    16 kHz WAV is extracted from it first. That temp file is removed on every path, including
-    failure and cancellation.
+    normalized derivative, video or audio-only. Its audio codec does not matter: what comes
+    out is always a mono 16 kHz PCM WAV, which is both the shape pyannote wants and one of
+    the three containers NVIDIA's ASD NIM accepts as a separate audio stream. One extraction
+    therefore serves both, which is the whole reason this is a context manager the caller
+    holds rather than a step hidden inside `diarize_speakers`.
 
-    Nothing is written beside the input and the input is only read.
+    Nothing is written beside the input and the input is only read. The temp file is removed
+    on every path out of the block, including failure and cancellation, so neither a job that
+    broke halfway nor one that was cancelled leaves a WAV behind.
 
-    Returns pyannote's turns in chronological order, empty when the model heard no speech.
-    Raises `SpeakerDiarizationAudioError` when the media yields no diarizable audio,
-    `SpeakerDiarizationTimeout` when extraction outlives its limit,
-    `SpeakerDiarizationUnavailable` when the diarizer cannot be run at all, and
-    `SpeakerDiarizationModelError` when inference itself fails.
+    Raises `SpeakerDiarizationAudioError` when the media yields no usable audio,
+    `SpeakerDiarizationTimeout` when extraction outlives its limit, and
+    `SpeakerDiarizationUnavailable` when FFmpeg itself cannot be run.
     """
-    token = _load_token(auth_token)
-
     descriptor, name = tempfile.mkstemp(prefix=AUDIO_TEMP_PREFIX, suffix=AUDIO_TEMP_SUFFIX)
     os.close(descriptor)
     audio_path = Path(name)
 
     try:
         await _extract_audio(media_path, audio_path)
-
-        # Both loading and inference are blocking, so both are pushed off the event loop.
-        pipeline = await asyncio.to_thread(_load_pipeline, model, token)
-        return await asyncio.to_thread(_run_pipeline, pipeline, audio_path)
+        yield audio_path
     finally:
         try:
             os.unlink(audio_path)
         except OSError:
             logger.warning("Removing the diarization temp audio file failed.")
+
+
+async def diarize_speakers(
+    audio_path: Path,
+    *,
+    auth_token: str | None = None,
+    model: str = DIARIZATION_MODEL,
+) -> tuple[SpeakerTurn, ...]:
+    """Return who spoke when in prepared audio, as pyannote reported it.
+
+    `audio_path` is a WAV in the shape `prepared_audio` produces. This function extracts
+    nothing and owns no temp file: the audio is the caller's, because the caller shares it
+    with NVIDIA, and it is only read here.
+
+    Returns pyannote's turns in chronological order, empty when the model heard no speech.
+    Raises `SpeakerDiarizationUnavailable` when the diarizer cannot be run at all — no token,
+    no pyannote, or a model that cannot be fetched — and `SpeakerDiarizationModelError` when
+    inference itself fails.
+    """
+    token = _load_token(auth_token)
+
+    # Both loading and inference are blocking, so both are pushed off the event loop.
+    pipeline = await asyncio.to_thread(_load_pipeline, model, token)
+    return await asyncio.to_thread(_run_pipeline, pipeline, audio_path)

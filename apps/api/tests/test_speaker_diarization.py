@@ -7,6 +7,11 @@ putting a stand-in `pyannote.audio` in `sys.modules` and letting the real import
 
 What is actually exercised here is this module's own behaviour: the argv it builds, the turns
 it copies out, the errors it maps and the temp file it is responsible for removing.
+
+Since P5-T3 the module is two calls rather than one — `prepared_audio` extracts the WAV the
+worker shares with NVIDIA, and `diarize_speakers` consumes it. Tests about the chain as a
+whole run both through `_extract_then_diarize`; the few that are about the seam itself drive
+one half directly.
 """
 
 import asyncio
@@ -29,6 +34,27 @@ from app.speaker_diarization import (
 
 TOKEN = "hf_test_secret_token_value"
 MEDIA = Path("/media/interview.mp4")
+
+
+async def _prepare(media_path: Path) -> Path:
+    """Run `prepared_audio` to completion and report the WAV it yielded.
+
+    The path is returned after the block has already cleaned it up, which is exactly what a
+    cleanup assertion needs: somewhere to look for a file that should no longer be there.
+    """
+    async with diarization.prepared_audio(media_path) as audio_path:
+        return audio_path
+
+
+async def _extract_then_diarize(media_path: Path, **kwargs) -> tuple[SpeakerTurn, ...]:
+    """Prepare the WAV and diarize it — the two halves the worker runs back to back.
+
+    They were one call until P5-T3 split them so the audio could be shared with NVIDIA. Most
+    of the tests below are about the chain as a whole rather than about where the seam now
+    is, so they drive it through here and read the same as they always did.
+    """
+    async with diarization.prepared_audio(media_path) as audio_path:
+        return await diarization.diarize_speakers(audio_path, **kwargs)
 
 
 class FakeSegment:
@@ -188,7 +214,7 @@ def test_audio_is_extracted_as_mono_16khz_pcm_wav(spawned, temp_files, loaded_pi
     calls = spawned(FakeProcess())
     loaded_pipeline(FakePipeline(diarize_output((0.0, 1.0, "SPEAKER_00"))))
 
-    asyncio.run(diarization.diarize_speakers(MEDIA))
+    asyncio.run(_extract_then_diarize(MEDIA))
 
     program, args = calls[0]
     assert program == diarization.FFMPEG_BINARY
@@ -209,7 +235,7 @@ def test_source_and_destination_are_separate_argv_entries(
     calls = spawned(FakeProcess())
     loaded_pipeline(FakePipeline(diarize_output()))
 
-    asyncio.run(diarization.diarize_speakers(Path("/media/two words; rm -rf.mp4")))
+    asyncio.run(_prepare(Path("/media/two words; rm -rf.mp4")))
 
     _, args = calls[0]
     assert args[args.index("-i") + 1] == "/media/two words; rm -rf.mp4"
@@ -224,7 +250,7 @@ def test_extraction_writes_to_a_temp_file_not_beside_the_media(
     spawned(FakeProcess())
     loaded_pipeline(FakePipeline(diarize_output()))
 
-    asyncio.run(diarization.diarize_speakers(MEDIA))
+    asyncio.run(_extract_then_diarize(MEDIA))
 
     assert temp_files[0].parent != MEDIA.parent
     assert temp_files[0].name.startswith(diarization.AUDIO_TEMP_PREFIX)
@@ -236,9 +262,50 @@ def test_the_prepared_wav_is_what_reaches_the_model(spawned, temp_files, loaded_
     pipeline = FakePipeline(diarize_output())
     loaded_pipeline(pipeline)
 
-    asyncio.run(diarization.diarize_speakers(MEDIA))
+    asyncio.run(_extract_then_diarize(MEDIA))
 
     assert pipeline.called_with == str(temp_files[0])
+
+
+def test_the_prepared_wav_exists_for_the_block_and_is_gone_after(spawned, temp_files):
+    """The contract the sharing depends on: one real file, alive for exactly the block.
+
+    Both pyannote and NVIDIA are handed this path, so it has to be a file that exists while
+    the caller holds it — and nothing afterwards, or a worker would accumulate one WAV per
+    analysed video.
+    """
+    spawned(FakeProcess())
+
+    async def scenario():
+        async with diarization.prepared_audio(MEDIA) as audio_path:
+            return audio_path, audio_path.exists()
+
+    audio_path, existed_inside = asyncio.run(scenario())
+
+    assert existed_inside
+    assert audio_path.suffix == ".wav"
+    assert not audio_path.exists()
+    assert temp_files == [audio_path]
+
+
+def test_one_preparation_yields_one_wav_for_both_consumers(spawned, temp_files):
+    """Extracting once is the point: two consumers, one decode, one file.
+
+    Diarization and NVIDIA both need this audio, and doing it per consumer would decode the
+    same media twice to produce two identical files.
+    """
+    calls = spawned(FakeProcess())
+
+    async def scenario():
+        async with diarization.prepared_audio(MEDIA) as audio_path:
+            # Stands in for the two consumers: pyannote reads it, then NVIDIA streams it.
+            return [audio_path, audio_path]
+
+    handed_to = asyncio.run(scenario())
+
+    assert len(calls) == 1
+    assert len(temp_files) == 1
+    assert handed_to[0] == handed_to[1] == temp_files[0]
 
 
 def test_real_media_is_extracted_to_a_mono_16khz_wav(tmp_path):
@@ -310,7 +377,7 @@ def test_media_without_audio_is_a_media_failure(spawned, temp_files, loaded_pipe
     loaded_pipeline(FakePipeline(diarize_output()))
 
     with pytest.raises(SpeakerDiarizationAudioError):
-        asyncio.run(diarization.diarize_speakers(MEDIA))
+        asyncio.run(_extract_then_diarize(MEDIA))
 
 
 def test_a_missing_ffmpeg_binary_is_unavailable(monkeypatch, temp_files):
@@ -322,7 +389,7 @@ def test_a_missing_ffmpeg_binary_is_unavailable(monkeypatch, temp_files):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess_exec)
 
     with pytest.raises(SpeakerDiarizationUnavailable):
-        asyncio.run(diarization.diarize_speakers(MEDIA))
+        asyncio.run(_extract_then_diarize(MEDIA))
 
 
 def test_slow_extraction_is_killed_reaped_and_reported(monkeypatch, spawned, temp_files):
@@ -331,7 +398,7 @@ def test_slow_extraction_is_killed_reaped_and_reported(monkeypatch, spawned, tem
     monkeypatch.setattr(diarization, "FFMPEG_TIMEOUT_SECONDS", 0.01)
 
     with pytest.raises(SpeakerDiarizationTimeout):
-        asyncio.run(diarization.diarize_speakers(MEDIA))
+        asyncio.run(_extract_then_diarize(MEDIA))
 
     assert process.killed
     assert process.waited
@@ -345,7 +412,7 @@ def test_the_model_is_never_loaded_when_extraction_failed(
     calls = loaded_pipeline(FakePipeline(diarize_output()))
 
     with pytest.raises(SpeakerDiarizationAudioError):
-        asyncio.run(diarization.diarize_speakers(MEDIA))
+        asyncio.run(_extract_then_diarize(MEDIA))
 
     assert calls == []
 
@@ -353,14 +420,46 @@ def test_the_model_is_never_loaded_when_extraction_failed(
 # --- credentials and model loading -------------------------------------------------------
 
 
-def test_a_missing_token_is_reported_before_anything_runs(monkeypatch, spawned, temp_files):
+def test_a_missing_token_is_reported_before_the_model_is_loaded(
+    monkeypatch, spawned, temp_files, loaded_pipeline
+):
+    """No token is a server problem, and it costs nothing beyond the shared WAV.
+
+    It used to be caught before ffmpeg ran at all. Since the audio became something NVIDIA
+    is owed as well, extraction happens first and the token is checked when diarization is
+    actually asked for — so one extraction is wasted, and torch is still never loaded for it.
+    """
     monkeypatch.delenv("HUGGINGFACE_TOKEN", raising=False)
-    calls = spawned(FakeProcess())
+    spawned(FakeProcess())
+    loads = loaded_pipeline(FakePipeline(diarize_output()))
 
     with pytest.raises(SpeakerDiarizationUnavailable):
-        asyncio.run(diarization.diarize_speakers(MEDIA))
+        asyncio.run(_extract_then_diarize(MEDIA))
 
-    assert calls == []
+    assert loads == []
+    # The wasted WAV is still not left behind.
+    assert not temp_files[0].exists()
+
+
+def test_diarization_alone_never_extracts_anything(monkeypatch, temp_files, loaded_pipeline):
+    """Handed a WAV, this half spawns no subprocess and owns no temp file.
+
+    The whole point of the split: the audio belongs to the caller, who shares it with
+    NVIDIA, so diarizing must not quietly produce a second copy of it.
+    """
+    spawns = []
+
+    async def create_subprocess_exec(*args, **kwargs):
+        spawns.append(args)
+        raise AssertionError("Diarization must not extract audio of its own.")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess_exec)
+    loaded_pipeline(FakePipeline(diarize_output((0.0, 1.0, "SPEAKER_00"))))
+
+    result = asyncio.run(diarization.diarize_speakers(Path("/tmp/prepared.wav")))
+
+    assert result == (SpeakerTurn(start_time=0.0, end_time=1.0, speaker_id="SPEAKER_00"),)
+    assert spawns == []
     assert temp_files == []
 
 
@@ -368,7 +467,7 @@ def test_the_token_comes_from_configuration(spawned, temp_files, loaded_pipeline
     spawned(FakeProcess())
     calls = loaded_pipeline(FakePipeline(diarize_output()))
 
-    asyncio.run(diarization.diarize_speakers(MEDIA))
+    asyncio.run(_extract_then_diarize(MEDIA))
 
     assert calls == [(diarization.DIARIZATION_MODEL, TOKEN)]
 
@@ -377,7 +476,7 @@ def test_an_explicit_token_wins_over_the_environment(spawned, temp_files, loaded
     spawned(FakeProcess())
     calls = loaded_pipeline(FakePipeline(diarize_output()))
 
-    asyncio.run(diarization.diarize_speakers(MEDIA, auth_token="hf_explicit"))
+    asyncio.run(_extract_then_diarize(MEDIA, auth_token="hf_explicit"))
 
     assert calls == [(diarization.DIARIZATION_MODEL, "hf_explicit")]
 
@@ -399,7 +498,7 @@ def test_the_pinned_model_is_what_is_fetched(spawned, temp_files, fake_pyannote)
     fake_pyannote(Pipeline)
     spawned(FakeProcess())
 
-    asyncio.run(diarization.diarize_speakers(MEDIA))
+    asyncio.run(_extract_then_diarize(MEDIA))
 
     assert requested == [("pyannote/speaker-diarization-community-1", TOKEN)]
 
@@ -416,7 +515,7 @@ def test_an_inaccessible_model_is_unavailable(spawned, temp_files, fake_pyannote
     spawned(FakeProcess())
 
     with pytest.raises(SpeakerDiarizationUnavailable, match="not accessible"):
-        asyncio.run(diarization.diarize_speakers(MEDIA))
+        asyncio.run(_extract_then_diarize(MEDIA))
 
 
 def test_a_failing_model_load_is_unavailable_without_leaking_the_token(
@@ -431,7 +530,7 @@ def test_a_failing_model_load_is_unavailable_without_leaking_the_token(
     spawned(FakeProcess())
 
     with pytest.raises(SpeakerDiarizationUnavailable) as raised:
-        asyncio.run(diarization.diarize_speakers(MEDIA))
+        asyncio.run(_extract_then_diarize(MEDIA))
 
     assert TOKEN not in str(raised.value)
     assert "RuntimeError" in str(raised.value)
@@ -449,7 +548,7 @@ def test_a_missing_pyannote_install_is_unavailable(monkeypatch, spawned, temp_fi
     spawned(FakeProcess())
 
     with pytest.raises(SpeakerDiarizationUnavailable, match="not installed"):
-        asyncio.run(diarization.diarize_speakers(MEDIA))
+        asyncio.run(_extract_then_diarize(MEDIA))
 
 
 # --- parsing the model's output ----------------------------------------------------------
@@ -464,7 +563,7 @@ def test_turns_are_returned_exactly_as_reported(spawned, temp_files, loaded_pipe
         (8.2209375, 11.4215625, "SPEAKER_00"),
     )))
 
-    result = asyncio.run(diarization.diarize_speakers(MEDIA))
+    result = asyncio.run(_extract_then_diarize(MEDIA))
 
     assert result == (
         SpeakerTurn(start_time=0.4978125, end_time=3.1246875, speaker_id="SPEAKER_00"),
@@ -481,7 +580,7 @@ def test_overlapping_turns_are_preserved(spawned, temp_files, loaded_pipeline):
         (3.5, 6.0, "SPEAKER_01"),
     )))
 
-    result = asyncio.run(diarization.diarize_speakers(MEDIA))
+    result = asyncio.run(_extract_then_diarize(MEDIA))
 
     assert len(result) == 2
     assert result[0].end_time > result[1].start_time
@@ -495,7 +594,7 @@ def test_adjacent_turns_of_one_speaker_are_not_merged(spawned, temp_files, loade
         (2.0, 3.0, "SPEAKER_00"),
     )))
 
-    result = asyncio.run(diarization.diarize_speakers(MEDIA))
+    result = asyncio.run(_extract_then_diarize(MEDIA))
 
     assert len(result) == 2
 
@@ -505,7 +604,7 @@ def test_very_short_turns_are_not_dropped(spawned, temp_files, loaded_pipeline):
     spawned(FakeProcess())
     loaded_pipeline(FakePipeline(diarize_output((1.0, 1.04, "SPEAKER_01"))))
 
-    result = asyncio.run(diarization.diarize_speakers(MEDIA))
+    result = asyncio.run(_extract_then_diarize(MEDIA))
 
     assert len(result) == 1
 
@@ -515,7 +614,7 @@ def test_non_default_speaker_labels_survive(spawned, temp_files, loaded_pipeline
     spawned(FakeProcess())
     loaded_pipeline(FakePipeline(diarize_output((0.0, 1.0, "Interviewer"))))
 
-    result = asyncio.run(diarization.diarize_speakers(MEDIA))
+    result = asyncio.run(_extract_then_diarize(MEDIA))
 
     assert result[0].speaker_id == "Interviewer"
 
@@ -525,7 +624,7 @@ def test_a_bare_annotation_is_accepted_too(spawned, temp_files, loaded_pipeline)
     spawned(FakeProcess())
     loaded_pipeline(FakePipeline(annotation((0.0, 1.5, "SPEAKER_00"))))
 
-    result = asyncio.run(diarization.diarize_speakers(MEDIA))
+    result = asyncio.run(_extract_then_diarize(MEDIA))
 
     assert result == (SpeakerTurn(start_time=0.0, end_time=1.5, speaker_id="SPEAKER_00"),)
 
@@ -537,7 +636,7 @@ def test_speech_free_audio_is_an_empty_result_not_a_failure(
     spawned(FakeProcess())
     loaded_pipeline(FakePipeline(diarize_output()))
 
-    assert asyncio.run(diarization.diarize_speakers(MEDIA)) == ()
+    assert asyncio.run(_extract_then_diarize(MEDIA)) == ()
 
 
 def test_turns_are_frozen(spawned, temp_files, loaded_pipeline):
@@ -545,7 +644,7 @@ def test_turns_are_frozen(spawned, temp_files, loaded_pipeline):
     spawned(FakeProcess())
     loaded_pipeline(FakePipeline(diarize_output((0.0, 1.0, "SPEAKER_00"))))
 
-    result = asyncio.run(diarization.diarize_speakers(MEDIA))
+    result = asyncio.run(_extract_then_diarize(MEDIA))
 
     with pytest.raises(Exception):
         result[0].start_time = 99.0
@@ -556,7 +655,7 @@ def test_inference_failure_is_a_model_error(spawned, temp_files, loaded_pipeline
     loaded_pipeline(FakePipeline(raises=RuntimeError("out of memory")))
 
     with pytest.raises(SpeakerDiarizationModelError):
-        asyncio.run(diarization.diarize_speakers(MEDIA))
+        asyncio.run(_extract_then_diarize(MEDIA))
 
 
 def test_turns_carry_what_the_nvidia_client_requires(spawned, temp_files, loaded_pipeline):
@@ -572,7 +671,7 @@ def test_turns_carry_what_the_nvidia_client_requires(spawned, temp_files, loaded
         (3.6, 7.9, "SPEAKER_01"),
     )))
 
-    result = asyncio.run(diarization.diarize_speakers(MEDIA))
+    result = asyncio.run(_extract_then_diarize(MEDIA))
     labels = sorted({turn.speaker_id for turn in result})
     segments = [
         DiarizationSegment(
@@ -598,7 +697,7 @@ def test_the_temp_wav_is_removed_after_a_successful_run(
     spawned(FakeProcess())
     loaded_pipeline(FakePipeline(diarize_output((0.0, 1.0, "SPEAKER_00"))))
 
-    asyncio.run(diarization.diarize_speakers(MEDIA))
+    asyncio.run(_extract_then_diarize(MEDIA))
 
     assert len(temp_files) == 1
     assert not temp_files[0].exists()
@@ -611,7 +710,7 @@ def test_the_temp_wav_is_removed_after_an_extraction_failure(
     loaded_pipeline(FakePipeline(diarize_output()))
 
     with pytest.raises(SpeakerDiarizationAudioError):
-        asyncio.run(diarization.diarize_speakers(MEDIA))
+        asyncio.run(_extract_then_diarize(MEDIA))
 
     assert not temp_files[0].exists()
 
@@ -621,7 +720,7 @@ def test_the_temp_wav_is_removed_after_a_model_failure(spawned, temp_files, load
     loaded_pipeline(FakePipeline(raises=RuntimeError("boom")))
 
     with pytest.raises(SpeakerDiarizationModelError):
-        asyncio.run(diarization.diarize_speakers(MEDIA))
+        asyncio.run(_extract_then_diarize(MEDIA))
 
     assert not temp_files[0].exists()
 
@@ -638,7 +737,7 @@ def test_the_temp_wav_is_removed_after_a_failed_model_load(
     spawned(FakeProcess())
 
     with pytest.raises(SpeakerDiarizationUnavailable):
-        asyncio.run(diarization.diarize_speakers(MEDIA))
+        asyncio.run(_extract_then_diarize(MEDIA))
 
     assert not temp_files[0].exists()
 
@@ -648,7 +747,7 @@ def test_the_temp_wav_is_removed_after_a_timeout(monkeypatch, spawned, temp_file
     monkeypatch.setattr(diarization, "FFMPEG_TIMEOUT_SECONDS", 0.01)
 
     with pytest.raises(SpeakerDiarizationTimeout):
-        asyncio.run(diarization.diarize_speakers(MEDIA))
+        asyncio.run(_extract_then_diarize(MEDIA))
 
     assert not temp_files[0].exists()
 
@@ -664,7 +763,7 @@ def test_the_temp_wav_is_removed_when_the_caller_cancels(monkeypatch, temp_files
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess_exec)
 
     async def scenario():
-        task = asyncio.ensure_future(diarization.diarize_speakers(MEDIA))
+        task = asyncio.ensure_future(_extract_then_diarize(MEDIA))
         await started.wait()
         task.cancel()
         await task
@@ -690,7 +789,7 @@ def test_a_failing_cleanup_does_not_mask_a_good_result(
 
     monkeypatch.setattr(diarization.os, "unlink", unlink)
 
-    result = asyncio.run(diarization.diarize_speakers(MEDIA))
+    result = asyncio.run(_extract_then_diarize(MEDIA))
 
     assert result == (SpeakerTurn(start_time=0.0, end_time=1.0, speaker_id="SPEAKER_00"),)
     assert not temp_files[0].exists()

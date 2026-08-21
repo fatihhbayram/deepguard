@@ -88,9 +88,12 @@ services:
       # every job to completion and records a failed signal for each.
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       NVIDIA_SVD_FUNCTION_ID: ${NVIDIA_SVD_FUNCTION_ID:-}
+      # The second NIM this process calls, and a separate deployment from the one above:
+      # one API key, two functions, two independent signals.
+      NVIDIA_ASD_FUNCTION_ID: ${NVIDIA_ASD_FUNCTION_ID:-}
       # Speaker diarization runs locally, in this process, against a gated Hugging Face
-      # model. Nothing calls it yet; the credential is wired here because this is the only
-      # process that ever will.
+      # model, and its turns are what the Active Speaker NIM is given to match faces
+      # against. Unset, the active-speaker signal fails and the other two are unaffected.
       HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
     depends_on:
       postgres:

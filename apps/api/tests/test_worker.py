@@ -19,7 +19,15 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import detection, normalization, nvidia_video, storage, worker
+from app import (
+    detection,
+    normalization,
+    nvidia_active_speaker,
+    nvidia_video,
+    speaker_diarization,
+    storage,
+    worker,
+)
 from app.c2pa_extractor import C2paEvidence
 from app.db.models import (
     Analysis,
@@ -29,6 +37,13 @@ from app.db.models import (
     MediaFile,
 )
 from app.db.session import SessionLocal, engine
+from app.nvidia_active_speaker import (
+    NvidiaActiveSpeakerFrame,
+    NvidiaActiveSpeakerResult,
+    NvidiaBoundingBox,
+    NvidiaSpeakerObservation,
+)
+from app.speaker_diarization import SpeakerTurn
 
 VIDEO_BYTES = b"canonical-mp4-bytes"
 ORIGINAL_BYTES = b"as-uploaded-original-bytes"
@@ -41,6 +56,11 @@ NVIDIA_FUNCTION_ID = "847b6e53-0133-452d-ab85-d7acf3ace723"
 
 C2PA_SDK_VERSION = "0.90.14"
 C2PA_SIGNATURE_ISSUER = "Test Signing Cert"
+
+ASD_FUNCTION_ID = "f286f937-05c4-454b-8312-fba67a2a6fa7"
+# The rate every queued upload below is probed at, and therefore the rate NVIDIA's frame
+# indices are read against.
+QUEUED_FRAME_RATE = 30.0
 
 # Test jobs are backdated so that oldest-first claiming reaches them before anything a
 # real upload left in the queue. It makes these tests deterministic against a shared
@@ -232,6 +252,111 @@ def fake_nvidia(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def fake_audio(monkeypatch):
+    """Replace only the audio extraction, writing plausible WAV bytes.
+
+    Autouse for the same reason as `fake_ffmpeg`: a worker that reached the real ffmpeg
+    would spend its time demuxing bytes that are not media.
+    """
+
+    class Recorder:
+        def __init__(self):
+            self.error = None
+            self.calls = []
+            self.sources_read = []
+
+        async def extract(self, source, destination):
+            self.calls.append((Path(source), Path(destination)))
+            # Read during the call, because the worker deletes the artifact as soon as the
+            # block that prepared it ends: which media the audio came from cannot be
+            # established from a path that no longer exists.
+            self.sources_read.append(Path(source).read_bytes())
+            if self.error:
+                raise self.error
+            Path(destination).write_bytes(b"RIFF....WAVEprepared")
+
+    recorder = Recorder()
+    monkeypatch.setattr(speaker_diarization, "_extract_audio", recorder.extract)
+    return recorder
+
+
+@pytest.fixture(autouse=True)
+def fake_diarization(monkeypatch):
+    """Stand in for pyannote, so no test in this module loads torch or a gated model."""
+
+    class Recorder:
+        def __init__(self):
+            self.error = None
+            self.audio_paths = []
+            self.turns = (
+                SpeakerTurn(start_time=0.0, end_time=1.0, speaker_id="SPEAKER_00"),
+                SpeakerTurn(start_time=1.0, end_time=2.0, speaker_id="SPEAKER_01"),
+            )
+
+        async def diarize(self, audio_path, **kwargs):
+            self.audio_paths.append(Path(audio_path))
+            if self.error:
+                raise self.error
+            return self.turns
+
+    recorder = Recorder()
+    monkeypatch.setattr(detection, "diarize_speakers", recorder.diarize)
+    return recorder
+
+
+@pytest.fixture(autouse=True)
+def fake_active_speaker(monkeypatch):
+    """Stand in for the Active Speaker NIM, so no test here can reach NVIDIA.
+
+    The scripted result is two faces speaking in turn: face 0 for frames 0-29 and face 1
+    for frames 30-59, which at 30 fps is one second each.
+    """
+
+    class Recorder:
+        def __init__(self):
+            self.error = None
+            self.calls = []
+            self.result = NvidiaActiveSpeakerResult(
+                frames=tuple(
+                    NvidiaActiveSpeakerFrame(
+                        frame_id=frame_id,
+                        speakers=(
+                            NvidiaSpeakerObservation(
+                                face_id=0 if frame_id < 30 else 1,
+                                diarized_speaker_id=0 if frame_id < 30 else 1,
+                                is_speaking=True,
+                                face_detection_confidence=0.98,
+                                bounding_box=NvidiaBoundingBox(
+                                    x=8.0, y=16.0, width=64.0, height=64.0
+                                ),
+                            ),
+                        ),
+                    )
+                    for frame_id in range(60)
+                ),
+                function_id=ASD_FUNCTION_ID,
+                speaker_detection_threshold=0.5,
+            )
+
+        async def analyze(self, video_path, diarization, *, audio_path=None, **kwargs):
+            self.calls.append(
+                (
+                    Path(video_path).read_bytes(),
+                    list(diarization),
+                    Path(audio_path) if audio_path else None,
+                )
+            )
+            nvidia_active_speaker._validate_diarization(diarization)
+            if self.error:
+                raise self.error
+            return self.result
+
+    recorder = Recorder()
+    monkeypatch.setattr(detection, "analyze_active_speaker", recorder.analyze)
+    return recorder
+
+
+@pytest.fixture(autouse=True)
 def fake_c2pa(monkeypatch):
     """Stand in for the C2PA reader, which would reject the fake video bytes outright.
 
@@ -298,11 +423,26 @@ def read_analysis(analysis_id) -> Analysis:
 
 
 def read_signals(analysis_id) -> dict[str, AnalysisSignal]:
-    """The analysis's persisted signals, keyed by the provider that produced them."""
+    """The analysis's persisted signals, keyed by what each of them answers.
+
+    Keyed by `signal_type` rather than by provider: NVIDIA now answers two different
+    questions about one analysis, so the provider no longer identifies a row.
+    """
     with SessionLocal() as reader:
         rows = reader.query(AnalysisSignal).filter_by(analysis_id=analysis_id).all()
 
-    return {row.provider: row for row in rows}
+    return {row.signal_type: row for row in rows}
+
+
+def read_segments(signal_id) -> list[AnalysisSegment]:
+    """One signal's persisted evidence, oldest row first."""
+    with SessionLocal() as reader:
+        return (
+            reader.query(AnalysisSegment)
+            .filter_by(signal_id=signal_id)
+            .order_by(AnalysisSegment.created_at, AnalysisSegment.start_time)
+            .all()
+        )
 
 
 def read_media(analysis_id) -> MediaFile:
@@ -430,7 +570,7 @@ def test_a_processed_job_completes_with_its_evidence(queue, fake_storage):
     # The analysis moves with its job: detection is the work it was waiting for.
     assert read_analysis(analysis_id).status == "completed"
 
-    signal = read_signals(analysis_id)["nvidia"]
+    signal = read_signals(analysis_id)["synthetic_video"]
     with SessionLocal() as reader:
         segments = (
             reader.query(AnalysisSegment)
@@ -484,10 +624,10 @@ def test_both_evidence_sources_are_persisted_as_independent_signals(queue, fake_
 
     signals = read_signals(analysis_id)
 
-    assert sorted(signals) == ["c2pa", "nvidia"]
+    assert sorted(signals) == ["active_speaker", "provenance", "synthetic_video"]
     assert read_job(job_id).status == "completed"
 
-    provenance = signals["c2pa"]
+    provenance = signals["provenance"]
     assert provenance.signal_type == "provenance"
     assert provenance.status == "SUCCESS"
     # Provenance is a set of facts about a signature, not a figure on a scale. A number
@@ -512,7 +652,7 @@ def test_media_carrying_no_credentials_is_still_a_successful_reading(
     with SessionLocal() as session:
         worker.process_one(session)
 
-    provenance = read_signals(analysis_id)["c2pa"]
+    provenance = read_signals(analysis_id)["provenance"]
 
     # Most media carries no credentials. Recording that as a failure would hide the most
     # common answer there is behind a status that means something went wrong.
@@ -549,10 +689,10 @@ def test_a_broken_provenance_reading_does_not_cost_the_analysis_its_detection(
     # One evidence source breaking must not destroy the analysis the others succeeded on.
     assert read_job(job_id).status == "completed"
     assert read_analysis(analysis_id).status == "completed"
-    assert signals["nvidia"].status == "SUCCESS"
-    assert signals["c2pa"].status == "FAILED"
+    assert signals["synthetic_video"].status == "SUCCESS"
+    assert signals["provenance"].status == "FAILED"
     # The failure kind and nothing else: the message quotes a local artifact path.
-    assert signals["c2pa"].signal_metadata == {"error": "RuntimeError"}
+    assert signals["provenance"].signal_metadata == {"error": "RuntimeError"}
 
 
 @pytest.mark.integration
@@ -581,7 +721,7 @@ def test_a_provider_failure_still_completes_the_job(queue, fake_storage, fake_nv
     assert read_job(job_id).status == "completed"
     assert read_analysis(analysis_id).status == "completed"
 
-    signal = read_signals(analysis_id)["nvidia"]
+    signal = read_signals(analysis_id)["synthetic_video"]
 
     assert signal.status == "TIMEOUT"
     assert signal.score is None
@@ -827,10 +967,10 @@ def test_media_that_cannot_be_transcoded_does_not_cost_the_analysis_its_provenan
     # That is a gap in one source's evidence, not a reason to throw the job away.
     assert read_job(job_id).status == "completed"
     assert read_analysis(analysis_id).status == "completed"
-    assert signals["c2pa"].status == "SUCCESS"
-    assert signals["nvidia"].status == "FAILED"
-    assert signals["nvidia"].score is None
-    assert signals["nvidia"].signal_metadata == {"error": "NormalizationError"}
+    assert signals["provenance"].status == "SUCCESS"
+    assert signals["synthetic_video"].status == "FAILED"
+    assert signals["synthetic_video"].score is None
+    assert signals["synthetic_video"].signal_metadata == {"error": "NormalizationError"}
 
 
 @pytest.mark.integration
@@ -843,7 +983,7 @@ def test_a_transcode_that_ran_out_of_time_is_told_apart_from_one_that_broke(
     with SessionLocal() as session:
         worker.process_one(session)
 
-    signal = read_signals(analysis_id)["nvidia"]
+    signal = read_signals(analysis_id)["synthetic_video"]
     # `TIMEOUT` is reserved for a provider that may still have been working, which says
     # nothing about the media. ffmpeg giving up is not that; the failure kind is what
     # separates the two.
@@ -920,5 +1060,350 @@ def test_a_derivative_upload_failure_leaves_nothing_on_disk(
         worker.process_one(session)
 
     _, destination, _ = fake_ffmpeg.calls[0]
+    assert not destination.exists()
+    assert [path for path in fake_storage.paths if path.exists()] == []
+
+
+# Active speaker. The third evidence source, and the first to produce real time ranges.
+# It runs against the same prepared artifact the synthetic-video detector is given, off
+# audio extracted from that artifact once and handed to both pyannote and NVIDIA.
+
+
+@pytest.mark.integration
+def test_all_three_evidence_sources_are_persisted_as_independent_signals(
+    queue, fake_storage
+):
+    analysis_id, job_id = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert sorted(signals) == ["active_speaker", "provenance", "synthetic_video"]
+
+    speaker = signals["active_speaker"]
+    # NVIDIA answers two questions about one analysis, and they are two rows: the provider
+    # is the same company, the finding is not the same finding.
+    assert speaker.provider == "nvidia"
+    assert speaker.provider == signals["synthetic_video"].provider
+    assert speaker.id != signals["synthetic_video"].id
+    assert speaker.status == "SUCCESS"
+    assert speaker.provider_version == ASD_FUNCTION_ID
+    # A timeline, not a figure on a scale. A number here would sit in the same column as
+    # NVIDIA's synthetic probability as though the two could be compared.
+    assert speaker.score is None
+    assert speaker.risk_level is None
+
+
+@pytest.mark.integration
+def test_real_speaking_times_are_persisted(queue, fake_storage):
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    segments = read_segments(read_signals(analysis_id)["active_speaker"].id)
+
+    # Face 0 speaks for frames 0-29 and face 1 for frames 30-59, at the 30 fps this media
+    # was probed at — so one second each, back to back, in the order they happened.
+    assert [(s.start_time, s.end_time) for s in segments] == [(0.0, 1.0), (1.0, 2.0)]
+    assert [s.face_id for s in segments] == [0, 1]
+
+
+@pytest.mark.integration
+def test_speaking_segments_carry_the_labels_the_model_reported(queue, fake_storage):
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    segments = read_segments(read_signals(analysis_id)["active_speaker"].id)
+
+    # pyannote's own strings, not the integers this codebase assigned them for NVIDIA's
+    # wire format: the label is the model's finding, the integer is our encoding of it.
+    assert [s.speaker_label for s in segments] == ["SPEAKER_00", "SPEAKER_01"]
+
+
+@pytest.mark.integration
+def test_speaking_segments_invent_no_clip_evidence(queue, fake_storage):
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    segments = read_segments(read_signals(analysis_id)["active_speaker"].id)
+
+    # There is no clip and no logit in an active-speaker result, so both stay null rather
+    # than being filled in to make the table look uniform.
+    assert [(s.clip_index, s.logit) for s in segments] == [(None, None), (None, None)]
+
+
+@pytest.mark.integration
+def test_clip_evidence_is_unchanged_by_the_new_signal(queue, fake_storage):
+    """The synthetic-video rows still look exactly as they did before P5-T3."""
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signal = read_signals(analysis_id)["synthetic_video"]
+    segments = read_segments(signal.id)
+
+    assert signal.score == NVIDIA_PROBABILITY
+    assert sorted((s.clip_index, s.logit) for s in segments) == [(0, -2.25), (8, 3.5)]
+    # NVIDIA reports no times for a clip, so converting its frame index into one would
+    # invent a figure it never gave.
+    assert [(s.start_time, s.end_time, s.face_id, s.speaker_label) for s in segments] == [
+        (None, None, None, None),
+        (None, None, None, None),
+    ]
+
+
+@pytest.mark.integration
+def test_each_signal_owns_only_its_own_evidence(queue, fake_storage):
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    # Two signals with segments, and no row belongs to both. Provenance owns none at all:
+    # it produces no timeline evidence.
+    assert len(read_segments(signals["synthetic_video"].id)) == 2
+    assert len(read_segments(signals["active_speaker"].id)) == 2
+    assert read_segments(signals["provenance"].id) == []
+
+
+@pytest.mark.integration
+def test_the_signal_records_the_rate_the_frames_were_read_against(queue, fake_storage):
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    metadata = read_signals(analysis_id)["active_speaker"].signal_metadata
+
+    # The rate of the artifact NVIDIA was actually given. Without it the persisted times
+    # cannot be checked back against NVIDIA's own frame numbering.
+    assert metadata["frame_rate"] == QUEUED_FRAME_RATE
+    assert metadata["total_frames"] == 60
+    assert metadata["total_speaking_segments"] == 2
+    assert metadata["segments_truncated"] is False
+    assert metadata["diarized_speakers"] == {"SPEAKER_00": 0, "SPEAKER_01": 1}
+
+
+@pytest.mark.integration
+def test_nvidia_is_given_deterministically_numbered_speakers(queue, fake_storage, fake_active_speaker):
+    """pyannote names voices with strings; NVIDIA's proto carries a uint32."""
+    queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    _, diarization, _ = fake_active_speaker.calls[0]
+
+    # Numbered by first appearance, in milliseconds, with nothing parsed out of the label.
+    assert [(d.start_time_ms, d.end_time_ms, d.speaker_id) for d in diarization] == [
+        (0, 1000, 0),
+        (1000, 2000, 1),
+    ]
+
+
+@pytest.mark.integration
+def test_the_prepared_artifact_is_what_both_nvidia_signals_see(
+    queue, fake_storage, fake_nvidia, fake_active_speaker
+):
+    """One transcode, two questions. Preparing it twice would pay for it twice."""
+    queue(was_normalized=True)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    video_bytes, _, _ = fake_active_speaker.calls[0]
+
+    assert fake_nvidia.analysed_bytes == [DERIVATIVE_BYTES]
+    assert video_bytes == DERIVATIVE_BYTES
+
+
+@pytest.mark.integration
+def test_the_audio_is_extracted_once_from_that_artifact(
+    queue, fake_storage, fake_audio, fake_diarization, fake_active_speaker
+):
+    queue(was_normalized=True)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    # One extraction for the whole job: doing it per consumer would decode the same media
+    # twice to produce two identical files.
+    assert len(fake_audio.calls) == 1
+    _, destination = fake_audio.calls[0]
+
+    # Taken from the artifact NVIDIA is given rather than the forensic original, so the
+    # diarization times and the frames they are matched against share one timeline.
+    assert fake_audio.sources_read == [DERIVATIVE_BYTES]
+    _, _, nvidia_audio = fake_active_speaker.calls[0]
+    assert fake_diarization.audio_paths == [destination]
+    assert nvidia_audio == destination
+
+
+@pytest.mark.integration
+def test_the_temporary_wav_is_removed_afterwards(queue, fake_storage, fake_audio):
+    queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    _, destination = fake_audio.calls[0]
+    # A container that ran for a week would otherwise hold one WAV per analysed video.
+    assert not destination.exists()
+
+
+# Partial failure. One evidence source breaking must never cost the others, which is the
+# whole reason each is written as its own row with its own status.
+
+
+@pytest.mark.integration
+def test_media_with_no_audio_keeps_the_other_two_signals(queue, fake_storage, fake_audio):
+    analysis_id, job_id = queue()
+    fake_audio.error = speaker_diarization.SpeakerDiarizationAudioError("no audio stream")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert read_analysis(analysis_id).status == "completed"
+    assert signals["active_speaker"].status == "FAILED"
+    assert signals["active_speaker"].signal_metadata == {
+        "error": "SpeakerDiarizationAudioError"
+    }
+    # Silent video is common, and it says nothing about whether the video is synthetic or
+    # what provenance it carries.
+    assert signals["synthetic_video"].status == "SUCCESS"
+    assert signals["synthetic_video"].score == NVIDIA_PROBABILITY
+    assert signals["provenance"].status == "SUCCESS"
+
+
+@pytest.mark.integration
+def test_an_unconfigured_diarizer_costs_only_its_own_signal(
+    queue, fake_storage, fake_diarization
+):
+    """A missing Hugging Face token is a configuration gap, not a fact about the media."""
+    analysis_id, job_id = queue()
+    fake_diarization.error = speaker_diarization.SpeakerDiarizationUnavailable(
+        "HUGGINGFACE_TOKEN is not configured"
+    )
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert signals["active_speaker"].status == "FAILED"
+    assert signals["synthetic_video"].status == "SUCCESS"
+    assert signals["provenance"].status == "SUCCESS"
+    assert read_segments(signals["active_speaker"].id) == []
+    # The other source's evidence is untouched by the gap in this one.
+    assert len(read_segments(signals["synthetic_video"].id)) == 2
+
+
+@pytest.mark.integration
+def test_an_active_speaker_refusal_does_not_touch_the_other_signals(
+    queue, fake_storage, fake_active_speaker
+):
+    analysis_id, job_id = queue()
+    fake_active_speaker.error = (
+        nvidia_active_speaker.NvidiaActiveSpeakerAuthenticationError("rejected")
+    )
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert signals["active_speaker"].status == "FAILED"
+    assert signals["active_speaker"].score is None
+    assert signals["active_speaker"].provider_version is None
+    assert signals["synthetic_video"].status == "SUCCESS"
+
+
+@pytest.mark.integration
+def test_an_active_speaker_timeout_is_told_apart_from_a_refusal(
+    queue, fake_storage, fake_active_speaker
+):
+    analysis_id, _ = queue()
+    fake_active_speaker.error = nvidia_active_speaker.NvidiaActiveSpeakerTimeout(
+        "deadline exceeded"
+    )
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    # NVIDIA may still have been working, which says nothing about the media either way.
+    assert read_signals(analysis_id)["active_speaker"].status == "TIMEOUT"
+
+
+@pytest.mark.integration
+def test_a_synthetic_video_failure_does_not_cost_the_speaker_timeline(
+    queue, fake_storage, fake_nvidia
+):
+    """The isolation runs both ways: the other NIM failing leaves this one intact."""
+    analysis_id, job_id = queue()
+    fake_nvidia.error = nvidia_video.NvidiaProviderTimeout("deadline exceeded")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert signals["synthetic_video"].status == "TIMEOUT"
+    assert signals["active_speaker"].status == "SUCCESS"
+    assert len(read_segments(signals["active_speaker"].id)) == 2
+
+
+@pytest.mark.integration
+def test_media_that_cannot_be_transcoded_fails_both_nvidia_signals(
+    queue, fake_storage, fake_ffmpeg
+):
+    """Both NIMs are asked about the prepared artifact, so neither is reachable without it."""
+    analysis_id, job_id = queue(was_normalized=True)
+    fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert signals["synthetic_video"].status == "FAILED"
+    assert signals["active_speaker"].status == "FAILED"
+    # Each records the gap in its own right rather than one standing in for the other.
+    assert signals["active_speaker"].signal_type == "active_speaker"
+    assert signals["active_speaker"].signal_metadata == {"error": "NormalizationError"}
+    # And the source that had already answered keeps its evidence.
+    assert signals["provenance"].status == "SUCCESS"
+
+
+@pytest.mark.integration
+def test_an_active_speaker_failure_leaves_no_temp_files_behind(
+    queue, fake_storage, fake_audio, fake_active_speaker
+):
+    queue(was_normalized=True)
+    fake_active_speaker.error = nvidia_active_speaker.NvidiaActiveSpeakerUnavailable(
+        "unreachable"
+    )
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    _, destination = fake_audio.calls[0]
     assert not destination.exists()
     assert [path for path in fake_storage.paths if path.exists()] == []
