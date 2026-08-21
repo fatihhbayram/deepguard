@@ -43,6 +43,24 @@ type SyntheticVideoSignal = {
   segments: SegmentEvidence[];
 };
 
+// The C2PA provenance signal the API joined onto the analysis. These are facts about what
+// the file itself claims: whether it carries Content Credentials at all, and what the C2PA
+// SDK made of the signature over them. `validation_state` is the SDK's own word, shown as
+// it was returned. None of it says whether the media is real — most media carries no
+// credentials, and their absence is a missing signal, not a finding.
+type ProvenanceSignal = {
+  provider: string;
+  signal_type: string;
+  status: string;
+  provider_version: string | null;
+  // Null when the reading itself failed: whether credentials exist is unknown then, which
+  // is not the same as knowing there are none.
+  manifest_exists: boolean | null;
+  validation_state: string | null;
+  claim_generator: string | null;
+  signature_issuer: string | null;
+};
+
 type AnalysisSummary = {
   id: string;
   status: string;
@@ -53,6 +71,9 @@ type AnalysisSummary = {
   // Null when the analysis carries no such signal at all — a different fact from a
   // detector that ran and failed.
   synthetic_video: SyntheticVideoSignal | null;
+  // Null for an analysis processed before provenance was read at all, which is again not
+  // the same as a reading that found no credentials.
+  provenance: ProvenanceSignal | null;
 };
 
 const SIGNAL_STATUS_SUCCESS = "SUCCESS";
@@ -61,6 +82,13 @@ const SIGNAL_STATUS_SUCCESS = "SUCCESS";
 const UNAVAILABLE = "N/A";
 // Shown where there is no detector result to speak of.
 const ABSENT = "—";
+
+// The two provenance outcomes that are not a C2PA state: the file was read and carries no
+// credentials, and the file could not be read. Kept apart on purpose — "we looked and
+// found nothing" and "we could not look" are different facts, and neither means the media
+// is fake.
+const NO_PROVENANCE = "No provenance";
+const EXTRACTION_FAILED = "Extraction failed";
 
 type AnalysesResult =
   | { ok: true; analyses: AnalysisSummary[] }
@@ -86,6 +114,24 @@ function parseOptionalNumber(value: unknown): number | null | undefined {
   }
 
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** A string the API may legitimately have left out, or `undefined` for anything else. */
+function parseOptionalString(value: unknown): string | null | undefined {
+  if (value === null) {
+    return null;
+  }
+
+  return typeof value === "string" ? value : undefined;
+}
+
+/** A boolean the API may legitimately have left out, or `undefined` for anything else. */
+function parseOptionalBoolean(value: unknown): boolean | null | undefined {
+  if (value === null) {
+    return null;
+  }
+
+  return typeof value === "boolean" ? value : undefined;
 }
 
 /**
@@ -177,6 +223,61 @@ function parseSignal(payload: unknown): SyntheticVideoSignal | null | undefined 
   };
 }
 
+/**
+ * The provenance signal on one analysis, with the same three-way result as `parseSignal`:
+ * `null` for an analysis that carries none, `undefined` for a payload that is not one.
+ */
+function parseProvenance(payload: unknown): ProvenanceSignal | null | undefined {
+  if (payload === null) {
+    return null;
+  }
+
+  if (typeof payload !== "object") {
+    return undefined;
+  }
+
+  const {
+    provider,
+    signal_type,
+    status,
+    provider_version,
+    manifest_exists,
+    validation_state,
+    claim_generator,
+    signature_issuer,
+  } = payload as Record<string, unknown>;
+
+  const parsedVersion = parseOptionalString(provider_version);
+  const parsedExists = parseOptionalBoolean(manifest_exists);
+  const parsedState = parseOptionalString(validation_state);
+  const parsedGenerator = parseOptionalString(claim_generator);
+  const parsedIssuer = parseOptionalString(signature_issuer);
+
+  if (
+    typeof provider !== "string" ||
+    typeof signal_type !== "string" ||
+    typeof status !== "string" ||
+    parsedVersion === undefined ||
+    parsedExists === undefined ||
+    parsedState === undefined ||
+    parsedGenerator === undefined ||
+    parsedIssuer === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    provider,
+    signal_type,
+    status,
+    provider_version: parsedVersion,
+    manifest_exists: parsedExists,
+    validation_state: parsedState,
+    claim_generator: parsedGenerator,
+    signature_issuer: parsedIssuer,
+  };
+}
+
 function parseAnalysis(payload: unknown): AnalysisSummary | null {
   if (typeof payload !== "object" || payload === null) {
     return null;
@@ -190,9 +291,11 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     declared_content_type,
     was_normalized,
     synthetic_video,
+    provenance,
   } = payload as Record<string, unknown>;
 
   const signal = parseSignal(synthetic_video);
+  const provenanceSignal = parseProvenance(provenance);
 
   if (
     typeof id !== "string" ||
@@ -201,6 +304,7 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     typeof declared_content_type !== "string" ||
     typeof was_normalized !== "boolean" ||
     signal === undefined ||
+    provenanceSignal === undefined ||
     !(typeof original_filename === "string" || original_filename === null)
   ) {
     return null;
@@ -214,6 +318,7 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     declared_content_type,
     was_normalized,
     synthetic_video: signal,
+    provenance: provenanceSignal,
   };
 }
 
@@ -353,6 +458,55 @@ function ClipEvidence({ signal }: { signal: SyntheticVideoSignal | null }) {
   );
 }
 
+/**
+ * What the C2PA reading found, in C2PA's own words where it has any.
+ *
+ * Four outcomes, deliberately never merged into fewer:
+ * no signal at all, a reading that failed, a reading that found no credentials, and a
+ * reading that found some — where the C2PA validation state is shown verbatim rather than
+ * being translated into "authentic" or "tampered". A file with no Content Credentials is
+ * the ordinary case, not a suspicious one, and an invalid signature means the credentials
+ * do not verify — not that the video is fake. No part of this product owns that judgement.
+ */
+function provenanceText(signal: ProvenanceSignal | null): string {
+  if (signal === null) {
+    return ABSENT;
+  }
+
+  if (signal.status !== SIGNAL_STATUS_SUCCESS) {
+    return EXTRACTION_FAILED;
+  }
+
+  if (signal.manifest_exists === false) {
+    return NO_PROVENANCE;
+  }
+
+  // A manifest the reading could not describe, which the API reports rather than guesses.
+  return signal.validation_state ?? UNAVAILABLE;
+}
+
+/** Who the manifest says made the media, or who signed for it. Absent unless named. */
+function provenanceSource(signal: ProvenanceSignal | null): string | null {
+  if (signal === null || signal.manifest_exists !== true) {
+    return null;
+  }
+
+  return signal.claim_generator ?? signal.signature_issuer;
+}
+
+function Provenance({ signal }: { signal: ProvenanceSignal | null }) {
+  const source = provenanceSource(signal);
+
+  return (
+    <>
+      <div title={signal?.provider_version ? `C2PA SDK: ${signal.provider_version}` : undefined}>
+        {provenanceText(signal)}
+      </div>
+      {source && <div className="opacity-60">{source}</div>}
+    </>
+  );
+}
+
 function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
   return (
     <div className="overflow-x-auto">
@@ -368,6 +522,7 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
             <th className="py-2 pr-4 font-medium">Synthetic probability</th>
             <th className="py-2 pr-4 font-medium">Clips</th>
             <th className="py-2 pr-4 font-medium">Strongest clips (logit)</th>
+            <th className="py-2 pr-4 font-medium">Provenance (C2PA)</th>
             <th className="py-2 font-medium">Created</th>
           </tr>
         </thead>
@@ -408,6 +563,11 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
               </td>
               <td className="py-2 pr-4 align-top font-mono text-xs whitespace-nowrap">
                 <ClipEvidence signal={analysis.synthetic_video} />
+              </td>
+              {/* What the file itself claims, read from the forensic original. A missing
+                  or invalid manifest is never rendered as a verdict about the media. */}
+              <td className="py-2 pr-4 align-top font-mono text-xs">
+                <Provenance signal={analysis.provenance} />
               </td>
               <td className="py-2 font-mono text-xs">{analysis.created_at}</td>
             </tr>
@@ -468,6 +628,13 @@ export default async function Home() {
         <p className="mt-1 text-sm opacity-70">
           Synthetic probability is NVIDIA&apos;s own score for its synthetic-video detector,
           shown as returned. It is not a verdict.
+        </p>
+        <p className="mt-1 text-sm opacity-70">
+          Provenance is what the file itself carries: C2PA Content Credentials, read from
+          the forensic original and shown in C2PA&apos;s own words. Most media carries none,
+          so <span className="font-mono">{NO_PROVENANCE}</span> is the ordinary case and not
+          a finding — and an invalid manifest means the credentials do not verify, not that
+          the media is fake.
         </p>
         <p className="mt-1 text-sm opacity-70">
           Strongest clips are the highest-scoring of the clips NVIDIA examined, identified by

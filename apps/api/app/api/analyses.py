@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import and_, select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.db.models import (
     ANALYSIS_STATUS_QUEUED,
@@ -24,7 +24,12 @@ from app.db.models import (
     MediaFile,
 )
 from app.db.session import get_session
-from app.detection import NVIDIA_PROVIDER, SYNTHETIC_VIDEO_SIGNAL
+from app.detection import (
+    C2PA_PROVIDER,
+    NVIDIA_PROVIDER,
+    PROVENANCE_SIGNAL,
+    SYNTHETIC_VIDEO_SIGNAL,
+)
 from app.media import MediaMetadata, MediaProbeError, MediaProbeUnavailable, probe_media
 from app.normalization import (
     NormalizationError,
@@ -143,6 +148,37 @@ class SyntheticVideoSignal(BaseModel):
     segments: list[SegmentEvidence]
 
 
+class ProvenanceSignal(BaseModel):
+    """The persisted C2PA provenance signal, as the dashboard may see it.
+
+    Facts about what the file itself claims, and nothing derived from them. There is no
+    score: provenance is the state of a signature, not a figure on a scale, and one here
+    would sit beside NVIDIA's probability as though the two were comparable.
+
+    The three states a reader has to tell apart are carried, never merged:
+    `status` is `SUCCESS` when the file was read — including when it holds no credentials,
+    which `manifest_exists` reports — and `FAILED` when reading it did not work, which is
+    not the same as media that carries nothing. `validation_state` is the C2PA SDK's own
+    word for what it made of the signature, passed through untranslated and null whenever
+    no manifest exists.
+
+    Absent or invalid credentials are not evidence of manipulation, and nothing here says
+    they are. Most media carries none at all.
+    """
+
+    provider: str
+    signal_type: str
+    status: str
+    provider_version: str | None
+    # Null on a failed reading: whether credentials exist is exactly what is unknown then.
+    manifest_exists: bool | None
+    validation_state: str | None
+    # Who the manifest says made the media, and who signed for it. Secondary context, and
+    # absent whenever the manifest does not name them.
+    claim_generator: str | None
+    signature_issuer: str | None
+
+
 class AnalysisSummary(BaseModel):
     """One row of the dashboard listing.
 
@@ -164,6 +200,9 @@ class AnalysisSummary(BaseModel):
     # Null for an analysis that carries no such signal — anything stored before the
     # detector was wired in, and any later analysis whose signal row is absent.
     synthetic_video: SyntheticVideoSignal | None
+    # Likewise null for an analysis processed before provenance was read at all. Not the
+    # same as an analysis whose media carries no credentials: that is a signal that ran.
+    provenance: ProvenanceSignal | None
 
 
 @dataclass(frozen=True)
@@ -478,6 +517,46 @@ def signal_figure(metadata: object, key: str, expected: type | tuple[type, ...])
     return value
 
 
+def signal_flag(metadata: object, key: str) -> bool | None:
+    """Read one boolean fact out of a stored signal's metadata document.
+
+    Separate from `signal_figure` because that one rejects booleans on purpose. Anything
+    other than a real boolean reads as unknown rather than being coerced: `manifest_exists`
+    is the field a reader leans on to tell "no credentials" from "could not tell", and a
+    truthy string quietly becoming `true` would break exactly that distinction.
+    """
+    if not isinstance(metadata, dict):
+        return None
+
+    value = metadata.get(key)
+
+    return value if isinstance(value, bool) else None
+
+
+def provenance_signal(row: Any) -> ProvenanceSignal | None:
+    """Turn the joined provenance columns into the response's signal, or nothing.
+
+    As with the detection signal, the outer join leaves every column null when an analysis
+    carries no provenance row, and `status` is the one that cannot be null on a real one.
+
+    The stored metadata document is read defensively and never passed through: on a failed
+    reading it holds the exception class name, which is internal diagnostic detail.
+    """
+    if row.provenance_status is None:
+        return None
+
+    return ProvenanceSignal(
+        provider=row.provenance_provider,
+        signal_type=row.provenance_signal_type,
+        status=row.provenance_status,
+        provider_version=row.provenance_provider_version,
+        manifest_exists=signal_flag(row.provenance_metadata, "manifest_exists"),
+        validation_state=signal_figure(row.provenance_metadata, "validation_state", str),
+        claim_generator=signal_figure(row.provenance_metadata, "claim_generator", str),
+        signature_issuer=signal_figure(row.provenance_metadata, "signature_issuer", str),
+    )
+
+
 def synthetic_video_signal(
     row: Any, segments: list[SegmentEvidence]
 ) -> SyntheticVideoSignal | None:
@@ -544,22 +623,27 @@ def strongest_segments(
 
 @router.get("/analyses", response_model=list[AnalysisSummary])
 def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSummary]:
-    """Return the most recent analyses, with their NVIDIA signal, for the dashboard.
+    """Return the most recent analyses, with both of their signals, for the dashboard.
 
     An inner join onto the media is correct here rather than restrictive: an analysis and
     its media row are written in one transaction, so an analysis without media cannot
-    exist. The signal is a second, outer join, because it can genuinely be missing —
-    analyses stored before the detector existed have none — and the join condition names
-    the one detector wired in, so a later provider's signal cannot multiply these rows.
+    exist. The signals are outer joins, because either can genuinely be missing — analyses
+    stored before a source was wired in have none — and each join names one provider and
+    one signal type, so no row is multiplied by the evidence hanging off it.
 
-    Two statements serve the whole page — the analyses, then the clip evidence for every
-    signal on it. Both are fixed in number: neither grows with how many analyses are
-    listed, so there is no query per analysis.
+    Two statements serve the whole page — the analyses with their signals, then the clip
+    evidence for every detection signal on it. Both are fixed in number: neither grows
+    with how many analyses are listed, so there is no query per analysis.
 
     Ordering falls back to the id because `created_at` defaults to the transaction
     timestamp, which two analyses committed together can share — without the tiebreak
     their relative order would be arbitrary between calls.
     """
+    # The same table, joined a second time for the other signal. Each join is narrowed to
+    # one provider and one signal type, so neither can multiply the listing's rows, and
+    # both signals still arrive on the one statement.
+    provenance = aliased(AnalysisSignal)
+
     try:
         rows = session.execute(
             select(
@@ -580,6 +664,11 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
                 AnalysisSignal.score.label("signal_score"),
                 AnalysisSignal.provider_version.label("signal_provider_version"),
                 AnalysisSignal.signal_metadata.label("signal_metadata"),
+                provenance.provider.label("provenance_provider"),
+                provenance.signal_type.label("provenance_signal_type"),
+                provenance.status.label("provenance_status"),
+                provenance.provider_version.label("provenance_provider_version"),
+                provenance.signal_metadata.label("provenance_metadata"),
             )
             .join(MediaFile, MediaFile.analysis_id == Analysis.id)
             .outerjoin(
@@ -588,6 +677,14 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
                     AnalysisSignal.analysis_id == Analysis.id,
                     AnalysisSignal.provider == NVIDIA_PROVIDER,
                     AnalysisSignal.signal_type == SYNTHETIC_VIDEO_SIGNAL,
+                ),
+            )
+            .outerjoin(
+                provenance,
+                and_(
+                    provenance.analysis_id == Analysis.id,
+                    provenance.provider == C2PA_PROVIDER,
+                    provenance.signal_type == PROVENANCE_SIGNAL,
                 ),
             )
             .order_by(Analysis.created_at.desc(), Analysis.id.desc())
@@ -616,6 +713,7 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
             original_sha256=row.original_sha256,
             was_normalized=row.was_normalized,
             synthetic_video=synthetic_video_signal(row, segments.get(row.signal_id, [])),
+            provenance=provenance_signal(row),
         )
         for row in rows
     ]

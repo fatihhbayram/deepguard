@@ -32,6 +32,7 @@ EXPECTED_FIELDS = {
     "original_sha256",
     "was_normalized",
     "synthetic_video",
+    "provenance",
 }
 
 # The signal object the dashboard receives: the provider's own identity, state and
@@ -48,12 +49,27 @@ EXPECTED_SIGNAL_FIELDS = {
     "segments",
 }
 
+# The provenance object the dashboard receives: what the file itself claims, and the
+# state of the reading that established it. No score — a signature is not a figure on a
+# scale — and no raw metadata document, which holds diagnostic detail on a failure.
+EXPECTED_PROVENANCE_FIELDS = {
+    "provider",
+    "signal_type",
+    "status",
+    "provider_version",
+    "manifest_exists",
+    "validation_state",
+    "claim_generator",
+    "signature_issuer",
+}
+
 # One clip of provider evidence: the frame index NVIDIA scored and the logit it gave it.
 # No time range and no probability, because NVIDIA reports neither per clip.
 EXPECTED_SEGMENT_FIELDS = {"clip_index", "logit"}
 
 PROBABILITY = 0.7929722666740417
 FUNCTION_ID = "847b6e53-0133-452d-ab85-d7acf3ace723"
+C2PA_SDK_VERSION = "0.90.14"
 
 
 def listing_row(**overrides):
@@ -79,13 +95,29 @@ def listing_row(**overrides):
         "signal_score": PROBABILITY,
         "signal_provider_version": FUNCTION_ID,
         "signal_metadata": {"logit": 1.9142135381698608, "total_clips": 7},
+        "provenance_provider": "c2pa",
+        "provenance_signal_type": "provenance",
+        "provenance_status": "SUCCESS",
+        "provenance_provider_version": C2PA_SDK_VERSION,
+        "provenance_metadata": {
+            "manifest_exists": True,
+            "validation_state": "Valid",
+            "validation_failures": ["signingCredential.untrusted"],
+            "is_embedded": True,
+            "remote_manifest_url": None,
+            "active_manifest_label": "urn:c2pa:6f0e1a2b",
+            "claim_generator": "test-camera",
+            "signature_issuer": "Test Signing Cert",
+            "signature_time": None,
+            "assertion_labels": ["c2pa.actions.v2"],
+        },
     }
 
     return SimpleNamespace(**{**values, **overrides})
 
 
 def unsignalled_row(**overrides):
-    """A row for an analysis the outer join found no NVIDIA signal for."""
+    """A row for an analysis neither outer join found a signal for."""
     return listing_row(
         signal_id=None,
         signal_provider=None,
@@ -94,6 +126,20 @@ def unsignalled_row(**overrides):
         signal_score=None,
         signal_provider_version=None,
         signal_metadata=None,
+        provenance_provider=None,
+        provenance_signal_type=None,
+        provenance_status=None,
+        provenance_provider_version=None,
+        provenance_metadata=None,
+        **overrides,
+    )
+
+
+def provenance_row(metadata, status: str = "SUCCESS", **overrides):
+    """A row whose provenance reading ended in `status`, carrying `metadata`."""
+    return listing_row(
+        provenance_status=status,
+        provenance_metadata=metadata,
         **overrides,
     )
 
@@ -191,6 +237,16 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
                 "logit": 1.9142135381698608,
                 "total_clips": 7,
                 "segments": [],
+            },
+            "provenance": {
+                "provider": "c2pa",
+                "signal_type": "provenance",
+                "status": "SUCCESS",
+                "provider_version": C2PA_SDK_VERSION,
+                "manifest_exists": True,
+                "validation_state": "Valid",
+                "claim_generator": "test-camera",
+                "signature_issuer": "Test Signing Cert",
             },
         }
     ]
@@ -318,8 +374,9 @@ def test_the_signal_join_is_restricted_to_the_nvidia_synthetic_video_signal(
 def test_the_query_selects_no_signal_column_the_dashboard_must_not_show(client, fake_session):
     client.get("/api/v1/analyses")
 
-    # Risk classification does not exist yet, and reading it would imply it does.
-    assert "analysis_signals.risk_level" not in compiled(fake_session)
+    # Risk classification does not exist yet, and reading it would imply it does. Neither
+    # signal join may select it, aliased or not.
+    assert "risk_level" not in compiled(fake_session)
 
 
 def test_a_successful_signal_is_exposed_with_the_provider_figures(client, fake_session):
@@ -536,3 +593,122 @@ def test_a_segment_query_failure_returns_the_same_controlled_503(client, fake_se
 
     assert response.status_code == 503
     assert response.json() == {"detail": "analyses are temporarily unavailable"}
+
+
+# Provenance. The other evidence source on the same listing: no score, and three states a
+# reader has to be able to tell apart — read and signed, read and unsigned, not read.
+
+
+def test_the_provenance_join_is_restricted_to_the_c2pa_provenance_signal(client, fake_session):
+    client.get("/api/v1/analyses")
+
+    sql = compiled(fake_session)
+    assert "provider = 'c2pa'" in sql
+    assert "signal_type = 'provenance'" in sql
+    # Joined a second time under an alias, so the two signals cannot multiply each other.
+    assert sql.count("LEFT OUTER JOIN analysis_signals") == 2
+
+
+def test_both_signals_ride_the_same_statement(client, fake_session):
+    """The N+1 guard again, now that a second signal joins the same rows."""
+    fake_session.rows = [listing_row() for _ in range(20)]
+
+    client.get("/api/v1/analyses")
+
+    assert len(fake_session.statements) == 2
+
+
+def test_provenance_is_exposed_with_the_facts_the_file_carries(client, fake_session):
+    fake_session.rows = [listing_row()]
+
+    provenance = client.get("/api/v1/analyses").json()[0]["provenance"]
+
+    assert set(provenance) == EXPECTED_PROVENANCE_FIELDS
+    assert provenance["provider"] == "c2pa"
+    assert provenance["signal_type"] == "provenance"
+    assert provenance["status"] == "SUCCESS"
+    assert provenance["manifest_exists"] is True
+    # The SDK's own word for what it made of the signature, untranslated.
+    assert provenance["validation_state"] == "Valid"
+    assert provenance["claim_generator"] == "test-camera"
+    assert provenance["signature_issuer"] == "Test Signing Cert"
+    assert provenance["provider_version"] == C2PA_SDK_VERSION
+
+
+def test_provenance_carries_no_score(client, fake_session):
+    fake_session.rows = [listing_row()]
+
+    # A signature is not a figure on a scale. A number here would end up beside NVIDIA's
+    # probability as though the two could be compared.
+    assert "score" not in client.get("/api/v1/analyses").json()[0]["provenance"]
+
+
+def test_media_carrying_no_credentials_is_a_successful_reading(client, fake_session):
+    fake_session.rows = [
+        provenance_row({"manifest_exists": False, "validation_state": None})
+    ]
+
+    provenance = client.get("/api/v1/analyses").json()[0]["provenance"]
+
+    # The reading worked and found nothing, which is what most media looks like. It is
+    # distinguishable from a failure by its status and from a signed file by the flag.
+    assert provenance["status"] == "SUCCESS"
+    assert provenance["manifest_exists"] is False
+    assert provenance["validation_state"] is None
+
+
+@pytest.mark.parametrize("state", ["Trusted", "Valid", "Invalid"])
+def test_the_validation_state_is_passed_through_as_the_sdk_worded_it(
+    client, fake_session, state
+):
+    fake_session.rows = [provenance_row({"manifest_exists": True, "validation_state": state})]
+
+    provenance = client.get("/api/v1/analyses").json()[0]["provenance"]
+
+    assert provenance["validation_state"] == state
+
+
+def test_a_failed_reading_is_not_reported_as_absent_credentials(client, fake_session):
+    fake_session.rows = [provenance_row({"error": "C2paUnsupportedFormat"}, status="FAILED")]
+
+    provenance = client.get("/api/v1/analyses").json()[0]["provenance"]
+
+    assert provenance["status"] == "FAILED"
+    # Null, not false: whether the file carries credentials is exactly what is unknown.
+    assert provenance["manifest_exists"] is None
+    assert provenance["validation_state"] is None
+
+
+def test_a_failed_reading_never_exposes_the_extraction_error(client, fake_session):
+    fake_session.rows = [provenance_row({"error": "C2paUnsupportedFormat"}, status="FAILED")]
+
+    body = client.get("/api/v1/analyses").text
+
+    assert "C2paUnsupportedFormat" not in body
+    assert "error" not in body
+
+
+def test_an_analysis_read_before_provenance_existed_is_listed_with_none(client, fake_session):
+    fake_session.rows = [unsignalled_row()]
+
+    row = client.get("/api/v1/analyses").json()[0]
+
+    # No signal row at all — a different fact from a reading that found no credentials.
+    assert row["provenance"] is None
+
+
+def test_unusable_provenance_metadata_does_not_break_the_listing(client, fake_session):
+    fake_session.rows = [
+        provenance_row(None),
+        provenance_row({"manifest_exists": "yes", "validation_state": 7}),
+        provenance_row({}),
+    ]
+
+    response = client.get("/api/v1/analyses")
+
+    assert response.status_code == 200
+    # A truthy string must not become `true`: that flag is what separates "no credentials"
+    # from "could not tell", and coercing it would erase the difference.
+    for row in response.json():
+        assert row["provenance"]["manifest_exists"] is None
+        assert row["provenance"]["validation_state"] is None
