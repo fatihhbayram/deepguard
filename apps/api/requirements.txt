@@ -1,4 +1,5 @@
 alembic==1.19.1
+c2pa-python==0.37.7
 fastapi==0.141.1
 grpcio==1.76.0
 minio==7.2.20
