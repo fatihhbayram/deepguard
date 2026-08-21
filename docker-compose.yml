@@ -88,6 +88,10 @@ services:
       # every job to completion and records a failed signal for each.
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       NVIDIA_SVD_FUNCTION_ID: ${NVIDIA_SVD_FUNCTION_ID:-}
+      # Speaker diarization runs locally, in this process, against a gated Hugging Face
+      # model. Nothing calls it yet; the credential is wired here because this is the only
+      # process that ever will.
+      HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy

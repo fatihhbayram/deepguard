@@ -1,3 +1,10 @@
+# Speaker diarization runs a local PyTorch model, and PyPI's default torch wheels for Linux
+# bundle the CUDA runtime — roughly two gigabytes of it. Diarization is short, CPU-bound work
+# and this machine's single GPU is already spoken for, so the CPU-only index is used instead.
+# The `+cpu` local versions sort above the plain PyPI ones, so these three resolve here while
+# everything else still comes from PyPI.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 alembic==1.19.1
 c2pa-python==0.37.7
 fastapi==0.141.1
@@ -5,7 +12,11 @@ grpcio==1.76.0
 minio==7.2.20
 protobuf==6.33.6
 psycopg2-binary==2.9.12
+pyannote.audio==4.0.7
 python-dotenv==1.2.3
 python-multipart==0.0.32
 SQLAlchemy==2.0.52
+torch==2.13.0+cpu
+torchaudio==2.11.0+cpu
+torchcodec==0.16.0+cpu
 uvicorn==0.52.3
