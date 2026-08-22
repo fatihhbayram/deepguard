@@ -7,6 +7,7 @@ status codes are all exercised against a stand-in provider.
 """
 
 import asyncio
+import builtins
 import socket
 from pathlib import Path
 
@@ -265,6 +266,58 @@ def test_missing_local_file_fails_before_any_connection(monkeypatch, tmp_path):
         )
 
     assert channels == []
+
+
+def test_unreadable_video_mid_stream_is_reported_as_our_failure(monkeypatch, video):
+    """A disk that fails after the RPC started must not be blamed on NVIDIA.
+
+    The read failure aborts the request iterator, and grpc.aio then cancels the call — so
+    what reaches the client is a cancellation, not a status. Without the recorded cause
+    being converted, a broken machine would surface as a bare `CancelledError`.
+    """
+
+    opened: list = []
+
+    def _raise_oserror(*_args):
+        raise OSError("disk went away")
+
+    def failing_open(file_path, mode="rb"):
+        handle = builtins.open(file_path, mode)
+        opened.append(handle)
+        if len(opened) > 1:  # the pre-flight check opened it once already
+            handle.read = _raise_oserror
+        return handle
+
+    monkeypatch.setattr(nvidia_video, "open", failing_open, raising=False)
+
+    detector = FakeDetector(responses=[final()])
+
+    with pytest.raises(nvidia_video.NvidiaLocalFileError) as raised:
+        run_analysis(detector, monkeypatch, video)
+
+    assert "disk went away" in str(raised.value)
+
+
+def test_caller_cancellation_is_not_mistaken_for_a_local_failure(monkeypatch, video):
+    """The recorded-cause branch must only convert our own failures, never a real cancel."""
+    address = f"127.0.0.1:{free_port()}"
+    redirect_to(monkeypatch, address)
+    detector = FakeDetector(responses=[final()], hang=True)
+
+    async def scenario():
+        server = await serve(detector, address)
+        try:
+            task = asyncio.ensure_future(
+                nvidia_video.analyze_video(video, api_key=API_KEY, function_id=FUNCTION_ID)
+            )
+            await asyncio.sleep(0.3)
+            task.cancel()
+            await task
+        finally:
+            await server.stop(None)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(scenario())
 
 
 def test_channel_is_released_after_a_provider_failure(monkeypatch, video):

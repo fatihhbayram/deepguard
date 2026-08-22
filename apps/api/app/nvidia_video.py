@@ -136,8 +136,10 @@ class _VideoStream:
     """Streams the file to NVIDIA and remembers a local read failure.
 
     gRPC consumes the request iterator in its own task, so an OSError raised mid-stream
-    surfaces to us only as an aborted RPC. Recording it here lets the caller be told the
-    truth — that our disk failed — instead of a misleading provider error.
+    surfaces to us only as an aborted RPC — or as a bare cancellation of the response
+    iterator, depending on how far the call had got. Recording it here lets the caller be
+    told the truth — that our disk failed — instead of a misleading provider error or an
+    unexplained cancel.
     """
 
     def __init__(self, file_path: Path) -> None:
@@ -270,6 +272,14 @@ async def analyze_video(
         if stream.local_error is not None:
             raise stream.local_error from error
         raise _provider_error(error) from error
+    except asyncio.CancelledError as error:
+        # When the request iterator raises, grpc.aio cancels the call and the response
+        # iterator reports that cancellation rather than a status — so a failure on our own
+        # disk arrives here, not above. Only our own recorded cause is converted; a
+        # cancellation from anywhere else, including the caller, still propagates untouched.
+        if stream.local_error is not None:
+            raise stream.local_error from error
+        raise
     finally:
         # Cancelling first stops NVIDIA-side work and unblocks the request iterator;
         # closing the channel then releases the connection. Both run on every path,
