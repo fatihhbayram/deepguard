@@ -8,8 +8,8 @@ body of evidence, rather than returning a single verdict on whether media is fak
 
 The upload pipeline exists end to end and analysis runs asynchronously behind it. A video can
 be submitted, validated, stored, described, queued, analysed in a background worker by NVIDIA's
-synthetic video detector and by the C2PA provenance reader, and persisted, and the resulting
-analysis is listed in the dashboard. What runs today:
+synthetic video detector, by NVIDIA's Active Speaker Detection NIM and by the C2PA provenance
+reader, and persisted, and the resulting analysis is listed in the dashboard. What runs today:
 
 - `POST /api/v1/analyses` accepts a video upload;
 - the upload is admitted only by declared MIME type (`video/mp4`, `video/quicktime`) and a
@@ -36,8 +36,8 @@ analysis is listed in the dashboard. What runs today:
   and no transaction is held open across inference;
 - the worker fetches the forensic original from MinIO once, transcodes it if a derivative
   is owed, stores that derivative under its own content-addressed key, sends the resulting
-  artifact to NVIDIA's Synthetic Video Detector over gRPC, and deletes every local copy
-  either way;
+  artifact to NVIDIA's Synthetic Video Detector and then to NVIDIA's Active Speaker Detection
+  NIM over gRPC, and deletes every local copy either way;
 - the derivative's key and hash are written to the database only once the object exists —
   a queued analysis that still owes one carries null in both columns rather than a key
   naming nothing;
@@ -61,6 +61,31 @@ analysis is listed in the dashboard. What runs today:
   level: it is the state of a signature, not a figure on a scale;
 - the clips NVIDIA scored inside the video are kept as evidence in their own right, capped at
   the strongest twenty per detection, each with the provider's clip index and raw logit;
+- the same prepared artifact is also sent to NVIDIA's Active Speaker Detection NIM, which
+  answers per frame which tracked face is speaking. That NIM does not diarize — it takes
+  speaker turns as an *input* — so the turns are produced locally by
+  `pyannote/speaker-diarization-community-1` running on CPU in the worker;
+- audio is extracted once, as a mono 16 kHz PCM WAV, from the same artifact NVIDIA is given,
+  and used twice: pyannote diarizes it and the identical file is streamed to NVIDIA as the
+  separate audio track it wants beside the video. Extracting from the analysed artifact rather
+  than the original is what keeps the two timelines the same one;
+- pyannote's speaker labels are strings, so the worker assigns each voice the integer NVIDIA's
+  proto requires by order of first appearance. Nothing is parsed out of the label. The integer
+  is a wire-format detail and is never stored as the speaker's identity — the label is;
+- NVIDIA's per-frame verdicts are collapsed into unbroken speaking runs, keyed by face *and*
+  by the voice matched to it, and closed on any gap in the frame numbering so no run asserts
+  speech across frames the provider said nothing about. Runs become time ranges against the
+  frame rate the artifact was analysed at;
+- speaking segments are persisted in chronological order, capped at the first fifty, with the
+  detection's own total and a truncation flag beside them — a timeline is only readable as a
+  contiguous run from the start, so the cap keeps a prefix rather than a selection;
+- the active-speaker signal carries no score. It produces a timeline, not a figure on a scale,
+  and NVIDIA reports no speaking confidence: `is_speaking` is already thresholded provider-side,
+  and the confidence it does report scores the face *detection*, not the speech;
+- the whole active-speaker chain — audio extraction, diarization, NVIDIA — records every one of
+  its failures as a `FAILED` signal and never fails the job. Media with no audio, a missing
+  Hugging Face token or an unreachable second NVIDIA function costs that one signal and leaves
+  the provenance and synthetic-video evidence untouched;
 - a detector that fails, times out or is misconfigured does not fail the job: the failure is
   itself persisted as a signal, so the gap in the evidence is visible rather than silent. A
   fault on this side — object storage unreachable, an unreadable artifact — fails the job and
@@ -68,10 +93,11 @@ analysis is listed in the dashboard. What runs today:
 - one evidence source breaking does not cost the analysis the other: an analysis can carry a
   failed detection beside a successful provenance reading, or the reverse, and the job still
   completes;
-- both signals, the clip evidence and the `completed` statuses are written in one final
-  transaction;
-- `GET /api/v1/analyses` returns the most recent analyses with both signals, the detection's
-  strongest clips, and the container/codec facts ffprobe established about the original;
+- all three signals, the clip evidence, the speaking timeline and the `completed` statuses are
+  written in one final transaction;
+- `GET /api/v1/analyses` returns the most recent analyses with all three signals, the
+  detection's strongest clips, the speaking timeline, and the container/codec facts ffprobe
+  established about the original;
 - the Next.js dashboard renders that list beside the connectivity status.
 
 No risk classification or reporting functionality is implemented yet. Signals carry a
@@ -85,7 +111,9 @@ Next.js (web)
    ↓ REST
 FastAPI (api) ──→ PostgreSQL ←── worker (api-worker)
    ↓                  ↑              ↓
- MinIO ───────────────┘         NVIDIA SVD + C2PA
+ MinIO ───────────────┘         NVIDIA SVD + NVIDIA ASD + C2PA
+                                     ↑
+                                pyannote diarization (local, CPU)
 ```
 
 The API and the worker are the same image with different commands. They never call each
@@ -107,11 +135,18 @@ keys are content-addressed and may already be referenced by an earlier analysis 
 bytes.
 
 The worker takes each job in three steps, never one transaction: claim it and commit, then
-download, read provenance, transcode and detect with nothing open, then write the derivative's
-identity and the evidence and close the job out. Holding the claim across that middle step
-would pin a connection and a row lock for however long ffmpeg and NVIDIA take. The two
-evidence sources read different artifacts — C2PA the forensic original, NVIDIA the
-provider-compatible one — and neither waits on the other's outcome.
+download, read provenance, transcode, diarize and detect with nothing open, then write the
+derivative's identity and the evidence and close the job out. Holding the claim across that
+middle step would pin a connection and a row lock for however long ffmpeg, pyannote and NVIDIA
+take. The evidence sources read different artifacts — C2PA the forensic original, both NVIDIA
+NIMs the provider-compatible one — and none waits on another's outcome. The two NVIDIA calls
+run in separate event loops for the same reason: one being slow, cancelled or broken must not
+reach into the other.
+
+Diarization is the only model that runs on this machine. It is CPU-only by construction — the
+PyTorch stack is pinned to the CPU wheel index — and the model is fetched from Hugging Face on
+first use and cached inside the container, so the first job after a rebuild is slower than the
+ones after it and needs network access to `huggingface.co`.
 
 A job is claimed once. Retrying a failed job and recovering one whose worker died mid-flight
 are not implemented — a job left `processing` stays there.
@@ -128,6 +163,9 @@ apps/api/                FastAPI service and the worker that shares its image
   app/media.py           ffprobe validation and metadata extraction
   app/normalization.py   provider-compatible MP4/H.264 derivatives
   app/nvidia_video.py    NVIDIA Synthetic Video Detector gRPC client
+  app/nvidia_active_speaker.py       NVIDIA Active Speaker Detection gRPC client
+  app/nvidia_active_speaker_proto/   vendored NVIDIA protos and generated stubs
+  app/speaker_diarization.py         WAV extraction and local pyannote diarization
   app/storage.py         MinIO object storage
   app/db/                SQLAlchemy models, engine and session
   alembic/               database migrations
@@ -160,6 +198,16 @@ container start:
 ```bash
 docker compose exec api alembic upgrade head
 ```
+
+The backend image is about **2.1 GB**. Almost all of it is the CPU-only PyTorch stack that
+local speaker diarization needs, and the API and the worker share one image, so the API
+carries it without ever using it. This is an accepted MVP trade-off, not an oversight:
+splitting the images would buy back disk at the cost of a second build and a second thing to
+keep in step, and nothing yet needs that. See *Notes on changing dependencies*.
+
+The first analysis after a build also downloads the diarization model from Hugging Face and
+caches it inside the container, so it is slower than the ones after it and needs network
+access to `huggingface.co`.
 
 ## Services and default ports
 
@@ -229,15 +277,30 @@ returned by `GET /api/v1/analyses` and shown on the dashboard. They can also be 
 SELECT provider, signal_type, status, score, metadata FROM analysis_signals;
 
 SELECT clip_index, logit FROM analysis_segments ORDER BY logit DESC;
+
+SELECT start_time, end_time, face_id, speaker_label FROM analysis_segments
+WHERE start_time IS NOT NULL ORDER BY start_time;
 ```
 
-A segment is one clip the detector scored. NVIDIA reports a frame index and a raw logit per
-clip and no timestamps, so those two figures are what is stored — the logit is not a
-probability and is not comparable with the signal's `score`. Provenance produces no segments:
-a signature has no timeline.
+`analysis_segments` carries two shapes of evidence, and which one a row is comes from its
+signal's `signal_type` rather than from a column of its own. A clip row is one clip the
+synthetic-video detector scored: NVIDIA reports a frame index and a raw logit per clip and no
+timestamps, so those two figures are what is stored — the logit is not a probability and is not
+comparable with the signal's `score`. A speaking row is one unbroken stretch in which the
+Active Speaker NIM saw a tracked face speaking, in seconds from the start of the analysed
+video, with the face NVIDIA tracked and pyannote's label for the voice it was matched to. A
+face matched to no voice keeps its row with a null label — that is an observation, not a gap.
+Provenance produces no segments: a signature has no timeline.
 
-Each analysis carries one row per evidence source — `nvidia`/`synthetic_video` and
-`c2pa`/`provenance` — and the dashboard shows them in separate columns. The provenance column
+Each analysis carries one row per evidence source — `nvidia`/`synthetic_video`,
+`nvidia`/`active_speaker` and `c2pa`/`provenance` — and the dashboard shows them in separate
+columns. The two NVIDIA signals are separate deployments and each records the function ID that
+answered it, so one `provider` carries two different `provider_version` values. The
+active-speaker column keeps four outcomes apart: `—` (no signal), `Unavailable` (the chain did
+not get to look), `No speaking faces detected` (it looked and saw nobody) and the timeline
+itself, shown as `N segments` or `N of M segments` where the stored prefix stops short of what
+the detection found. Active Speaker Detection is not a deepfake detector and none of these is a
+verdict about the media. The provenance column
 keeps five outcomes apart: `No provenance` (the file was read and carries no credentials),
 `Remote provenance (not fetched)` (the file names a manifest kept elsewhere, and that URL was
 recorded and deliberately never visited), the C2PA validation state verbatim,
@@ -252,6 +315,13 @@ separates them and no column holds it.
 Detection needs `NVIDIA_API_KEY` and `NVIDIA_SVD_FUNCTION_ID` in `.env`, read by the worker
 rather than the API. Missing or wrong credentials never fail an upload and never fail a job:
 the analysis completes carrying a `FAILED` signal instead of a score.
+
+Active speaker needs two more, both worker-only: `NVIDIA_ASD_FUNCTION_ID`, a separate NVCF
+deployment from the synthetic-video detector, and `HUGGINGFACE_TOKEN`, belonging to an account
+that has accepted the conditions of the gated
+[`pyannote/speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1)
+model. A read-only token is enough. Without either one the active-speaker signal is recorded as
+`FAILED` and the other two evidence sources are unaffected.
 
 Watch a job being processed:
 
@@ -302,4 +372,8 @@ docker compose build api
 docker compose up -d api api-worker
 ```
 
-The API and the worker share one image, so a change to either rebuilds both.
+The API and the worker share one image, so a change to either rebuilds both. That image is
+about 2.1 GB, almost all of it the CPU-only PyTorch stack `pyannote.audio` requires. `torch`,
+`torchaudio` and `torchcodec` are pinned to `+cpu` local versions against
+`https://download.pytorch.org/whl/cpu`, so the far larger CUDA wheels cannot resolve in. The
+API process never diarizes and imports `pyannote.audio` lazily, but it ships the same bytes.
