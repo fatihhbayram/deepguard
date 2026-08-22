@@ -34,6 +34,7 @@ EXPECTED_FIELDS = {
     "media",
     "synthetic_video",
     "provenance",
+    "active_speaker",
 }
 
 # What ffprobe established about the original, as the database kept it. `major_brand` is
@@ -79,12 +80,30 @@ EXPECTED_PROVENANCE_FIELDS = {
     "remote_manifest_url",
 }
 
+# The active-speaker object the dashboard receives. No score: this detector reports a
+# timeline, not a figure on a scale, and a number here would sit beside NVIDIA's synthetic
+# probability as though the two could be compared.
+EXPECTED_ACTIVE_SPEAKER_FIELDS = {
+    "provider",
+    "signal_type",
+    "status",
+    "provider_version",
+    "total_speaking_segments",
+    "segments_truncated",
+    "segments",
+}
+
 # One clip of provider evidence: the frame index NVIDIA scored and the logit it gave it.
 # No time range and no probability, because NVIDIA reports neither per clip.
 EXPECTED_SEGMENT_FIELDS = {"clip_index", "logit"}
 
+# One speaking segment: a real time range and the identity it is about. No clip index and
+# no logit, because an active-speaker result has neither.
+EXPECTED_SPEAKING_FIELDS = {"start_time", "end_time", "face_id", "speaker_label"}
+
 PROBABILITY = 0.7929722666740417
 FUNCTION_ID = "847b6e53-0133-452d-ab85-d7acf3ace723"
+ASD_FUNCTION_ID = "9e93cf1e-de1e-4f1f-8b1e-0c3f1a2d5b77"
 C2PA_SDK_VERSION = "0.90.14"
 
 
@@ -136,6 +155,19 @@ def listing_row(**overrides):
             "signature_time": None,
             "assertion_labels": ["c2pa.actions.v2"],
         },
+        "active_speaker_id": uuid.uuid4(),
+        "active_speaker_provider": "nvidia",
+        "active_speaker_signal_type": "active_speaker",
+        "active_speaker_status": "SUCCESS",
+        "active_speaker_provider_version": ASD_FUNCTION_ID,
+        "active_speaker_metadata": {
+            "frame_rate": 30.0,
+            "total_frames": 150,
+            "total_speaking_segments": 2,
+            "segments_truncated": False,
+            "speaker_detection_threshold": 0.5,
+            "diarized_speakers": {"SPEAKER_00": 0},
+        },
     }
 
     return SimpleNamespace(**{**values, **overrides})
@@ -156,6 +188,12 @@ def unsignalled_row(**overrides):
         provenance_status=None,
         provenance_provider_version=None,
         provenance_metadata=None,
+        active_speaker_id=None,
+        active_speaker_provider=None,
+        active_speaker_signal_type=None,
+        active_speaker_status=None,
+        active_speaker_provider_version=None,
+        active_speaker_metadata=None,
         **overrides,
     )
 
@@ -180,21 +218,45 @@ def failed_signal_row(status: str, **overrides):
     )
 
 
+def failed_active_speaker_row(status: str, **overrides):
+    """A row whose active-speaker chain did not produce a timeline."""
+    return listing_row(
+        active_speaker_status=status,
+        active_speaker_provider_version=None,
+        active_speaker_metadata={"error": "NvidiaActiveSpeakerTimeout"},
+        **overrides,
+    )
+
+
 def segment_row(signal_id, clip_index: int, logit: float):
     """A row shaped like the one the segment select emits."""
     return SimpleNamespace(signal_id=signal_id, clip_index=clip_index, logit=logit)
 
 
+def speaking_row(signal_id, start: float, end: float, face_id: int, label: str | None):
+    """A row shaped like the one the speaking-timeline select emits."""
+    return SimpleNamespace(
+        signal_id=signal_id,
+        start_time=start,
+        end_time=end,
+        face_id=face_id,
+        speaker_label=label,
+    )
+
+
 class FakeSession:
     """Stand-in for a SQLAlchemy session that records the statements it was given.
 
-    The route issues two: the listing, then the clip evidence for the signals it found.
-    They are answered from separate row sets, in that order.
+    The route issues up to three: the listing, the clip evidence for the detection signals
+    it found, and the speaking timeline for the active-speaker signals it found. Either
+    evidence query is skipped when nothing was found to look up, so they are told apart by
+    the column they read rather than by their position.
     """
 
-    def __init__(self, rows=(), segment_rows=()):
+    def __init__(self, rows=(), segment_rows=(), speaking_rows=()):
         self.rows = list(rows)
         self.segment_rows = list(segment_rows)
+        self.speaking_rows = list(speaking_rows)
         self.execute_error = None
         self.statements = []
 
@@ -203,9 +265,17 @@ class FakeSession:
         if self.execute_error is not None:
             raise self.execute_error
 
-        rows = self.rows if len(self.statements) == 1 else self.segment_rows
+        # Resolved now rather than inside the lambda: by the time the route reads the rows,
+        # a later statement may already have been recorded.
+        rows = self.answer(len(self.statements), statement)
 
         return SimpleNamespace(all=lambda: rows)
+
+    def answer(self, position: int, statement):
+        if position == 1:
+            return self.rows
+
+        return self.segment_rows if "clip_index" in str(statement) else self.speaking_rows
 
 
 @pytest.fixture
@@ -283,6 +353,15 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
                 "claim_generator": "test-camera",
                 "signature_issuer": "Test Signing Cert",
                 "remote_manifest_url": None,
+            },
+            "active_speaker": {
+                "provider": "nvidia",
+                "signal_type": "active_speaker",
+                "status": "SUCCESS",
+                "provider_version": ASD_FUNCTION_ID,
+                "total_speaking_segments": 2,
+                "segments_truncated": False,
+                "segments": [],
             },
         }
     ]
@@ -385,7 +464,7 @@ def test_the_media_facts_ride_the_listing_statement(client, fake_session):
 
     client.get("/api/v1/analyses")
 
-    assert len(fake_session.statements) == 2
+    assert len(fake_session.statements) == 3
     sql = compiled(fake_session)
     for column in ("format_name", "codec_name", "media_files.width", "media_files.height"):
         assert column in sql
@@ -445,16 +524,16 @@ def test_the_signal_is_read_in_the_same_statement_as_the_listing(client, fake_se
 def test_the_page_costs_the_same_number_of_queries_however_many_analyses_it_holds(
     client, fake_session
 ):
-    """The N+1 guard: two statements for one analysis, and two for twenty."""
+    """The N+1 guard: three statements for one analysis, and three for twenty."""
     fake_session.rows = [listing_row()]
     client.get("/api/v1/analyses")
-    assert len(fake_session.statements) == 2
+    assert len(fake_session.statements) == 3
 
     fake_session.statements.clear()
     fake_session.rows = [listing_row() for _ in range(20)]
     client.get("/api/v1/analyses")
 
-    assert len(fake_session.statements) == 2
+    assert len(fake_session.statements) == 3
 
 
 def test_no_segment_query_is_issued_when_no_analysis_carries_a_signal(client, fake_session):
@@ -462,7 +541,7 @@ def test_no_segment_query_is_issued_when_no_analysis_carries_a_signal(client, fa
 
     client.get("/api/v1/analyses")
 
-    # Nothing to look up, so the second statement is not worth its round trip.
+    # Nothing to look up for either evidence kind, so neither round trip is worth it.
     assert len(fake_session.statements) == 1
 
 
@@ -711,17 +790,18 @@ def test_the_provenance_join_is_restricted_to_the_c2pa_provenance_signal(client,
     sql = compiled(fake_session)
     assert "provider = 'c2pa'" in sql
     assert "signal_type = 'provenance'" in sql
-    # Joined a second time under an alias, so the two signals cannot multiply each other.
-    assert sql.count("LEFT OUTER JOIN analysis_signals") == 2
+    # Each further signal joins the table again under its own alias, so no two of them
+    # can multiply each other.
+    assert sql.count("LEFT OUTER JOIN analysis_signals") == 3
 
 
 def test_both_signals_ride_the_same_statement(client, fake_session):
-    """The N+1 guard again, now that a second signal joins the same rows."""
+    """The N+1 guard again, now that further signals join the same rows."""
     fake_session.rows = [listing_row() for _ in range(20)]
 
     client.get("/api/v1/analyses")
 
-    assert len(fake_session.statements) == 2
+    assert len(fake_session.statements) == 3
 
 
 def test_provenance_is_exposed_with_the_facts_the_file_carries(client, fake_session):
@@ -871,3 +951,248 @@ def test_an_unusable_remote_manifest_url_reads_as_absent(client, fake_session):
     # A figure that is not a URL is not turned into one; the row still lists.
     for row in response.json():
         assert row["provenance"]["remote_manifest_url"] is None
+
+
+# Active speaker. The third evidence source on the same listing: no score, a timeline
+# instead, and four states a reader has to be able to tell apart — no signal at all, a
+# chain that failed, a detector that saw nobody speaking, and a real timeline.
+
+
+def test_the_active_speaker_join_is_restricted_to_the_nvidia_active_speaker_signal(
+    client, fake_session
+):
+    client.get("/api/v1/analyses")
+
+    sql = compiled(fake_session)
+    assert "signal_type = 'active_speaker'" in sql
+    # Same provider as the synthetic-video signal, so only the signal type separates the
+    # two joins onto it.
+    assert sql.count("provider = 'nvidia'") == 2
+
+
+def test_active_speaker_is_exposed_with_the_signal_facts(client, fake_session):
+    fake_session.rows = [listing_row()]
+
+    signal = client.get("/api/v1/analyses").json()[0]["active_speaker"]
+
+    assert set(signal) == EXPECTED_ACTIVE_SPEAKER_FIELDS
+    assert signal["provider"] == "nvidia"
+    assert signal["signal_type"] == "active_speaker"
+    assert signal["status"] == "SUCCESS"
+    assert signal["provider_version"] == ASD_FUNCTION_ID
+    assert signal["total_speaking_segments"] == 2
+    assert signal["segments_truncated"] is False
+
+
+def test_active_speaker_carries_no_score(client, fake_session):
+    fake_session.rows = [listing_row()]
+
+    # A timeline is not a figure on a scale. A number here would end up beside NVIDIA's
+    # synthetic probability as though the two could be compared.
+    assert "score" not in client.get("/api/v1/analyses").json()[0]["active_speaker"]
+
+
+def test_an_analysis_without_an_active_speaker_signal_is_listed_with_none(
+    client, fake_session
+):
+    fake_session.rows = [unsignalled_row()]
+
+    row = client.get("/api/v1/analyses").json()[0]
+
+    # No signal row at all — a different fact from a detector that ran and saw nobody.
+    assert row["active_speaker"] is None
+
+
+def test_the_speaking_timeline_is_exposed_on_the_signal(client, fake_session):
+    row = listing_row()
+    fake_session.rows = [row]
+    fake_session.speaking_rows = [
+        speaking_row(row.active_speaker_id, 0.2, 4.4, 0, "SPEAKER_00"),
+        speaking_row(row.active_speaker_id, 5.0, 6.5, 1, "SPEAKER_01"),
+    ]
+
+    signal = client.get("/api/v1/analyses").json()[0]["active_speaker"]
+
+    assert signal["segments"] == [
+        {"start_time": 0.2, "end_time": 4.4, "face_id": 0, "speaker_label": "SPEAKER_00"},
+        {"start_time": 5.0, "end_time": 6.5, "face_id": 1, "speaker_label": "SPEAKER_01"},
+    ]
+
+
+def test_a_speaking_segment_exposes_no_field_beyond_what_the_provider_reported(
+    client, fake_session
+):
+    row = listing_row()
+    fake_session.rows = [row]
+    fake_session.speaking_rows = [speaking_row(row.active_speaker_id, 0.0, 1.0, 0, "SPEAKER_00")]
+
+    segment = client.get("/api/v1/analyses").json()[0]["active_speaker"]["segments"][0]
+
+    # No clip index, no logit, no score: an active-speaker result has none of them, and
+    # anything else here would have been invented.
+    assert set(segment) == EXPECTED_SPEAKING_FIELDS
+
+
+def test_a_face_matched_to_no_diarized_voice_keeps_its_segment(client, fake_session):
+    row = listing_row()
+    fake_session.rows = [row]
+    fake_session.speaking_rows = [speaking_row(row.active_speaker_id, 1.0, 2.0, 3, None)]
+
+    segment = client.get("/api/v1/analyses").json()[0]["active_speaker"]["segments"][0]
+
+    # "This face was speaking and no diarized voice matched it" is an observation, not
+    # missing data, so the segment lists with a null label rather than being dropped.
+    assert segment["face_id"] == 3
+    assert segment["speaker_label"] is None
+
+
+def test_a_successful_detection_with_no_speaking_face_reports_an_empty_timeline(
+    client, fake_session
+):
+    fake_session.rows = [
+        listing_row(
+            active_speaker_metadata={
+                "total_speaking_segments": 0,
+                "segments_truncated": False,
+            }
+        )
+    ]
+    fake_session.speaking_rows = []
+
+    signal = client.get("/api/v1/analyses").json()[0]["active_speaker"]
+
+    # The detector ran and saw nobody speaking. That is a real result, told apart from a
+    # failure by the status beside it, and it says nothing about the media.
+    assert signal["status"] == "SUCCESS"
+    assert signal["segments"] == []
+    assert signal["total_speaking_segments"] == 0
+
+
+@pytest.mark.parametrize("status", ["FAILED", "TIMEOUT"])
+def test_a_failed_active_speaker_signal_carries_no_timeline(client, fake_session, status):
+    fake_session.rows = [failed_active_speaker_row(status)]
+
+    signal = client.get("/api/v1/analyses").json()[0]["active_speaker"]
+
+    assert signal["status"] == status
+    assert signal["segments"] == []
+    # No figure is invented for a chain that did not get to produce one.
+    assert signal["total_speaking_segments"] is None
+    assert signal["segments_truncated"] is None
+
+
+@pytest.mark.parametrize("status", ["FAILED", "TIMEOUT"])
+def test_a_failed_active_speaker_signal_never_exposes_the_provider_error(
+    client, fake_session, status
+):
+    fake_session.rows = [failed_active_speaker_row(status)]
+
+    body = client.get("/api/v1/analyses").text
+
+    # The stored metadata holds the exception class name; it is diagnostic, not evidence.
+    assert "NvidiaActiveSpeakerTimeout" not in body
+    assert "error" not in body
+
+
+def test_a_truncated_timeline_says_so(client, fake_session):
+    row = listing_row(
+        active_speaker_metadata={"total_speaking_segments": 84, "segments_truncated": True}
+    )
+    fake_session.rows = [row]
+    fake_session.speaking_rows = [speaking_row(row.active_speaker_id, 0.0, 1.0, 0, "SPEAKER_00")]
+
+    signal = client.get("/api/v1/analyses").json()[0]["active_speaker"]
+
+    # What was persisted, against how many runs there were: without the pair, a partial
+    # timeline would read as the whole one.
+    assert signal["total_speaking_segments"] == 84
+    assert signal["segments_truncated"] is True
+
+
+def test_unusable_active_speaker_metadata_does_not_break_the_listing(client, fake_session):
+    fake_session.rows = [
+        listing_row(active_speaker_metadata=None),
+        listing_row(active_speaker_metadata={"total_speaking_segments": "two"}),
+        listing_row(active_speaker_metadata={"segments_truncated": "yes"}),
+    ]
+
+    response = client.get("/api/v1/analyses")
+
+    assert response.status_code == 200
+    # A figure that is missing or of the wrong type is reported as absent, not guessed at —
+    # and a truthy string must not become a `true` that hides a truncated timeline.
+    for row in response.json():
+        assert row["active_speaker"]["total_speaking_segments"] is None
+        assert row["active_speaker"]["segments_truncated"] is None
+
+
+def test_each_analysis_receives_only_its_own_speaking_segments(client, fake_session):
+    first, second = listing_row(), listing_row()
+    fake_session.rows = [first, second]
+    fake_session.speaking_rows = [
+        speaking_row(first.active_speaker_id, 0.0, 1.0, 0, "SPEAKER_00"),
+        speaking_row(second.active_speaker_id, 2.0, 3.0, 1, "SPEAKER_01"),
+    ]
+
+    body = client.get("/api/v1/analyses").json()
+
+    assert [s["start_time"] for s in body[0]["active_speaker"]["segments"]] == [0.0]
+    assert [s["start_time"] for s in body[1]["active_speaker"]["segments"]] == [2.0]
+
+
+def test_the_timeline_query_asks_only_for_the_listed_active_speaker_signals(
+    client, fake_session
+):
+    row = listing_row()
+    fake_session.rows = [row, unsignalled_row()]
+
+    client.get("/api/v1/analyses")
+
+    sql = compiled(fake_session, index=2)
+    assert "analysis_segments.signal_id IN" in sql
+    # Rendered without its dashes by the literal bind.
+    assert row.active_speaker_id.hex in sql
+    # The analysis carrying no signal contributes no id to look up.
+    assert sql.count("'") == 2
+
+
+def test_the_timeline_query_reads_the_segments_chronologically(client, fake_session):
+    fake_session.rows = [listing_row()]
+
+    client.get("/api/v1/analyses")
+
+    sql = compiled(fake_session, index=2)
+    # Two faces can begin speaking on the same frame, so the end time and the face break
+    # the tie and the timeline reads back the same way every call.
+    assert (
+        "ORDER BY analysis_segments.signal_id, analysis_segments.start_time, "
+        "analysis_segments.end_time, analysis_segments.face_id" in sql
+    )
+
+
+def test_no_timeline_query_is_issued_when_no_analysis_carries_an_active_speaker_signal(
+    client, fake_session
+):
+    fake_session.rows = [listing_row(active_speaker_id=None, active_speaker_status=None)]
+
+    client.get("/api/v1/analyses")
+
+    # The listing and the clip evidence, and nothing to look a timeline up for.
+    assert len(fake_session.statements) == 2
+
+
+def test_a_timeline_query_failure_returns_the_same_controlled_503(client, fake_session):
+    fake_session.rows = [listing_row()]
+
+    def fail_on_the_timeline_query(statement):
+        fake_session.statements.append(statement)
+        if "start_time" in str(statement):
+            raise OperationalError("SELECT", None, Exception("connection lost"))
+        return SimpleNamespace(all=lambda: fake_session.rows if len(fake_session.statements) == 1 else [])
+
+    fake_session.execute = fail_on_the_timeline_query
+
+    response = client.get("/api/v1/analyses")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "analyses are temporarily unavailable"}

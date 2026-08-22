@@ -25,6 +25,7 @@ from app.db.models import (
 )
 from app.db.session import get_session
 from app.detection import (
+    ACTIVE_SPEAKER_SIGNAL,
     C2PA_PROVIDER,
     NVIDIA_PROVIDER,
     PROVENANCE_SIGNAL,
@@ -147,6 +148,56 @@ class SyntheticVideoSignal(BaseModel):
     segments: list[SegmentEvidence]
 
 
+class SpeakingSegment(BaseModel):
+    """One stretch of video in which NVIDIA saw a tracked face speaking.
+
+    Times are seconds from the start of the analysed video, as the aggregation over
+    NVIDIA's per-frame evidence produced them. `face_id` is NVIDIA's own identifier for the
+    face it tracked; `speaker_label` is pyannote's label for the voice NVIDIA matched that
+    face to, and is null when it matched none — which is an observation about the segment,
+    not missing data.
+
+    There is no score here, because active speaker produces no figure per segment. A range
+    is either in the timeline or it is not.
+    """
+
+    start_time: float
+    end_time: float
+    face_id: int
+    speaker_label: str | None
+
+
+class ActiveSpeakerSignal(BaseModel):
+    """The persisted NVIDIA active-speaker signal, as the dashboard may see it.
+
+    No `score`, unlike the synthetic-video signal: this detector reports a timeline, and a
+    number here would sit in the same place as NVIDIA's synthetic probability as though the
+    two could be compared (rule 11).
+
+    A successful signal with an empty `segments` is a real result — the detector ran and
+    saw no speaking face — and is not evidence of anything about the media. A `FAILED` or
+    `TIMEOUT` signal carries no segments either, and the two states must not be read alike:
+    one looked and found nothing, the other did not get to look.
+
+    The stored metadata document is not passed through as it stands; on a failure it holds
+    the provider exception's class name, which is internal diagnostic detail.
+    """
+
+    provider: str
+    signal_type: str
+    status: str
+    provider_version: str | None
+    # How many speaking runs the aggregation found, and whether the persisted timeline stops
+    # short of them. Both absent unless the detection succeeded and recorded them — without
+    # the pair, a truncated timeline would read as the whole one.
+    total_speaking_segments: int | None
+    segments_truncated: bool | None
+    # The persisted timeline, chronological. Already capped where it was written
+    # (`MAX_PERSISTED_SPEAKING_SEGMENTS`), and not trimmed again here: a timeline is only
+    # readable as a contiguous run, so what was stored is what is handed on.
+    segments: list[SpeakingSegment]
+
+
 class ProvenanceSignal(BaseModel):
     """The persisted C2PA provenance signal, as the dashboard may see it.
 
@@ -237,6 +288,9 @@ class AnalysisSummary(BaseModel):
     # Likewise null for an analysis processed before provenance was read at all. Not the
     # same as an analysis whose media carries no credentials: that is a signal that ran.
     provenance: ProvenanceSignal | None
+    # Null for an analysis carrying no active-speaker signal at all, which is again not the
+    # same as a detector that ran and found no speaking face.
+    active_speaker: ActiveSpeakerSignal | None
 
 
 @dataclass(frozen=True)
@@ -565,6 +619,82 @@ def synthetic_video_signal(
     )
 
 
+def active_speaker_signal(
+    row: Any, segments: list[SpeakingSegment]
+) -> ActiveSpeakerSignal | None:
+    """Turn the joined active-speaker columns into the response's signal, or nothing.
+
+    Same rule as the other two joins: every column is null when an analysis carries no such
+    signal, and `status` is the one a real row cannot have null.
+    """
+    if row.active_speaker_status is None:
+        return None
+
+    return ActiveSpeakerSignal(
+        provider=row.active_speaker_provider,
+        signal_type=row.active_speaker_signal_type,
+        status=row.active_speaker_status,
+        provider_version=row.active_speaker_provider_version,
+        total_speaking_segments=signal_figure(
+            row.active_speaker_metadata, "total_speaking_segments", int
+        ),
+        segments_truncated=signal_flag(row.active_speaker_metadata, "segments_truncated"),
+        segments=segments,
+    )
+
+
+def speaking_timeline(
+    session: Session, signal_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[SpeakingSegment]]:
+    """Fetch the speaking segments for every listed active-speaker signal at once.
+
+    One statement for the whole page, for the same reason as `strongest_segments`: the
+    listing must not issue a query per analysis. Persisted evidence is already capped per
+    signal (`MAX_PERSISTED_SPEAKING_SEGMENTS`), so the whole stored timeline is read back
+    and handed on as it stands — trimming it here would leave gaps a reader could not tell
+    from silence.
+
+    Signals with no stored segments are simply absent from the result, which covers both a
+    detection that failed and one that saw nobody speaking; the signal's own status is what
+    separates those two.
+    """
+    if not signal_ids:
+        return {}
+
+    rows = session.execute(
+        select(
+            AnalysisSegment.signal_id,
+            AnalysisSegment.start_time,
+            AnalysisSegment.end_time,
+            AnalysisSegment.face_id,
+            AnalysisSegment.speaker_label,
+        )
+        .where(AnalysisSegment.signal_id.in_(signal_ids))
+        # Chronological, with the same tie-breaks the evidence was written under: two faces
+        # can begin speaking on the very same frame, and without a total order the timeline
+        # could read back differently between calls.
+        .order_by(
+            AnalysisSegment.signal_id,
+            AnalysisSegment.start_time,
+            AnalysisSegment.end_time,
+            AnalysisSegment.face_id,
+        )
+    ).all()
+
+    grouped: dict[uuid.UUID, list[SpeakingSegment]] = {}
+    for row in rows:
+        grouped.setdefault(row.signal_id, []).append(
+            SpeakingSegment(
+                start_time=row.start_time,
+                end_time=row.end_time,
+                face_id=row.face_id,
+                speaker_label=row.speaker_label,
+            )
+        )
+
+    return grouped
+
+
 def strongest_segments(
     session: Session, signal_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, list[SegmentEvidence]]:
@@ -607,26 +737,29 @@ def strongest_segments(
 
 @router.get("/analyses", response_model=list[AnalysisSummary])
 def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSummary]:
-    """Return the most recent analyses, with both of their signals, for the dashboard.
+    """Return the most recent analyses, with all three of their signals, for the dashboard.
 
     An inner join onto the media is correct here rather than restrictive: an analysis and
     its media row are written in one transaction, so an analysis without media cannot
-    exist. The signals are outer joins, because either can genuinely be missing — analyses
-    stored before a source was wired in have none — and each join names one provider and
-    one signal type, so no row is multiplied by the evidence hanging off it.
+    exist. The signals are outer joins, because any of them can genuinely be missing —
+    analyses stored before a source was wired in have none — and each join names one
+    provider and one signal type, so no row is multiplied by the evidence hanging off it.
 
-    Two statements serve the whole page — the analyses with their signals, then the clip
-    evidence for every detection signal on it. Both are fixed in number: neither grows
-    with how many analyses are listed, so there is no query per analysis.
+    Three statements serve the whole page — the analyses with their signals, then the clip
+    evidence, then the speaking timeline. The two evidence queries are kept apart because
+    they read different columns in different orders: clips come back strongest first, the
+    timeline chronologically. All three are fixed in number: none grows with how many
+    analyses are listed, so there is no query per analysis.
 
     Ordering falls back to the id because `created_at` defaults to the transaction
     timestamp, which two analyses committed together can share — without the tiebreak
     their relative order would be arbitrary between calls.
     """
-    # The same table, joined a second time for the other signal. Each join is narrowed to
-    # one provider and one signal type, so neither can multiply the listing's rows, and
-    # both signals still arrive on the one statement.
+    # The same table, joined again for each further signal. Every join is narrowed to one
+    # provider and one signal type, so none can multiply the listing's rows, and all three
+    # signals still arrive on the one statement.
     provenance = aliased(AnalysisSignal)
+    active_speaker = aliased(AnalysisSignal)
 
     try:
         rows = session.execute(
@@ -663,6 +796,12 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
                 provenance.status.label("provenance_status"),
                 provenance.provider_version.label("provenance_provider_version"),
                 provenance.signal_metadata.label("provenance_metadata"),
+                active_speaker.id.label("active_speaker_id"),
+                active_speaker.provider.label("active_speaker_provider"),
+                active_speaker.signal_type.label("active_speaker_signal_type"),
+                active_speaker.status.label("active_speaker_status"),
+                active_speaker.provider_version.label("active_speaker_provider_version"),
+                active_speaker.signal_metadata.label("active_speaker_metadata"),
             )
             .join(MediaFile, MediaFile.analysis_id == Analysis.id)
             .outerjoin(
@@ -681,12 +820,24 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
                     provenance.signal_type == PROVENANCE_SIGNAL,
                 ),
             )
+            .outerjoin(
+                active_speaker,
+                and_(
+                    active_speaker.analysis_id == Analysis.id,
+                    active_speaker.provider == NVIDIA_PROVIDER,
+                    active_speaker.signal_type == ACTIVE_SPEAKER_SIGNAL,
+                ),
+            )
             .order_by(Analysis.created_at.desc(), Analysis.id.desc())
             .limit(RECENT_ANALYSES_LIMIT)
         ).all()
 
         segments = strongest_segments(
             session, [row.signal_id for row in rows if row.signal_id is not None]
+        )
+        timelines = speaking_timeline(
+            session,
+            [row.active_speaker_id for row in rows if row.active_speaker_id is not None],
         )
     except SQLAlchemyError:
         # Statements, connection strings and driver errors stay in the server log.
@@ -718,6 +869,9 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
             ),
             synthetic_video=synthetic_video_signal(row, segments.get(row.signal_id, [])),
             provenance=provenance_signal(row),
+            active_speaker=active_speaker_signal(
+                row, timelines.get(row.active_speaker_id, [])
+            ),
         )
         for row in rows
     ]

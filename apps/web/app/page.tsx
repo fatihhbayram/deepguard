@@ -65,6 +65,34 @@ type ProvenanceSignal = {
   remote_manifest_url: string | null;
 };
 
+// One stretch of video in which NVIDIA saw a tracked face speaking. The times are seconds
+// from the start of the analysed video, `face_id` is NVIDIA's own identifier for the face
+// it tracked, and `speaker_label` is the diarized voice matched to it — null when NVIDIA
+// matched none, which is an observation about the segment rather than missing data.
+type SpeakingSegment = {
+  start_time: number;
+  end_time: number;
+  face_id: number;
+  speaker_label: string | null;
+};
+
+// The NVIDIA active-speaker signal the API joined onto the analysis. It carries no score:
+// this detector reports a timeline, not a figure on a scale. A successful signal with no
+// segments means the detector looked and saw nobody speaking — a real result, and not a
+// finding about the media.
+type ActiveSpeakerSignal = {
+  provider: string;
+  signal_type: string;
+  status: string;
+  provider_version: string | null;
+  // How many speaking runs the detection found, and whether the stored timeline stops short
+  // of them. Both null unless the detection succeeded and recorded them.
+  total_speaking_segments: number | null;
+  segments_truncated: boolean | null;
+  // The persisted timeline, chronological. Empty for a detection that produced none.
+  segments: SpeakingSegment[];
+};
+
 // What ffprobe established about the forensic original, as the database kept it. These
 // are facts about the bytes, unlike `declared_content_type`, which is only what the client
 // said about them. `format_name` is ffprobe's own name for the demuxer family — one string
@@ -96,6 +124,9 @@ type AnalysisSummary = {
   // Null for an analysis processed before provenance was read at all, which is again not
   // the same as a reading that found no credentials.
   provenance: ProvenanceSignal | null;
+  // Null when the analysis carries no active-speaker signal at all, which is not the same
+  // as a detector that ran and saw no speaking face.
+  active_speaker: ActiveSpeakerSignal | null;
 };
 
 const SIGNAL_STATUS_SUCCESS = "SUCCESS";
@@ -110,6 +141,15 @@ const ABSENT = "—";
 // read. Kept apart on purpose — "we looked and found nothing", "provenance was claimed but
 // is not in these bytes" and "we could not look" are different facts, and none of them
 // means the media is fake.
+// The two active-speaker outcomes that are not a timeline: the chain did not produce one,
+// and it produced one that is empty. Kept apart on purpose — "we could not look" and "we
+// looked and nobody was speaking" are different facts, and neither says anything about
+// whether the media is genuine.
+const SPEAKER_UNAVAILABLE = "Unavailable";
+const NO_SPEAKING_FACES = "No speaking faces detected";
+// Shown where NVIDIA saw a face speaking but matched it to no diarized voice.
+const UNMATCHED_VOICE = "no matched voice";
+
 const NO_PROVENANCE = "No provenance";
 const REMOTE_PROVENANCE = "Remote provenance (not fetched)";
 const EXTRACTION_FAILED = "Extraction failed";
@@ -248,6 +288,96 @@ function parseSignal(payload: unknown): SyntheticVideoSignal | null | undefined 
 }
 
 /**
+ * The speaking timeline on one signal, or `undefined` if it is not a list of real segments.
+ *
+ * A malformed entry invalidates the whole list for the same reason as the clip evidence:
+ * a timeline with one range quietly dropped out of it reads as silence that was never
+ * observed, and evidence that cannot be trusted is not shown at all.
+ */
+function parseSpeakingSegments(payload: unknown): SpeakingSegment[] | undefined {
+  if (!Array.isArray(payload)) {
+    return undefined;
+  }
+
+  const segments: SpeakingSegment[] = [];
+  for (const entry of payload) {
+    if (typeof entry !== "object" || entry === null) {
+      return undefined;
+    }
+
+    const { start_time, end_time, face_id, speaker_label } = entry as Record<string, unknown>;
+    const parsedLabel = parseOptionalString(speaker_label);
+    if (
+      typeof start_time !== "number" ||
+      !Number.isFinite(start_time) ||
+      typeof end_time !== "number" ||
+      !Number.isFinite(end_time) ||
+      typeof face_id !== "number" ||
+      !Number.isFinite(face_id) ||
+      parsedLabel === undefined
+    ) {
+      return undefined;
+    }
+
+    segments.push({ start_time, end_time, face_id, speaker_label: parsedLabel });
+  }
+
+  return segments;
+}
+
+/**
+ * The active-speaker signal on one analysis, with the same three-way result as
+ * `parseSignal`: `null` for an analysis that carries none, `undefined` for a payload that
+ * is not one.
+ */
+function parseActiveSpeaker(payload: unknown): ActiveSpeakerSignal | null | undefined {
+  if (payload === null) {
+    return null;
+  }
+
+  if (typeof payload !== "object") {
+    return undefined;
+  }
+
+  const {
+    provider,
+    signal_type,
+    status,
+    provider_version,
+    total_speaking_segments,
+    segments_truncated,
+    segments,
+  } = payload as Record<string, unknown>;
+
+  const parsedVersion = parseOptionalString(provider_version);
+  const parsedTotal = parseOptionalNumber(total_speaking_segments);
+  const parsedTruncated = parseOptionalBoolean(segments_truncated);
+  const parsedSegments = parseSpeakingSegments(segments);
+
+  if (
+    typeof provider !== "string" ||
+    typeof signal_type !== "string" ||
+    typeof status !== "string" ||
+    parsedVersion === undefined ||
+    parsedTotal === undefined ||
+    parsedTruncated === undefined ||
+    parsedSegments === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    provider,
+    signal_type,
+    status,
+    provider_version: parsedVersion,
+    total_speaking_segments: parsedTotal,
+    segments_truncated: parsedTruncated,
+    segments: parsedSegments,
+  };
+}
+
+/**
  * The provenance signal on one analysis, with the same three-way result as `parseSignal`:
  * `null` for an analysis that carries none, `undefined` for a payload that is not one.
  */
@@ -373,10 +503,12 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     media,
     synthetic_video,
     provenance,
+    active_speaker,
   } = payload as Record<string, unknown>;
 
   const signal = parseSignal(synthetic_video);
   const provenanceSignal = parseProvenance(provenance);
+  const activeSpeaker = parseActiveSpeaker(active_speaker);
   const mediaFacts = parseMedia(media);
 
   if (
@@ -387,6 +519,7 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     typeof was_normalized !== "boolean" ||
     signal === undefined ||
     provenanceSignal === undefined ||
+    activeSpeaker === undefined ||
     mediaFacts === undefined ||
     !(typeof original_filename === "string" || original_filename === null)
   ) {
@@ -403,6 +536,7 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     media: mediaFacts,
     synthetic_video: signal,
     provenance: provenanceSignal,
+    active_speaker: activeSpeaker,
   };
 }
 
@@ -543,6 +677,55 @@ function ClipEvidence({ signal }: { signal: SyntheticVideoSignal | null }) {
 }
 
 /**
+ * When NVIDIA saw a face speaking, as a compact summary of the stored timeline.
+ *
+ * Four outcomes, deliberately never merged into fewer: no signal at all, a chain that did
+ * not produce a timeline, a detection that ran and saw nobody speaking, and a real
+ * timeline. None of them is a finding about the media — a video with no speaking face in
+ * it is the ordinary case for most footage, and a detector that failed said nothing at all.
+ *
+ * The segments are the ones that were persisted, shown in the order the provider observed
+ * them. Where the stored timeline stops short of what the detection found, the count says
+ * so rather than letting a partial timeline read as the whole one.
+ */
+function ActiveSpeaker({ signal }: { signal: ActiveSpeakerSignal | null }) {
+  if (signal === null) {
+    return <>{ABSENT}</>;
+  }
+
+  if (signal.status !== SIGNAL_STATUS_SUCCESS) {
+    return <span title={`Active speaker: ${signal.status}`}>{SPEAKER_UNAVAILABLE}</span>;
+  }
+
+  if (signal.segments.length === 0) {
+    return <>{NO_SPEAKING_FACES}</>;
+  }
+
+  // The stored count is what is listed; the detection's own total is named beside it
+  // whenever the two differ, so the cut is visible rather than silent.
+  const total = signal.total_speaking_segments;
+  const shown = signal.segments.length;
+  const truncated = total !== null && total > shown;
+  const count = truncated ? `${shown} of ${total}` : `${shown}`;
+
+  return (
+    <details>
+      <summary className="cursor-pointer">
+        {count} segment{shown === 1 && !truncated ? "" : "s"}
+      </summary>
+      <ul className="mt-1 space-y-0.5">
+        {signal.segments.map((segment) => (
+          <li key={`${segment.start_time}-${segment.face_id}`}>
+            {segment.start_time.toFixed(2)}s–{segment.end_time.toFixed(2)}s · Face{" "}
+            {segment.face_id} · {segment.speaker_label ?? UNMATCHED_VOICE}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+/**
  * What the C2PA reading found, in C2PA's own words where it has any.
  *
  * Five outcomes, deliberately never merged into fewer:
@@ -664,6 +847,7 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
             <th className="py-2 pr-4 font-medium">Synthetic probability</th>
             <th className="py-2 pr-4 font-medium">Clips</th>
             <th className="py-2 pr-4 font-medium">Strongest clips (logit)</th>
+            <th className="py-2 pr-4 font-medium">Active speaker</th>
             <th className="py-2 pr-4 font-medium">Provenance (C2PA)</th>
             <th className="py-2 font-medium">Created</th>
           </tr>
@@ -710,6 +894,11 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
               </td>
               <td className="py-2 pr-4 align-top font-mono text-xs whitespace-nowrap">
                 <ClipEvidence signal={analysis.synthetic_video} />
+              </td>
+              {/* When a tracked face was seen speaking. An absent, failed or empty
+                  timeline is never rendered as a finding about the media. */}
+              <td className="py-2 pr-4 align-top font-mono text-xs whitespace-nowrap">
+                <ActiveSpeaker signal={analysis.active_speaker} />
               </td>
               {/* What the file itself claims, read from the forensic original. A missing
                   or invalid manifest is never rendered as a verdict about the media. */}
@@ -790,6 +979,15 @@ export default async function Home() {
           ffprobe reported it. The container is its demuxer family — one name covers MOV and
           MP4 alike — and it is not narrowed to a container the stored evidence cannot prove.
           The declared type beside it is only what the client claimed.
+        </p>
+        <p className="mt-1 text-sm opacity-70">
+          Active speaker is when NVIDIA saw a tracked face speaking, in seconds from the start
+          of the analysed video, with the face it tracked and the diarized voice matched to
+          it. It is a record of what was observed, not a finding:{" "}
+          <span className="font-mono">{NO_SPEAKING_FACES}</span> means the detector ran and
+          saw nobody speaking, which is the ordinary case for most footage, and{" "}
+          <span className="font-mono">{SPEAKER_UNAVAILABLE}</span> means it did not get to
+          look at all. Neither says the video is fake.
         </p>
         <p className="mt-1 text-sm opacity-70">
           Strongest clips are the highest-scoring of the clips NVIDIA examined, identified by
