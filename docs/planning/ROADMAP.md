@@ -225,14 +225,24 @@ Add a separate audio or multimodal synthetic-media detector.
 
 ## Scope
 
-- one provider only initially;
+- one detector only initially, running locally (D028);
 - independent signal persistence;
-- graceful provider failure;
+- graceful detector failure;
 - timeline data where available.
+
+## Tasks
+
+- P6-T1 Benchmark — done
+- P6-T2 Local Detector Implementation
+- P6-T3 Worker & Persistence
+- P6-T4 Dashboard
+- P6 Final QA
 
 ## Exit criteria
 
 Video and audio/multimodal signals can coexist without forcing a fake combined percentage.
+
+The selected detector publishes no chunk-to-time mapping, so P6 produces no audio timeline.
 
 ---
 
