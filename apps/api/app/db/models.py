@@ -1,8 +1,9 @@
 """Persistent shape of an upload that has been accepted for analysis.
 
 Stored are the analysis record itself, the media facts established by hashing, object
-storage, ffprobe and normalization, the queued work that detection still owes it, and one
-row per detector signal. Risk levels belong to a later phase and have no columns here.
+storage, ffprobe and normalization, the queued work that detection still owes it, one
+row per detector signal, and — since P7-T3 — the risk decision the analysis ended in,
+recorded with the ruleset and calibration it was taken under.
 
 Media identity is not analysis identity. Storage keys and hashes are content-addressed,
 so the same bytes can legitimately be uploaded and analysed more than once; none of
@@ -61,10 +62,16 @@ class Base(DeclarativeBase):
 
 
 class Analysis(Base):
-    """One upload that was accepted, validated and stored.
+    """One upload that was accepted, validated and stored, and what DeepGuard concluded.
 
     It is committed `queued`: the media is real and safely stored, and detection is still
     outstanding. The row exists long before there is anything to conclude about it.
+
+    The four risk columns are that conclusion, written together in the transaction that
+    completes the job (P7-T3). They are the decision *trace*, not a second copy of the
+    evidence: no provider score, threshold or clip count is duplicated here, because the
+    signal rows remain the forensic record and a figure repeated into this table could
+    drift from the one it was copied out of.
     """
 
     __tablename__ = "analyses"
@@ -76,6 +83,24 @@ class Analysis(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+    # What the risk engine concluded: `HIGH`, `MEDIUM` or `UNKNOWN`. `LOW` is measured but
+    # not activated in ruleset v1 and is never written here (see `app.risk_engine`).
+    #
+    # Null means no decision has been taken yet — an analysis still queued or being worked
+    # on — and never "we looked and found nothing": that answer is `UNKNOWN`, which is a
+    # real classification with a rule behind it.
+    risk_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    # Which immutable ruleset produced the level above, which measurement its thresholds
+    # came from, and which single rule fired. All three are what make an old decision
+    # explainable after the rules move on: the level alone would be unreadable once
+    # `p7-v1.0.0` is no longer what runs.
+    risk_rules_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    risk_calibration_id: Mapped[str | None] = mapped_column(
+        String(SHA256_HEX_LENGTH), nullable=True
+    )
+    risk_rule_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class MediaFile(Base):
@@ -220,8 +245,12 @@ class AnalysisSignal(Base):
     # failed detector has no score, and 0.0 would be a fabricated answer.
     score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    # DeepGuard's deterministic classification of this signal. Null until a phase exists
-    # that owns risk logic — a provider score is not a risk level.
+    # Still null on every row, and P7-T3 is where that stopped being "until a later phase".
+    # Risk is a decision about the *analysis*, taken from one calibrated signal under a
+    # named ruleset, and it lives on `analyses` with the trace that explains it. Writing a
+    # level here as well would put a classification beside every provider's number — the
+    # provenance reading, the speaker timeline, the audio windows — and invite exactly the
+    # per-signal verdicts the risk engine exists to refuse (rule 11).
     risk_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # Which deployment of the detector produced this, so an old signal stays

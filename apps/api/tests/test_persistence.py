@@ -96,10 +96,16 @@ def test_migration_created_the_analysis_schema(database):
         "analysis_signals",
         "analysis_segments",
     } <= set(inspector.get_table_names())
+    # The risk columns are the decision trace P7-T3 added, and they are the whole of it:
+    # no score, no threshold, no clip count is copied here from the evidence rows.
     assert {column["name"] for column in inspector.get_columns("analyses")} == {
         "id",
         "status",
         "created_at",
+        "risk_level",
+        "risk_rules_version",
+        "risk_calibration_id",
+        "risk_rule_id",
     }
     assert {column["name"] for column in inspector.get_columns("media_files")} == {
         "id",

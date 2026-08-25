@@ -24,6 +24,7 @@ from app import (
     normalization,
     nvidia_active_speaker,
     nvidia_video,
+    risk_engine,
     speaker_diarization,
     storage,
     worker,
@@ -246,6 +247,11 @@ def fake_nvidia(monkeypatch):
                 nvidia_video.NvidiaClipResult(index=8, logit=3.5),
             )
             self.analysed_bytes = []
+            # Settable so a test can put the detection either side of the calibrated
+            # threshold without patching the threshold itself.
+            self.probability = NVIDIA_PROBABILITY
+            self.function_id = NVIDIA_FUNCTION_ID
+            self.total_clips = 7
 
         async def analyze(self, file_path, **kwargs):
             self.analysed_bytes.append(Path(file_path).read_bytes())
@@ -253,10 +259,10 @@ def fake_nvidia(monkeypatch):
                 raise self.error
             return nvidia_video.NvidiaVideoResult(
                 logit=NVIDIA_LOGIT,
-                probability=NVIDIA_PROBABILITY,
-                total_clips=7,
+                probability=self.probability,
+                total_clips=self.total_clips,
                 csv_data="0,-2.25\n8,3.5\n",
-                function_id=NVIDIA_FUNCTION_ID,
+                function_id=self.function_id,
                 clips=self.clips,
             )
 
@@ -1692,3 +1698,184 @@ def test_the_other_evidence_rows_are_unchanged_by_the_audio_signal(queue, fake_s
     assert {s.bona_fide_logit for s in clips + speaking} == {None}
     assert [(s.start_time, s.end_time) for s in speaking] == [(0.0, 1.0), (1.0, 2.0)]
     assert [s.speaker_label for s in speaking] == ["SPEAKER_00", "SPEAKER_01"]
+
+
+# P7-T3: the classification the worker takes after persisting evidence, end to end. The
+# rules themselves are exercised in `test_risk_engine.py`; what these check is that a real
+# job runs them at the right moment, against the evidence it just stored, and records the
+# result before it says it is done.
+
+
+@pytest.mark.integration
+def test_a_completed_job_carries_a_risk_decision_and_its_trace(queue, fake_storage):
+    analysis_id, job_id = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    analysis = read_analysis(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert analysis.status == "completed"
+    # The scripted detection is 0.8735, below the calibrated threshold.
+    assert analysis.risk_level == "MEDIUM"
+    assert analysis.risk_rule_id == "R200"
+    assert analysis.risk_rules_version == "p7-v1.0.0"
+    assert analysis.risk_calibration_id == (
+        "3e362e8edfe253437234e3c291230a2921a6344555ab0861ee5871c53d20949c"
+    )
+
+
+@pytest.mark.integration
+def test_a_detection_at_or_above_the_threshold_completes_high(
+    queue, fake_storage, fake_nvidia
+):
+    """The provider's number is what moves the band — nothing else in the job does."""
+    fake_nvidia.probability = 0.9931
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    analysis = read_analysis(analysis_id)
+
+    assert analysis.risk_level == "HIGH"
+    assert analysis.risk_rule_id == "R100"
+    # And the evidence behind it is stored unchanged, on NVIDIA's own scale.
+    assert read_signals(analysis_id)["synthetic_video"].score == 0.9931
+
+
+@pytest.mark.integration
+def test_an_uncalibrated_deployment_completes_unknown(queue, fake_storage, fake_nvidia):
+    """A function id that merely contains the validated one is a different deployment.
+
+    The job still completes and the evidence is still stored — the analysis simply says
+    that no validated rule could be applied to it.
+    """
+    fake_nvidia.probability = 0.9999
+    fake_nvidia.function_id = f"{NVIDIA_FUNCTION_ID}-preview"
+    analysis_id, job_id = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    analysis = read_analysis(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert analysis.risk_level == "UNKNOWN"
+    assert analysis.risk_rule_id == "R010"
+    signal = read_signals(analysis_id)["synthetic_video"]
+    assert signal.status == "SUCCESS"
+    assert signal.provider_version == f"{NVIDIA_FUNCTION_ID}-preview"
+
+
+@pytest.mark.integration
+def test_a_provider_failure_completes_unknown_without_losing_the_other_evidence(
+    queue, fake_storage, fake_nvidia
+):
+    fake_nvidia.error = nvidia_video.NvidiaProviderError("nvidia refused")
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    analysis = read_analysis(analysis_id)
+    signals = read_signals(analysis_id)
+
+    assert analysis.risk_level == "UNKNOWN"
+    assert analysis.risk_rule_id == "R010"
+    # UNKNOWN is about the direct-risk signal alone. Everything else survives intact.
+    assert signals["provenance"].status == "SUCCESS"
+    assert signals["active_speaker"].status == "SUCCESS"
+    assert signals["audio_authenticity"].status == "SUCCESS"
+
+
+@pytest.mark.integration
+def test_media_that_could_not_be_transcoded_completes_unknown(
+    queue, fake_storage, fake_ffmpeg
+):
+    fake_ffmpeg.error = normalization.NormalizationError("ffmpeg refused the media")
+    analysis_id, _ = queue(was_normalized=True)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    analysis = read_analysis(analysis_id)
+
+    assert analysis.status == "completed"
+    assert analysis.risk_level == "UNKNOWN"
+    assert analysis.risk_rule_id == "R010"
+
+
+@pytest.mark.integration
+def test_the_engine_is_run_against_the_evidence_that_was_committed(
+    queue, fake_storage, monkeypatch
+):
+    """Persistence happens first, and the classification reads the database, not memory.
+
+    The engine is intercepted to look the analysis up itself: whatever it sees must already
+    be committed, which is only true if the evidence transaction closed before it ran.
+    """
+    seen = {}
+
+    def spy(evidence):
+        with SessionLocal() as reader:
+            seen["committed"] = (
+                reader.query(AnalysisSignal)
+                .filter_by(analysis_id=analysis_id, signal_type="synthetic_video")
+                .one()
+            )
+        seen["evidence"] = evidence
+        # The real rules, reached through the module rather than the patched name.
+        return risk_engine.evaluate(evidence)
+
+    analysis_id, _ = queue()
+    monkeypatch.setattr(worker, "evaluate", spy)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    # Read on a separate connection while the engine was running: the row was already there.
+    assert seen["committed"].score == NVIDIA_PROBABILITY
+    assert seen["evidence"].score == NVIDIA_PROBABILITY
+    assert seen["evidence"].provider_version == NVIDIA_FUNCTION_ID
+    assert seen["evidence"].total_clips == 7
+
+
+@pytest.mark.integration
+def test_a_classification_that_breaks_fails_the_job_but_keeps_the_evidence(
+    queue, fake_storage, monkeypatch
+):
+    """The reason persistence and classification are two transactions.
+
+    A defect in the engine must not be swallowed as a verdict, and must not cost the
+    analysis the forensic evidence that was already written down.
+    """
+    analysis_id, job_id = queue()
+
+    def broken(evidence):
+        raise RuntimeError("the rules are broken")
+
+    monkeypatch.setattr(worker, "evaluate", broken)
+
+    with SessionLocal() as session:
+        assert worker.process_one(session) is True
+
+    analysis = read_analysis(analysis_id)
+    signals = read_signals(analysis_id)
+
+    # Failed loudly, with no fabricated classification.
+    assert read_job(job_id).status == "failed"
+    assert read_job(job_id).error_message == "RuntimeError"
+    assert analysis.status == "failed"
+    assert analysis.risk_level is None
+    assert analysis.risk_rules_version is None
+    # And every forensic signal the job produced is still there.
+    assert set(signals) == {
+        "provenance",
+        "synthetic_video",
+        "active_speaker",
+        "audio_authenticity",
+    }
+    assert signals["synthetic_video"].score == NVIDIA_PROBABILITY
+    assert len(read_segments(signals["synthetic_video"].id)) == 2

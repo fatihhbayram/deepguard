@@ -4,14 +4,23 @@ Uploads stage the forensic original and record that the rest is owed; nothing in
 ever transcodes or calls a detector. This is what does, in its own container, on its own
 schedule.
 
-Three transactions per job, never one:
+Four transactions per job, never one:
 
 1. claim — take a `queued` job, mark it `processing`, commit, release the lock;
 2. nothing — the download, provenance, transcoding, diarization, both NVIDIA inferences
    and the local audio checkpoint all happen with no transaction open at all;
-3. finish — write the derivative's identity and the evidence, and close the job out.
+3. persist — write the derivative's identity and every evidence row, and commit them;
+4. conclude — classify the analysis from the evidence just committed, record the decision
+   and close the job out.
 
-The middle step is the reason for the other two. NVIDIA can take minutes on one video and
+Steps 3 and 4 are separate on purpose, and the order is the point: the risk engine reads
+the evidence back out of the database rather than being handed the values in flight, so
+what it classified is provably what a reader of that database will find behind the
+classification (P7-T3). It also means a defect in the classification costs the decision and
+not the evidence — the signals are already committed, and a job that cannot be concluded
+fails with its forensic record intact.
+
+The middle step is the reason for the first two. NVIDIA can take minutes on one video and
 ffmpeg can take minutes on a 4K source; a transaction held open across either would pin a
 connection and a row lock for the whole wait. Claiming is therefore deliberately separate
 from finishing, and the row a worker holds between them is marked `processing` rather than
@@ -54,6 +63,7 @@ from app.db.models import (
 from app.db.session import SessionLocal
 from app.detection import (
     ACTIVE_SPEAKER_SIGNAL,
+    NVIDIA_PROVIDER,
     SYNTHETIC_VIDEO_SIGNAL,
     analyse_audio,
     detect_synthetic_video,
@@ -62,6 +72,7 @@ from app.detection import (
     undetectable_media,
 )
 from app.normalization import NormalizationError, normalize_to_mp4
+from app.risk_engine import RiskDecision, SvdEvidence, evaluate
 from app.storage import fetch_object, store_derivative
 
 logger = logging.getLogger(__name__)
@@ -353,15 +364,29 @@ def complete_job(
     claimed: ClaimedJob,
     evidence: Evidence,
     provenance_signal: AnalysisSignal,
+) -> RiskDecision:
+    """Persist everything this job produced, classify it, and close it out.
+
+    Two transactions, in this order and never merged: the forensic evidence is committed
+    first, and only then is it read back and classified. `persist_evidence` and
+    `conclude_job` each say why.
+
+    Returns the decision that was recorded, for the caller's log.
+    """
+    persist_evidence(session, claimed, evidence, provenance_signal)
+
+    return conclude_job(session, claimed)
+
+
+def persist_evidence(
+    session: Session,
+    claimed: ClaimedJob,
+    evidence: Evidence,
+    provenance_signal: AnalysisSignal,
 ) -> None:
-    """Write the derivative's identity and the evidence, and close the job out, in one
-    transaction.
+    """Write the derivative's identity and every evidence row, in one transaction.
 
-    The evidence and the statuses that claim it exists go in together. A signal committed
-    without its job moving on would be detected twice by the next worker; a job marked
-    `completed` without its signals would report evidence that is not there.
-
-    The derivative columns go in the same commit for the same reason. They are written
+    The derivative columns are written
     here rather than when the object was uploaded because that is the first moment the
     artifact provably exists *and* something has read it — a key committed earlier would
     name an object no analysis had used, and a key committed after would leave a completed
@@ -372,6 +397,11 @@ def complete_job(
     no synthetic-video verdict — or any other combination — records exactly that.
     Provenance is the one that never owns segments; it produces no evidence rows at all,
     while the other three each own their own and never share a row.
+
+    The job stays `processing` across this commit, and deliberately so. Nothing can pick it
+    up in the gap — `claim_job` only ever takes `queued` rows — and leaving the status for
+    the next transaction is what lets the classification be made from committed evidence
+    rather than from values still in flight.
 
     A detector that failed still finishes the job, and so does media that could not be
     transcoded for one. Neither is a fact about this worker — both are already recorded as
@@ -401,8 +431,96 @@ def complete_job(
                 segment.signal_id = entry.signal.id
             session.add_all(entry.segments)
 
-    _set_status(session, claimed, JOB_STATUS_COMPLETED, ANALYSIS_STATUS_COMPLETED)
     session.commit()
+
+
+def persisted_svd_evidence(session: Session, analysis_id: uuid.UUID) -> SvdEvidence | None:
+    """Read this analysis's synthetic-video signal back out of the database.
+
+    Read back rather than carried over. The values that reach the risk engine are the ones
+    a reader of `analysis_signals` will find behind the decision, which is the only way a
+    stored classification can be re-derived from stored evidence — an in-memory score that
+    differed from the committed row, for any reason, would leave the two disagreeing with
+    nothing to say so.
+
+    The lookup names the row; it does not decide eligibility. Provider and signal type are
+    what identify *which* signal is the direct-risk one, and the risk engine checks them
+    again along with the status and the exact function id, so the calibration binding is
+    enforced by the rules rather than assumed from a query.
+
+    `total_clips` comes out of the signal's JSON metadata, where the provider's aggregate
+    figures live. It has no column of its own and is absent on every signal that failed.
+
+    Returns nothing when there is no such signal at all. That absence is evidence in its own
+    right, and the engine has a rule for it rather than this function having a default.
+    """
+    row = session.execute(
+        select(
+            AnalysisSignal.provider,
+            AnalysisSignal.signal_type,
+            AnalysisSignal.status,
+            AnalysisSignal.provider_version,
+            AnalysisSignal.score,
+            AnalysisSignal.signal_metadata,
+        ).where(
+            AnalysisSignal.analysis_id == analysis_id,
+            AnalysisSignal.provider == NVIDIA_PROVIDER,
+            AnalysisSignal.signal_type == SYNTHETIC_VIDEO_SIGNAL,
+        )
+        # Two direct-risk signals on one analysis is a defect in how evidence was written,
+        # not a case to pick a winner from. It raises rather than classifying half of it.
+    ).one_or_none()
+
+    if row is None:
+        return None
+
+    metadata = row.signal_metadata or {}
+
+    return SvdEvidence(
+        provider=row.provider,
+        signal_type=row.signal_type,
+        status=row.status,
+        provider_version=row.provider_version,
+        score=row.score,
+        total_clips=metadata.get("total_clips"),
+    )
+
+
+def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision:
+    """Classify the analysis from its committed evidence and close the job out.
+
+    The final analysis step, and it runs after persistence rather than before it for the
+    reason `persisted_svd_evidence` gives. The decision and the statuses that publish it go
+    in together: an analysis marked `completed` without a decision would show a finished
+    analysis nobody classified, and a decision written without the job moving on would leave
+    the classification invisible behind a job still in progress.
+
+    Only the direct-risk signal is read. The provenance, speaker-timeline and audio rows
+    committed moments ago are not fetched, not passed in and cannot reach this decision —
+    they remain forensic evidence in their own right and none of them is entitled to move a
+    band (rule 11, and `app.risk_engine`).
+
+    Nothing here catches anything. The engine is total over the evidence it is given: a
+    missing signal, a failed one, an uncalibrated deployment and unusable figures are each
+    classified `UNKNOWN` by an explicit rule rather than raised, so there is no ambiguous
+    failure left over to represent. What could still go wrong — a database that has gone
+    away, a duplicate signal row, a defect in the rules — is exactly that, a defect, and it
+    propagates to `process_one`, which logs it with its traceback and fails the job.
+    Swallowing it as `UNKNOWN` would publish a classification nobody made and hide the
+    defect behind it; the evidence is already committed and survives the failure either way.
+    """
+    decision = evaluate(persisted_svd_evidence(session, claimed.analysis_id))
+
+    _set_status(
+        session,
+        claimed,
+        JOB_STATUS_COMPLETED,
+        ANALYSIS_STATUS_COMPLETED,
+        decision=decision,
+    )
+    session.commit()
+
+    return decision
 
 
 def _record_derivative(session: Session, claimed: ClaimedJob, evidence: Evidence) -> None:
@@ -452,17 +570,34 @@ def _set_status(
     job_status: str,
     analysis_status: str,
     error_message: str | None = None,
+    decision: RiskDecision | None = None,
 ) -> None:
-    """Move a job and the analysis it belongs to into their end states together."""
+    """Move a job and the analysis it belongs to into their end states together.
+
+    `decision` is the risk classification and its trace, written onto the analysis in the
+    same statement that publishes its status. A job that failed passes none: the analysis
+    was never classified, and its risk columns stay null — which is not `UNKNOWN`, a
+    conclusion an explicit rule reached, but the absence of any conclusion at all.
+    """
     session.execute(
         AnalysisJob.__table__.update()
         .where(AnalysisJob.id == claimed.job_id)
         .values(status=job_status, error_message=error_message)
     )
+
+    analysis_values: dict[str, str] = {"status": analysis_status}
+    if decision is not None:
+        analysis_values |= {
+            "risk_level": decision.risk_level,
+            "risk_rules_version": decision.rules_version,
+            "risk_calibration_id": decision.calibration_id,
+            "risk_rule_id": decision.rule_id,
+        }
+
     session.execute(
         Analysis.__table__.update()
         .where(Analysis.id == claimed.analysis_id)
-        .values(status=analysis_status)
+        .values(**analysis_values)
     )
 
 
@@ -499,7 +634,10 @@ def process_one(session: Session) -> bool:
         return True
 
     try:
-        complete_job(session, claimed, evidence, provenance_signal)
+        # Persisting the evidence and classifying it are two commits inside here. A failure
+        # in the second leaves the first standing: the job fails with its forensic record
+        # intact rather than losing evidence to a classification that could not be made.
+        decision = complete_job(session, claimed, evidence, provenance_signal)
     except Exception as error:
         logger.exception("Job %s could not be completed.", claimed.job_id)
         fail_job(session, claimed, error)
@@ -507,13 +645,16 @@ def process_one(session: Session) -> bool:
 
     logger.info(
         "Completed job %s with a %s detection signal, a %s active-speaker signal, a %s "
-        "audio-authenticity signal and a %s provenance signal%s.",
+        "audio-authenticity signal and a %s provenance signal%s. Risk %s by %s under %s.",
         claimed.job_id,
         evidence.detection.signal.status,
         evidence.active_speaker.signal.status,
         evidence.audio_authenticity.signal.status,
         provenance_signal.status,
         " against a normalized derivative" if evidence.derivative_storage_key else "",
+        decision.risk_level,
+        decision.rule_id,
+        decision.rules_version,
     )
 
     return True
