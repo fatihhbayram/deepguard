@@ -93,6 +93,39 @@ type ActiveSpeakerSignal = {
   segments: SpeakingSegment[];
 };
 
+// One window of audio the local checkpoint was given, and the two raw figures it emitted.
+// `clip_index` is the window's place in the sequence DeepGuard cut. The times are that
+// window's sample bounds in seconds — preprocessing bounds, not timestamps the model
+// produced: AASIST publishes no mapping from its fixed window to time and reports no
+// segments. Both logits are raw model output in graph order; upstream reads the second as
+// its bona fide column. Neither is a probability or a confidence.
+type AudioWindow = {
+  clip_index: number;
+  start_time: number;
+  end_time: number;
+  logit: number;
+  bona_fide_logit: number;
+};
+
+// The local audio-authenticity signal the API joined onto the analysis. It carries no score
+// and there is nothing here that could stand in for one: the checkpoint ships no threshold,
+// no calibration and no classes, so the windows are the whole of the evidence and they are
+// neither averaged nor ranked.
+type AudioAuthenticitySignal = {
+  provider: string;
+  signal_type: string;
+  status: string;
+  provider_version: string | null;
+  // How many windows the sweep produced against how many were stored, and whether the
+  // stored set stops short. All null unless the reading succeeded and recorded them.
+  total_audio_windows: number | null;
+  persisted_audio_windows: number | null;
+  windows_truncated: boolean | null;
+  // The persisted windows, in the order the audio was cut. Empty for a reading that
+  // produced none.
+  windows: AudioWindow[];
+};
+
 // What ffprobe established about the forensic original, as the database kept it. These
 // are facts about the bytes, unlike `declared_content_type`, which is only what the client
 // said about them. `format_name` is ffprobe's own name for the demuxer family — one string
@@ -127,6 +160,10 @@ type AnalysisSummary = {
   // Null when the analysis carries no active-speaker signal at all, which is not the same
   // as a detector that ran and saw no speaking face.
   active_speaker: ActiveSpeakerSignal | null;
+  // Null when the analysis carries no audio-authenticity signal at all — everything stored
+  // before the local checkpoint was wired in. Not the same as a reading that ran and stored
+  // no windows, and not the same as one that could not run.
+  audio_authenticity: AudioAuthenticitySignal | null;
 };
 
 const SIGNAL_STATUS_SUCCESS = "SUCCESS";
@@ -149,6 +186,13 @@ const SPEAKER_UNAVAILABLE = "Unavailable";
 const NO_SPEAKING_FACES = "No speaking faces detected";
 // Shown where NVIDIA saw a face speaking but matched it to no diarized voice.
 const UNMATCHED_VOICE = "no matched voice";
+
+// The two audio-authenticity outcomes that are not a set of windows: the reading did not
+// happen, and it happened and stored none. Kept apart for the same reason as the pair
+// above, and phrased to describe the *evidence* rather than the media — nothing here has
+// established that a file carries no audio, only that no windows were persisted for it.
+const AUDIO_UNAVAILABLE = "Unavailable";
+const NO_AUDIO_WINDOWS = "No audio evidence windows";
 
 const NO_PROVENANCE = "No provenance";
 const REMOTE_PROVENANCE = "Remote provenance (not fetched)";
@@ -378,6 +422,107 @@ function parseActiveSpeaker(payload: unknown): ActiveSpeakerSignal | null | unde
 }
 
 /**
+ * The audio windows on one signal, or `undefined` if they are not a list of real windows.
+ *
+ * A malformed entry invalidates the whole list, as with the other two kinds of evidence.
+ * These windows are a contiguous sweep of the audio, so one quietly dropped out of the
+ * middle would read as a gap in the recording that was never there.
+ */
+function parseAudioWindows(payload: unknown): AudioWindow[] | undefined {
+  if (!Array.isArray(payload)) {
+    return undefined;
+  }
+
+  const windows: AudioWindow[] = [];
+  for (const entry of payload) {
+    if (typeof entry !== "object" || entry === null) {
+      return undefined;
+    }
+
+    const { clip_index, start_time, end_time, logit, bona_fide_logit } = entry as Record<
+      string,
+      unknown
+    >;
+    if (
+      typeof clip_index !== "number" ||
+      !Number.isFinite(clip_index) ||
+      typeof start_time !== "number" ||
+      !Number.isFinite(start_time) ||
+      typeof end_time !== "number" ||
+      !Number.isFinite(end_time) ||
+      typeof logit !== "number" ||
+      !Number.isFinite(logit) ||
+      typeof bona_fide_logit !== "number" ||
+      !Number.isFinite(bona_fide_logit)
+    ) {
+      return undefined;
+    }
+
+    windows.push({ clip_index, start_time, end_time, logit, bona_fide_logit });
+  }
+
+  return windows;
+}
+
+/**
+ * The audio-authenticity signal on one analysis, with the same three-way result as
+ * `parseSignal`: `null` for an analysis that carries none, `undefined` for a payload that
+ * is not one.
+ */
+function parseAudioAuthenticity(
+  payload: unknown,
+): AudioAuthenticitySignal | null | undefined {
+  if (payload === null) {
+    return null;
+  }
+
+  if (typeof payload !== "object") {
+    return undefined;
+  }
+
+  const {
+    provider,
+    signal_type,
+    status,
+    provider_version,
+    total_audio_windows,
+    persisted_audio_windows,
+    windows_truncated,
+    windows,
+  } = payload as Record<string, unknown>;
+
+  const parsedVersion = parseOptionalString(provider_version);
+  const parsedTotal = parseOptionalNumber(total_audio_windows);
+  const parsedPersisted = parseOptionalNumber(persisted_audio_windows);
+  const parsedTruncated = parseOptionalBoolean(windows_truncated);
+  const parsedWindows = parseAudioWindows(windows);
+
+  if (
+    typeof provider !== "string" ||
+    typeof signal_type !== "string" ||
+    typeof status !== "string" ||
+    parsedVersion === undefined ||
+    parsedTotal === undefined ||
+    parsedPersisted === undefined ||
+    parsedTruncated === undefined ||
+    parsedWindows === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    provider,
+    signal_type,
+    status,
+    provider_version: parsedVersion,
+    total_audio_windows: parsedTotal,
+    persisted_audio_windows: parsedPersisted,
+    windows_truncated: parsedTruncated,
+    windows: parsedWindows,
+  };
+}
+
+/**
  * The provenance signal on one analysis, with the same three-way result as `parseSignal`:
  * `null` for an analysis that carries none, `undefined` for a payload that is not one.
  */
@@ -504,11 +649,13 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     synthetic_video,
     provenance,
     active_speaker,
+    audio_authenticity,
   } = payload as Record<string, unknown>;
 
   const signal = parseSignal(synthetic_video);
   const provenanceSignal = parseProvenance(provenance);
   const activeSpeaker = parseActiveSpeaker(active_speaker);
+  const audioAuthenticity = parseAudioAuthenticity(audio_authenticity);
   const mediaFacts = parseMedia(media);
 
   if (
@@ -520,6 +667,7 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     signal === undefined ||
     provenanceSignal === undefined ||
     activeSpeaker === undefined ||
+    audioAuthenticity === undefined ||
     mediaFacts === undefined ||
     !(typeof original_filename === "string" || original_filename === null)
   ) {
@@ -537,6 +685,7 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     synthetic_video: signal,
     provenance: provenanceSignal,
     active_speaker: activeSpeaker,
+    audio_authenticity: audioAuthenticity,
   };
 }
 
@@ -726,6 +875,65 @@ function ActiveSpeaker({ signal }: { signal: ActiveSpeakerSignal | null }) {
 }
 
 /**
+ * What the local checkpoint emitted for each window of audio it was given.
+ *
+ * Four outcomes, deliberately never merged into fewer: no signal at all, a reading that did
+ * not happen, a reading that ran and stored no windows, and a reading with windows. The
+ * third is worded about the evidence rather than the media — no window is not proof that
+ * the file carries no audio, and this page must not assert one from the other.
+ *
+ * The figures are shown as the model emitted them, in graph order and rounded only for
+ * width. Nothing here averages them, ranks them, turns them into a percentage or a
+ * verdict, or compares one window against another: the checkpoint ships no threshold and no
+ * calibration, so there is nothing to compare against. Consecutive windows of genuine
+ * speech routinely disagree, and that is shown rather than smoothed away.
+ *
+ * The times are the bounds of the windows DeepGuard cut and fed to the model. They are not
+ * segments the model found anything in.
+ */
+function AudioEvidence({ signal }: { signal: AudioAuthenticitySignal | null }) {
+  if (signal === null) {
+    return <>{ABSENT}</>;
+  }
+
+  if (signal.status !== SIGNAL_STATUS_SUCCESS) {
+    return <span title={`Audio authenticity: ${signal.status}`}>{AUDIO_UNAVAILABLE}</span>;
+  }
+
+  if (signal.windows.length === 0) {
+    return <>{NO_AUDIO_WINDOWS}</>;
+  }
+
+  // The stored count is what is listed; the sweep's own total is named beside it whenever
+  // the two differ, so the cut is visible rather than silent.
+  const total = signal.total_audio_windows;
+  const shown = signal.windows.length;
+  const truncated = total !== null && total > shown;
+  const count = truncated ? `${shown} of ${total}` : `${shown}`;
+
+  return (
+    <details>
+      <summary className="cursor-pointer" title={audioModelTitle(signal)}>
+        {count} audio window{shown === 1 && !truncated ? "" : "s"}
+      </summary>
+      <ul className="mt-1 space-y-0.5">
+        {signal.windows.map((window) => (
+          <li key={window.clip_index}>
+            {window.start_time.toFixed(2)}s–{window.end_time.toFixed(2)}s · Raw logit[0]:{" "}
+            {window.logit.toFixed(2)} · Bona fide logit: {window.bona_fide_logit.toFixed(2)}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+/** Which checkpoint produced these figures. A different revision is a different reading. */
+function audioModelTitle(signal: AudioAuthenticitySignal): string | undefined {
+  return signal.provider_version ? `Checkpoint: ${signal.provider_version}` : undefined;
+}
+
+/**
  * What the C2PA reading found, in C2PA's own words where it has any.
  *
  * Five outcomes, deliberately never merged into fewer:
@@ -848,6 +1056,7 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
             <th className="py-2 pr-4 font-medium">Clips</th>
             <th className="py-2 pr-4 font-medium">Strongest clips (logit)</th>
             <th className="py-2 pr-4 font-medium">Active speaker</th>
+            <th className="py-2 pr-4 font-medium">Audio</th>
             <th className="py-2 pr-4 font-medium">Provenance (C2PA)</th>
             <th className="py-2 font-medium">Created</th>
           </tr>
@@ -899,6 +1108,12 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
                   timeline is never rendered as a finding about the media. */}
               <td className="py-2 pr-4 align-top font-mono text-xs whitespace-nowrap">
                 <ActiveSpeaker signal={analysis.active_speaker} />
+              </td>
+              {/* The raw figures the local checkpoint emitted per window of audio, with the
+                  preprocessing bounds of the window each came from. Never aggregated, and
+                  never rendered as a verdict about the audio. */}
+              <td className="py-2 pr-4 align-top font-mono text-xs whitespace-nowrap">
+                <AudioEvidence signal={analysis.audio_authenticity} />
               </td>
               {/* What the file itself claims, read from the forensic original. A missing
                   or invalid manifest is never rendered as a verdict about the media. */}
@@ -988,6 +1203,17 @@ export default async function Home() {
           saw nobody speaking, which is the ordinary case for most footage, and{" "}
           <span className="font-mono">{SPEAKER_UNAVAILABLE}</span> means it did not get to
           look at all. Neither says the video is fake.
+        </p>
+        <p className="mt-1 text-sm opacity-70">
+          Audio is the two raw logits a local anti-spoofing checkpoint emitted for each
+          window of audio it was given, shown as emitted. The times are the bounds of those
+          windows — DeepGuard cut the audio into fixed 4.04s pieces because that is all the
+          model accepts — and not stretches the model found anything in. The model publishes
+          no threshold and no calibration, so neither figure is a probability, a confidence
+          or a verdict, and consecutive windows of genuine speech routinely disagree.{" "}
+          <span className="font-mono">{NO_AUDIO_WINDOWS}</span> means the reading ran and
+          stored none, which is not proof the file carries no audio, and{" "}
+          <span className="font-mono">{AUDIO_UNAVAILABLE}</span> means it did not get to run.
         </p>
         <p className="mt-1 text-sm opacity-70">
           Strongest clips are the highest-scoring of the clips NVIDIA examined, identified by

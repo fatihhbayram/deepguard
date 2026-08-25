@@ -981,11 +981,11 @@ def test_deleting_an_analysis_takes_its_audio_evidence_with_it(session):
         assert reader.query(AnalysisSegment).filter_by(signal_id=signal.id).count() == 0
 
 
-def test_the_audio_signal_does_not_reach_the_listing_yet(session):
-    """The dashboard is P6-T4. Until then the evidence is stored and simply not read.
+def test_the_audio_signal_reaches_the_listing_beside_the_others(session):
+    """Four signals on one analysis, still one row.
 
-    Every join in the listing names one provider and one signal type, so a fourth signal
-    on the same analysis cannot multiply its rows or land in another source's fields.
+    Every join in the listing names one provider and one signal type, so the fourth signal
+    can neither multiply the analysis's rows nor land in another source's fields.
     """
     db, created = session
     analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
@@ -1002,4 +1002,86 @@ def test_the_audio_signal_does_not_reach_the_listing_yet(session):
     listed = [row for row in body if row["id"] == str(analysis.id)]
     assert len(listed) == 1
     assert listed[0]["synthetic_video"]["provider"] == "nvidia"
-    assert "aasist" not in client.get("/api/v1/analyses").text
+
+    audio = listed[0]["audio_authenticity"]
+    assert audio["provider"] == "aasist"
+    assert audio["signal_type"] == "audio_authenticity"
+    assert audio["status"] == SIGNAL_STATUS_SUCCESS
+    # The reading owns no windows here, and the listing says so rather than borrowing the
+    # clip evidence hanging off the signal beside it.
+    assert audio["windows"] == []
+
+
+def test_audio_windows_round_trip_out_through_the_listing_endpoint(session):
+    """What the worker stored is what the dashboard is handed, through real PostgreSQL."""
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    signal = aasist_signal(analysis.id)
+    db.add(signal)
+    db.flush()
+    db.add_all(
+        [
+            audio_window(signal.id, 0, (-1.5, 4.25), (0.0, 4.0375)),
+            audio_window(signal.id, 1, (2.0, -0.5), (4.0375, 8.075)),
+        ]
+    )
+    db.commit()
+
+    with TestClient(app) as client:
+        body = client.get("/api/v1/analyses").json()
+
+    windows = [row for row in body if row["id"] == str(analysis.id)][0][
+        "audio_authenticity"
+    ]["windows"]
+
+    # Both raw outputs at full double precision, in the order the audio was cut.
+    assert [(window["logit"], window["bona_fide_logit"]) for window in windows] == [
+        (-1.5, 4.25),
+        (2.0, -0.5),
+    ]
+    assert [(window["start_time"], window["end_time"]) for window in windows] == [
+        (0.0, 4.0375),
+        (4.0375, 8.075),
+    ]
+    assert [window["clip_index"] for window in windows] == [0, 1]
+
+
+def test_audio_windows_do_not_leak_into_the_clip_evidence(session):
+    """Both kinds of row live in one table and both fill `clip_index`.
+
+    The evidence queries are keyed by signal id, so nothing but the parent signal decides
+    which rows a source is handed — but the two sources are now close enough in shape that
+    it is worth proving rather than assuming.
+    """
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    detection_signal = nvidia_signal(analysis.id)
+    audio_signal = aasist_signal(analysis.id)
+    db.add_all([detection_signal, audio_signal])
+    db.flush()
+    db.add_all(
+        [
+            nvidia_segment(detection_signal.id, 8, 3.5),
+            audio_window(audio_signal.id, 0, (-1.5, 4.25), (0.0, 4.0375)),
+        ]
+    )
+    db.commit()
+
+    with TestClient(app) as client:
+        listed = [
+            row
+            for row in client.get("/api/v1/analyses").json()
+            if row["id"] == str(analysis.id)
+        ][0]
+
+    assert listed["synthetic_video"]["segments"] == [{"clip_index": 8, "logit": 3.5}]
+    assert len(listed["audio_authenticity"]["windows"]) == 1
+    assert listed["audio_authenticity"]["windows"][0]["clip_index"] == 0

@@ -25,7 +25,9 @@ from app.db.models import (
 )
 from app.db.session import get_session
 from app.detection import (
+    AASIST_PROVIDER,
     ACTIVE_SPEAKER_SIGNAL,
+    AUDIO_AUTHENTICITY_SIGNAL,
     C2PA_PROVIDER,
     NVIDIA_PROVIDER,
     PROVENANCE_SIGNAL,
@@ -198,6 +200,65 @@ class ActiveSpeakerSignal(BaseModel):
     segments: list[SpeakingSegment]
 
 
+class AudioWindowEvidence(BaseModel):
+    """One window of audio the local checkpoint was given, and the two figures it emitted.
+
+    `clip_index` is the window's place in the chronological sequence DeepGuard cut, carried
+    under the name of the column it is stored in. `start_time` and `end_time` are that
+    window's sample bounds restated in seconds — `start_sample / 16000`, arithmetic on
+    boundaries this codebase chose. They are **preprocessing bounds**: AASIST publishes no
+    mapping from its fixed window to time and reports no segments, so nothing here says the
+    model located anything between those two times.
+
+    `logit` and `bona_fide_logit` are the graph's two outputs in graph order, untouched.
+    Upstream reads the second as the bona fide column; that is the checkpoint's own fact
+    about its model. Both are raw logits — not probabilities, not confidence, and not a
+    threshold away from a verdict, because the model ships no threshold at all.
+    """
+
+    clip_index: int
+    start_time: float
+    end_time: float
+    logit: float
+    bona_fide_logit: float
+
+
+class AudioAuthenticitySignal(BaseModel):
+    """The persisted local audio-authenticity signal, as the dashboard may see it.
+
+    No `score`, and there is no column of any kind here that could hold one: the checkpoint
+    emits two raw logits per window with no softmax, threshold or calibration over them, so
+    there is no file-level figure to report and none is derived. The windows are the whole
+    of the evidence, and they are neither averaged nor ranked (rule 11).
+
+    The same four states the other signals keep apart apply here and must not be merged: an
+    analysis carrying no signal at all, a reading that did not happen (`FAILED`/`TIMEOUT`),
+    a reading that ran and persisted no windows, and a reading with windows. Only the last
+    says anything factual about the audio, and even then only what the model emitted.
+
+    The stored metadata document is not passed through as it stands; on a failure it holds
+    the exception's class name, which is internal diagnostic detail.
+    """
+
+    provider: str
+    signal_type: str
+    status: str
+    # The repository and revision of the checkpoint that produced these figures. A different
+    # revision is a different measurement, not a refinement of this one.
+    provider_version: str | None
+    # How many windows the sweep produced against how many were persisted, and whether the
+    # stored set stops short. All three absent unless the reading succeeded and recorded
+    # them — without them, a truncated prefix would read as the whole recording.
+    total_audio_windows: int | None
+    persisted_audio_windows: int | None
+    windows_truncated: bool | None
+    # The persisted windows, chronological. Already capped where they were written
+    # (`MAX_PERSISTED_AUDIO_WINDOWS`) and not trimmed again here: this is a sweep from the
+    # start of the audio, and cutting it a second time would move the boundary the count
+    # above describes.
+    windows: list[AudioWindowEvidence]
+
+
 class ProvenanceSignal(BaseModel):
     """The persisted C2PA provenance signal, as the dashboard may see it.
 
@@ -291,6 +352,10 @@ class AnalysisSummary(BaseModel):
     # Null for an analysis carrying no active-speaker signal at all, which is again not the
     # same as a detector that ran and found no speaking face.
     active_speaker: ActiveSpeakerSignal | None
+    # Null for an analysis carrying no audio-authenticity signal — everything stored before
+    # the local checkpoint was wired in. Not the same as a reading that ran and persisted no
+    # windows, and not the same as one that could not run.
+    audio_authenticity: AudioAuthenticitySignal | None
 
 
 @dataclass(frozen=True)
@@ -643,6 +708,80 @@ def active_speaker_signal(
     )
 
 
+def audio_authenticity_signal(
+    row: Any, windows: list[AudioWindowEvidence]
+) -> AudioAuthenticitySignal | None:
+    """Turn the joined audio columns into the response's signal, or nothing.
+
+    Same rule as the other three joins: every column is null when an analysis carries no
+    such signal, and `status` is the one a real row cannot have null.
+    """
+    if row.audio_status is None:
+        return None
+
+    return AudioAuthenticitySignal(
+        provider=row.audio_provider,
+        signal_type=row.audio_signal_type,
+        status=row.audio_status,
+        provider_version=row.audio_provider_version,
+        total_audio_windows=signal_figure(row.audio_metadata, "total_audio_windows", int),
+        persisted_audio_windows=signal_figure(
+            row.audio_metadata, "persisted_audio_windows", int
+        ),
+        windows_truncated=signal_flag(row.audio_metadata, "windows_truncated"),
+        windows=windows,
+    )
+
+
+def audio_windows(
+    session: Session, signal_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[AudioWindowEvidence]]:
+    """Fetch the persisted windows for every listed audio signal at once.
+
+    One statement for the whole page, for the same reason as the other two evidence
+    queries: the listing must not issue a query per analysis. Persisted evidence is already
+    capped per signal (`MAX_PERSISTED_AUDIO_WINDOWS`), so the whole stored sweep is read
+    back and handed on as it stands.
+
+    Ordered by the window index, which is the order the audio was cut in — the only order
+    this evidence has. It is total within a signal, so the same stored sweep reads back the
+    same way on every call, and nothing here reorders the windows by logit: the checkpoint
+    publishes no threshold, so there is no sense in which one window outranks another.
+
+    Signals with no stored windows are simply absent from the result, which covers both a
+    reading that failed and one that produced none; the signal's own status separates them.
+    """
+    if not signal_ids:
+        return {}
+
+    rows = session.execute(
+        select(
+            AnalysisSegment.signal_id,
+            AnalysisSegment.clip_index,
+            AnalysisSegment.start_time,
+            AnalysisSegment.end_time,
+            AnalysisSegment.logit,
+            AnalysisSegment.bona_fide_logit,
+        )
+        .where(AnalysisSegment.signal_id.in_(signal_ids))
+        .order_by(AnalysisSegment.signal_id, AnalysisSegment.clip_index)
+    ).all()
+
+    grouped: dict[uuid.UUID, list[AudioWindowEvidence]] = {}
+    for row in rows:
+        grouped.setdefault(row.signal_id, []).append(
+            AudioWindowEvidence(
+                clip_index=row.clip_index,
+                start_time=row.start_time,
+                end_time=row.end_time,
+                logit=row.logit,
+                bona_fide_logit=row.bona_fide_logit,
+            )
+        )
+
+    return grouped
+
+
 def speaking_timeline(
     session: Session, signal_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, list[SpeakingSegment]]:
@@ -737,7 +876,7 @@ def strongest_segments(
 
 @router.get("/analyses", response_model=list[AnalysisSummary])
 def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSummary]:
-    """Return the most recent analyses, with all three of their signals, for the dashboard.
+    """Return the most recent analyses, with all four of their signals, for the dashboard.
 
     An inner join onto the media is correct here rather than restrictive: an analysis and
     its media row are written in one transaction, so an analysis without media cannot
@@ -745,11 +884,12 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
     analyses stored before a source was wired in have none — and each join names one
     provider and one signal type, so no row is multiplied by the evidence hanging off it.
 
-    Three statements serve the whole page — the analyses with their signals, then the clip
-    evidence, then the speaking timeline. The two evidence queries are kept apart because
-    they read different columns in different orders: clips come back strongest first, the
-    timeline chronologically. All three are fixed in number: none grows with how many
-    analyses are listed, so there is no query per analysis.
+    Four statements serve the whole page — the analyses with their signals, then the clip
+    evidence, the speaking timeline and the audio windows. The three evidence queries are
+    kept apart because they read different columns in different orders: clips come back
+    strongest first, the timeline chronologically, the windows in the order the audio was
+    cut. All four are fixed in number: none grows with how many analyses are listed, so
+    there is no query per analysis.
 
     Ordering falls back to the id because `created_at` defaults to the transaction
     timestamp, which two analyses committed together can share — without the tiebreak
@@ -760,6 +900,7 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
     # signals still arrive on the one statement.
     provenance = aliased(AnalysisSignal)
     active_speaker = aliased(AnalysisSignal)
+    audio = aliased(AnalysisSignal)
 
     try:
         rows = session.execute(
@@ -802,6 +943,12 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
                 active_speaker.status.label("active_speaker_status"),
                 active_speaker.provider_version.label("active_speaker_provider_version"),
                 active_speaker.signal_metadata.label("active_speaker_metadata"),
+                audio.id.label("audio_id"),
+                audio.provider.label("audio_provider"),
+                audio.signal_type.label("audio_signal_type"),
+                audio.status.label("audio_status"),
+                audio.provider_version.label("audio_provider_version"),
+                audio.signal_metadata.label("audio_metadata"),
             )
             .join(MediaFile, MediaFile.analysis_id == Analysis.id)
             .outerjoin(
@@ -828,6 +975,14 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
                     active_speaker.signal_type == ACTIVE_SPEAKER_SIGNAL,
                 ),
             )
+            .outerjoin(
+                audio,
+                and_(
+                    audio.analysis_id == Analysis.id,
+                    audio.provider == AASIST_PROVIDER,
+                    audio.signal_type == AUDIO_AUTHENTICITY_SIGNAL,
+                ),
+            )
             .order_by(Analysis.created_at.desc(), Analysis.id.desc())
             .limit(RECENT_ANALYSES_LIMIT)
         ).all()
@@ -838,6 +993,9 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
         timelines = speaking_timeline(
             session,
             [row.active_speaker_id for row in rows if row.active_speaker_id is not None],
+        )
+        windows = audio_windows(
+            session, [row.audio_id for row in rows if row.audio_id is not None]
         )
     except SQLAlchemyError:
         # Statements, connection strings and driver errors stay in the server log.
@@ -871,6 +1029,9 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
             provenance=provenance_signal(row),
             active_speaker=active_speaker_signal(
                 row, timelines.get(row.active_speaker_id, [])
+            ),
+            audio_authenticity=audio_authenticity_signal(
+                row, windows.get(row.audio_id, [])
             ),
         )
         for row in rows

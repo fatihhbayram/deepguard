@@ -35,6 +35,7 @@ EXPECTED_FIELDS = {
     "synthetic_video",
     "provenance",
     "active_speaker",
+    "audio_authenticity",
 }
 
 # What ffprobe established about the original, as the database kept it. `major_brand` is
@@ -93,6 +94,20 @@ EXPECTED_ACTIVE_SPEAKER_FIELDS = {
     "segments",
 }
 
+# The audio object the dashboard receives. No score, and no field that could stand in for
+# one: the checkpoint publishes no threshold and no calibration, so there is no file-level
+# figure to report and the windows are the whole of the evidence.
+EXPECTED_AUDIO_FIELDS = {
+    "provider",
+    "signal_type",
+    "status",
+    "provider_version",
+    "total_audio_windows",
+    "persisted_audio_windows",
+    "windows_truncated",
+    "windows",
+}
+
 # One clip of provider evidence: the frame index NVIDIA scored and the logit it gave it.
 # No time range and no probability, because NVIDIA reports neither per clip.
 EXPECTED_SEGMENT_FIELDS = {"clip_index", "logit"}
@@ -101,10 +116,23 @@ EXPECTED_SEGMENT_FIELDS = {"clip_index", "logit"}
 # no logit, because an active-speaker result has neither.
 EXPECTED_SPEAKING_FIELDS = {"start_time", "end_time", "face_id", "speaker_label"}
 
+# One audio window: where in the sequence it sits, the preprocessing bounds it covers and
+# both of the model's raw outputs. No score and no label, because the model emits neither.
+EXPECTED_AUDIO_WINDOW_FIELDS = {
+    "clip_index",
+    "start_time",
+    "end_time",
+    "logit",
+    "bona_fide_logit",
+}
+
 PROBABILITY = 0.7929722666740417
 FUNCTION_ID = "847b6e53-0133-452d-ab85-d7acf3ace723"
 ASD_FUNCTION_ID = "9e93cf1e-de1e-4f1f-8b1e-0c3f1a2d5b77"
 C2PA_SDK_VERSION = "0.90.14"
+AASIST_CHECKPOINT = (
+    "SpeechAntiSpoofingBenchmarks/AASIST@16774d458d86d2a021ae31646c1bf66a5331b53e"
+)
 
 
 def listing_row(**overrides):
@@ -168,6 +196,26 @@ def listing_row(**overrides):
             "speaker_detection_threshold": 0.5,
             "diarized_speakers": {"SPEAKER_00": 0},
         },
+        "audio_id": uuid.uuid4(),
+        "audio_provider": "aasist",
+        "audio_signal_type": "audio_authenticity",
+        "audio_status": "SUCCESS",
+        "audio_provider_version": AASIST_CHECKPOINT,
+        "audio_metadata": {
+            "model_repository": "SpeechAntiSpoofingBenchmarks/AASIST",
+            "model_revision": "16774d458d86d2a021ae31646c1bf66a5331b53e",
+            "model_sha256": "130e5362" + "0" * 56,
+            "sample_rate": 16000,
+            "channels": 1,
+            "window_samples": 64600,
+            "window_padding_scheme": "repeat-tile",
+            "total_samples": 129200,
+            "total_audio_windows": 2,
+            "persisted_audio_windows": 2,
+            "windows_truncated": False,
+            "window_bounds": "deepguard_preprocessing",
+            "bona_fide_logit_index": 1,
+        },
     }
 
     return SimpleNamespace(**{**values, **overrides})
@@ -194,6 +242,12 @@ def unsignalled_row(**overrides):
         active_speaker_status=None,
         active_speaker_provider_version=None,
         active_speaker_metadata=None,
+        audio_id=None,
+        audio_provider=None,
+        audio_signal_type=None,
+        audio_status=None,
+        audio_provider_version=None,
+        audio_metadata=None,
         **overrides,
     )
 
@@ -228,9 +282,31 @@ def failed_active_speaker_row(status: str, **overrides):
     )
 
 
+def failed_audio_row(status: str, **overrides):
+    """A row whose audio reading did not produce any windows."""
+    return listing_row(
+        audio_status=status,
+        audio_provider_version=None,
+        audio_metadata={"error": "AudioDetectorModelUnavailable"},
+        **overrides,
+    )
+
+
 def segment_row(signal_id, clip_index: int, logit: float):
     """A row shaped like the one the segment select emits."""
     return SimpleNamespace(signal_id=signal_id, clip_index=clip_index, logit=logit)
+
+
+def audio_window_row(signal_id, index: int, bounds, logits):
+    """A row shaped like the one the audio-window select emits."""
+    return SimpleNamespace(
+        signal_id=signal_id,
+        clip_index=index,
+        start_time=bounds[0],
+        end_time=bounds[1],
+        logit=logits[0],
+        bona_fide_logit=logits[1],
+    )
 
 
 def speaking_row(signal_id, start: float, end: float, face_id: int, label: str | None):
@@ -247,16 +323,17 @@ def speaking_row(signal_id, start: float, end: float, face_id: int, label: str |
 class FakeSession:
     """Stand-in for a SQLAlchemy session that records the statements it was given.
 
-    The route issues up to three: the listing, the clip evidence for the detection signals
-    it found, and the speaking timeline for the active-speaker signals it found. Either
-    evidence query is skipped when nothing was found to look up, so they are told apart by
-    the column they read rather than by their position.
+    The route issues up to four: the listing, the clip evidence for the detection signals it
+    found, the speaking timeline for the active-speaker signals it found, and the windows
+    for the audio signals it found. Any evidence query is skipped when nothing was found to
+    look up, so they are told apart by the columns they read rather than by their position.
     """
 
-    def __init__(self, rows=(), segment_rows=(), speaking_rows=()):
+    def __init__(self, rows=(), segment_rows=(), speaking_rows=(), audio_rows=()):
         self.rows = list(rows)
         self.segment_rows = list(segment_rows)
         self.speaking_rows = list(speaking_rows)
+        self.audio_rows = list(audio_rows)
         self.execute_error = None
         self.statements = []
 
@@ -275,7 +352,14 @@ class FakeSession:
         if position == 1:
             return self.rows
 
-        return self.segment_rows if "clip_index" in str(statement) else self.speaking_rows
+        # `bona_fide_logit` is checked first and is the only discriminator that works: the
+        # audio query reads `clip_index` too, so testing for that column first would hand
+        # the audio statement the clip rows.
+        sql = str(statement)
+        if "bona_fide_logit" in sql:
+            return self.audio_rows
+
+        return self.segment_rows if "clip_index" in sql else self.speaking_rows
 
 
 @pytest.fixture
@@ -362,6 +446,16 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
                 "total_speaking_segments": 2,
                 "segments_truncated": False,
                 "segments": [],
+            },
+            "audio_authenticity": {
+                "provider": "aasist",
+                "signal_type": "audio_authenticity",
+                "status": "SUCCESS",
+                "provider_version": AASIST_CHECKPOINT,
+                "total_audio_windows": 2,
+                "persisted_audio_windows": 2,
+                "windows_truncated": False,
+                "windows": [],
             },
         }
     ]
@@ -464,7 +558,7 @@ def test_the_media_facts_ride_the_listing_statement(client, fake_session):
 
     client.get("/api/v1/analyses")
 
-    assert len(fake_session.statements) == 3
+    assert len(fake_session.statements) == 4
     sql = compiled(fake_session)
     for column in ("format_name", "codec_name", "media_files.width", "media_files.height"):
         assert column in sql
@@ -524,16 +618,16 @@ def test_the_signal_is_read_in_the_same_statement_as_the_listing(client, fake_se
 def test_the_page_costs_the_same_number_of_queries_however_many_analyses_it_holds(
     client, fake_session
 ):
-    """The N+1 guard: three statements for one analysis, and three for twenty."""
+    """The N+1 guard: four statements for one analysis, and four for twenty."""
     fake_session.rows = [listing_row()]
     client.get("/api/v1/analyses")
-    assert len(fake_session.statements) == 3
+    assert len(fake_session.statements) == 4
 
     fake_session.statements.clear()
     fake_session.rows = [listing_row() for _ in range(20)]
     client.get("/api/v1/analyses")
 
-    assert len(fake_session.statements) == 3
+    assert len(fake_session.statements) == 4
 
 
 def test_no_segment_query_is_issued_when_no_analysis_carries_a_signal(client, fake_session):
@@ -792,7 +886,7 @@ def test_the_provenance_join_is_restricted_to_the_c2pa_provenance_signal(client,
     assert "signal_type = 'provenance'" in sql
     # Each further signal joins the table again under its own alias, so no two of them
     # can multiply each other.
-    assert sql.count("LEFT OUTER JOIN analysis_signals") == 3
+    assert sql.count("LEFT OUTER JOIN analysis_signals") == 4
 
 
 def test_both_signals_ride_the_same_statement(client, fake_session):
@@ -801,7 +895,7 @@ def test_both_signals_ride_the_same_statement(client, fake_session):
 
     client.get("/api/v1/analyses")
 
-    assert len(fake_session.statements) == 3
+    assert len(fake_session.statements) == 4
 
 
 def test_provenance_is_exposed_with_the_facts_the_file_carries(client, fake_session):
@@ -1177,8 +1271,9 @@ def test_no_timeline_query_is_issued_when_no_analysis_carries_an_active_speaker_
 
     client.get("/api/v1/analyses")
 
-    # The listing and the clip evidence, and nothing to look a timeline up for.
-    assert len(fake_session.statements) == 2
+    # The listing, the clip evidence and the audio windows — and nothing to look a timeline
+    # up for.
+    assert len(fake_session.statements) == 3
 
 
 def test_a_timeline_query_failure_returns_the_same_controlled_503(client, fake_session):
@@ -1191,6 +1286,219 @@ def test_a_timeline_query_failure_returns_the_same_controlled_503(client, fake_s
         return SimpleNamespace(all=lambda: fake_session.rows if len(fake_session.statements) == 1 else [])
 
     fake_session.execute = fail_on_the_timeline_query
+
+    response = client.get("/api/v1/analyses")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "analyses are temporarily unavailable"}
+
+
+# The local audio evidence. A fourth signal on the listing, with the same four states the
+# others keep apart and one more thing to be careful about: the window bounds it carries
+# are DeepGuard's own preprocessing boundaries, not something the model reported.
+
+
+def test_a_successful_audio_reading_is_exposed_with_its_counts(client, fake_session):
+    fake_session.rows = [listing_row()]
+
+    signal = client.get("/api/v1/analyses").json()[0]["audio_authenticity"]
+
+    assert set(signal) == EXPECTED_AUDIO_FIELDS
+    assert signal["provider"] == "aasist"
+    assert signal["signal_type"] == "audio_authenticity"
+    assert signal["status"] == "SUCCESS"
+    # Which checkpoint produced the figures. A different revision is a different reading.
+    assert signal["provider_version"] == AASIST_CHECKPOINT
+    assert signal["total_audio_windows"] == 2
+    assert signal["persisted_audio_windows"] == 2
+    assert signal["windows_truncated"] is False
+
+
+def test_the_audio_signal_carries_no_file_level_score(client, fake_session):
+    """The one field it must never grow: the model publishes no calibration."""
+    fake_session.rows = [listing_row()]
+
+    signal = client.get("/api/v1/analyses").json()[0]["audio_authenticity"]
+
+    assert "score" not in signal
+    assert "risk_level" not in signal
+    # Nor the stored metadata document, which holds the exception class name on a failure.
+    assert "metadata" not in signal
+
+
+def test_audio_windows_reach_the_listing_with_both_raw_logits(client, fake_session):
+    row = listing_row()
+    fake_session.rows = [row]
+    fake_session.audio_rows = [
+        audio_window_row(row.audio_id, 0, (0.0, 4.0375), (-2.89, 1.65)),
+        audio_window_row(row.audio_id, 1, (4.0375, 8.075), (2.44, -2.73)),
+    ]
+
+    windows = client.get("/api/v1/analyses").json()[0]["audio_authenticity"]["windows"]
+
+    assert [set(window) for window in windows] == [EXPECTED_AUDIO_WINDOW_FIELDS] * 2
+    # Both outputs in graph order, untransformed. Neither can be derived from the other.
+    assert [(window["logit"], window["bona_fide_logit"]) for window in windows] == [
+        (-2.89, 1.65),
+        (2.44, -2.73),
+    ]
+    # The bounds of the windows DeepGuard cut, in the order it cut them.
+    assert [(window["start_time"], window["end_time"]) for window in windows] == [
+        (0.0, 4.0375),
+        (4.0375, 8.075),
+    ]
+    assert [window["clip_index"] for window in windows] == [0, 1]
+
+
+def test_a_truncated_audio_sweep_reaches_the_listing_as_truncated(client, fake_session):
+    row = listing_row(
+        audio_metadata={
+            "total_audio_windows": 149,
+            "persisted_audio_windows": 50,
+            "windows_truncated": True,
+        }
+    )
+    fake_session.rows = [row]
+    fake_session.audio_rows = [
+        audio_window_row(row.audio_id, index, (float(index), index + 1.0), (0.1, 0.2))
+        for index in range(50)
+    ]
+
+    signal = client.get("/api/v1/analyses").json()[0]["audio_authenticity"]
+
+    # Without the pair, a chronological prefix would read as the whole recording.
+    assert len(signal["windows"]) == 50
+    assert signal["total_audio_windows"] == 149
+    assert signal["windows_truncated"] is True
+
+
+def test_the_whole_stored_sweep_is_handed_on_rather_than_trimmed_again(client, fake_session):
+    """Unlike the clip evidence, which the listing trims to the display count.
+
+    Trimming here would move the boundary `persisted_audio_windows` describes, and leave
+    the response contradicting its own count.
+    """
+    row = listing_row()
+    fake_session.rows = [row]
+    fake_session.audio_rows = [
+        audio_window_row(row.audio_id, index, (float(index), index + 1.0), (0.1, 0.2))
+        for index in range(DASHBOARD_SEGMENTS + 4)
+    ]
+
+    windows = client.get("/api/v1/analyses").json()[0]["audio_authenticity"]["windows"]
+
+    assert len(windows) == DASHBOARD_SEGMENTS + 4
+
+
+def test_an_analysis_without_an_audio_signal_reports_null(client, fake_session):
+    fake_session.rows = [unsignalled_row()]
+
+    # Not the same fact as a reading that ran: this analysis was stored before the
+    # checkpoint was wired in, and nothing ever looked at its audio.
+    assert client.get("/api/v1/analyses").json()[0]["audio_authenticity"] is None
+
+
+@pytest.mark.parametrize("status", ["FAILED", "TIMEOUT"])
+def test_an_audio_reading_that_did_not_happen_carries_its_status_and_no_windows(
+    client, fake_session, status
+):
+    fake_session.rows = [failed_audio_row(status)]
+
+    signal = client.get("/api/v1/analyses").json()[0]["audio_authenticity"]
+
+    assert signal["status"] == status
+    assert signal["windows"] == []
+    # No counts either: nothing was swept, so a zero here would be a fabricated figure.
+    assert signal["total_audio_windows"] is None
+    assert signal["persisted_audio_windows"] is None
+    assert signal["windows_truncated"] is None
+
+
+def test_a_failed_audio_reading_never_leaks_its_diagnostic_detail(client, fake_session):
+    fake_session.rows = [failed_audio_row("FAILED")]
+
+    response = client.get("/api/v1/analyses")
+
+    # The stored metadata holds the exception class name, which is internal detail.
+    assert "AudioDetectorModelUnavailable" not in response.text
+
+
+def test_a_successful_audio_reading_with_no_windows_is_not_a_failure(client, fake_session):
+    """The state the dashboard has to tell apart from a reading that did not happen."""
+    fake_session.rows = [listing_row()]
+    fake_session.audio_rows = []
+
+    signal = client.get("/api/v1/analyses").json()[0]["audio_authenticity"]
+
+    assert signal["status"] == "SUCCESS"
+    assert signal["windows"] == []
+
+
+def test_the_audio_signal_is_read_in_the_same_statement_as_the_listing(client, fake_session):
+    fake_session.rows = [listing_row(), listing_row()]
+
+    client.get("/api/v1/analyses")
+
+    sql = compiled(fake_session)
+    # Narrowed like every other join, so a fourth signal cannot multiply the listing's rows.
+    assert "provider = 'aasist'" in sql
+    assert "signal_type = 'audio_authenticity'" in sql
+
+
+def test_the_audio_window_query_names_only_the_signals_the_listing_found(
+    client, fake_session
+):
+    row = listing_row()
+    fake_session.rows = [row, unsignalled_row()]
+
+    client.get("/api/v1/analyses")
+
+    sql = compiled(fake_session, index=3)
+    assert row.audio_id.hex in sql
+    # The analysis carrying no signal contributes no id to look up.
+    assert sql.count("'") == 2
+
+
+def test_the_audio_window_query_reads_the_windows_in_the_order_they_were_cut(
+    client, fake_session
+):
+    fake_session.rows = [listing_row()]
+
+    client.get("/api/v1/analyses")
+
+    sql = compiled(fake_session, index=3)
+    # The window index is the only order this evidence has, and it is total within a
+    # signal — so the same stored sweep reads back the same way on every call. Ordering by
+    # logit would impose a ranking the checkpoint gives no basis for.
+    assert (
+        "ORDER BY analysis_segments.signal_id, analysis_segments.clip_index" in sql
+    )
+    assert "logit DESC" not in sql
+
+
+def test_no_audio_query_is_issued_when_no_analysis_carries_an_audio_signal(
+    client, fake_session
+):
+    fake_session.rows = [listing_row(audio_id=None, audio_status=None)]
+
+    client.get("/api/v1/analyses")
+
+    # The listing, the clip evidence and the timeline — nothing to look windows up for.
+    assert len(fake_session.statements) == 3
+
+
+def test_an_audio_query_failure_returns_the_same_controlled_503(client, fake_session):
+    fake_session.rows = [listing_row()]
+
+    def fail_on_the_audio_query(statement):
+        fake_session.statements.append(statement)
+        if "bona_fide_logit" in str(statement):
+            raise OperationalError("SELECT", None, Exception("connection lost"))
+        return SimpleNamespace(
+            all=lambda: fake_session.rows if len(fake_session.statements) == 1 else []
+        )
+
+    fake_session.execute = fail_on_the_audio_query
 
     response = client.get("/api/v1/analyses")
 
