@@ -1091,3 +1091,86 @@ def test_audio_windows_do_not_leak_into_the_clip_evidence(session):
     assert listed["synthetic_video"]["segments"] == [{"clip_index": 8, "logit": 3.5}]
     assert len(listed["audio_authenticity"]["windows"]) == 1
     assert listed["audio_authenticity"]["windows"][0]["clip_index"] == 0
+
+
+# The single-analysis endpoint the report route reads. The fake-session suite proves the
+# query's shape; only a real database proves the narrowed select returns that analysis's own
+# evidence and nobody else's.
+
+
+def test_one_analysis_is_read_back_through_the_detail_endpoint(session):
+    db, created = session
+    wanted = Analysis(
+        status=ANALYSIS_STATUS_COMPLETED,
+        risk_level="HIGH",
+        risk_rules_version="p7-v1.0.0",
+        risk_rule_id="R100",
+        risk_calibration_id=(
+            "3e362e8edfe253437234e3c291230a2921a6344555ab0861ee5871c53d20949c"
+        ),
+    )
+    db.add(wanted)
+    db.flush()
+    created.append(wanted.id)
+    db.add(media_file(wanted.id))
+    db.add(nvidia_signal(wanted.id))
+    db.commit()
+
+    with TestClient(app) as client:
+        body = client.get(f"/api/v1/analyses/{wanted.id}").json()
+
+    assert body["id"] == str(wanted.id)
+    # The decision comes off the analysis row, whole.
+    assert body["risk_level"] == "HIGH"
+    assert body["risk_rules_version"] == "p7-v1.0.0"
+    assert body["risk_rule_id"] == "R100"
+    assert body["risk_calibration_id"].startswith("3e362e8e")
+    # And the evidence behind it is the provider's own figures, unchanged.
+    assert body["synthetic_video"]["score"] == NVIDIA_PROBABILITY
+    assert body["synthetic_video"]["status"] == SIGNAL_STATUS_SUCCESS
+
+
+def test_the_detail_endpoint_returns_only_the_requested_analysis_evidence(session):
+    """Two analyses, each with a signal. Neither may be shown the other's."""
+    db, created = session
+    wanted = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    other = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add_all([wanted, other])
+    db.flush()
+    created.extend([wanted.id, other.id])
+    db.add_all([media_file(wanted.id), media_file(other.id)])
+    db.add(nvidia_signal(wanted.id, score=0.25))
+    db.add(nvidia_signal(other.id, score=0.75))
+    db.commit()
+
+    with TestClient(app) as client:
+        body = client.get(f"/api/v1/analyses/{wanted.id}").json()
+
+    assert body["id"] == str(wanted.id)
+    assert body["synthetic_video"]["score"] == 0.25
+
+
+def test_a_pre_p7_analysis_keeps_null_risk_through_the_detail_endpoint(session):
+    """Never backfilled to `UNKNOWN`: the report has to be able to say nothing was decided."""
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    db.commit()
+
+    with TestClient(app) as client:
+        body = client.get(f"/api/v1/analyses/{analysis.id}").json()
+
+    assert body["risk_level"] is None
+    assert body["risk_rules_version"] is None
+    assert body["risk_rule_id"] is None
+    assert body["risk_calibration_id"] is None
+
+
+def test_an_analysis_that_does_not_exist_is_a_404(session):
+    with TestClient(app) as client:
+        response = client.get(f"/api/v1/analyses/{uuid.uuid4()}")
+
+    assert response.status_code == 404

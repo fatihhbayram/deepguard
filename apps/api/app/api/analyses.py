@@ -323,11 +323,13 @@ class MediaFacts(BaseModel):
 
 
 class AnalysisSummary(BaseModel):
-    """One row of the dashboard listing.
+    """One analysis as its readers get it: the dashboard listing and the report route.
 
-    Deliberately narrower than `CreatedAnalysis`: only what the list view renders. The
-    storage keys and derivative identity are not shown there, and report fields do not
-    exist yet.
+    Deliberately narrower than `CreatedAnalysis`: the storage keys and derivative identity
+    are not shown to either reader. Both get the same fields because both are rendering the
+    same stored record — the report is one analysis presented at length, not a different set
+    of facts, and giving it its own model would be two places to add a field to and one
+    place to forget.
 
     The risk fields are read straight off the `analyses` row. Nothing here evaluates a
     rule or looks at a detector score: the decision the worker committed is the decision,
@@ -896,43 +898,36 @@ def strongest_segments(
     return grouped
 
 
-@router.get("/analyses", response_model=list[AnalysisSummary])
-def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSummary]:
-    """Return the most recent analyses, with all four of their signals, for the dashboard.
+def analysis_evidence_select():
+    """The one statement that reads an analysis, its media and all four of its signals.
 
-    An inner join onto the media is correct here rather than restrictive: an analysis and
-    its media row are written in one transaction, so an analysis without media cannot
-    exist. The signals are outer joins, because any of them can genuinely be missing —
-    analyses stored before a source was wired in have none — and each join names one
-    provider and one signal type, so no row is multiplied by the evidence hanging off it.
+    Shared by the listing and the single-analysis endpoint, which differ only in how they
+    narrow it: the listing orders and limits, the detail route filters by id. Extracted at
+    the second real use rather than in advance — the alternative was duplicating ninety
+    lines of columns and joins, and two copies would drift the moment a signal gained a
+    field, leaving the report and the dashboard quietly disagreeing about the same row.
 
-    Four statements serve the whole page — the analyses with their signals, then the clip
-    evidence, the speaking timeline and the audio windows. The three evidence queries are
-    kept apart because they read different columns in different orders: clips come back
-    strongest first, the timeline chronologically, the windows in the order the audio was
-    cut. All four are fixed in number: none grows with how many analyses are listed, so
-    there is no query per analysis.
+    An inner join onto the media is correct rather than restrictive: an analysis and its
+    media row are written in one transaction, so an analysis without media cannot exist.
+    The signals are outer joins, because any of them can genuinely be missing — analyses
+    stored before a source was wired in have none — and each join names one provider and
+    one signal type, so no row is multiplied by the evidence hanging off it.
 
     The risk decision rides along on the analysis row itself, so it costs neither a join
-    nor a statement. It is read, never taken: this endpoint does not call the risk engine
-    and does not look at a detector score to decide anything, because the decision the
-    worker committed under a named ruleset is the decision, and a read path that recomputed
-    it could quietly answer differently from the record.
-
-    Ordering falls back to the id because `created_at` defaults to the transaction
-    timestamp, which two analyses committed together can share — without the tiebreak
-    their relative order would be arbitrary between calls.
+    nor a statement. It is read, never taken: nothing here calls the risk engine and
+    nothing looks at a detector score to decide anything, because the decision the worker
+    committed under a named ruleset is the decision, and a read path that recomputed it
+    could quietly answer differently from the record.
     """
     # The same table, joined again for each further signal. Every join is narrowed to one
-    # provider and one signal type, so none can multiply the listing's rows, and all three
-    # signals still arrive on the one statement.
+    # provider and one signal type, so none can multiply the rows, and all three signals
+    # still arrive on the one statement.
     provenance = aliased(AnalysisSignal)
     active_speaker = aliased(AnalysisSignal)
     audio = aliased(AnalysisSignal)
 
-    try:
-        rows = session.execute(
-            select(
+    return (
+        select(
                 Analysis.id,
                 Analysis.status,
                 Analysis.created_at,
@@ -1009,35 +1004,39 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
                     active_speaker.signal_type == ACTIVE_SPEAKER_SIGNAL,
                 ),
             )
-            .outerjoin(
-                audio,
-                and_(
-                    audio.analysis_id == Analysis.id,
-                    audio.provider == AASIST_PROVIDER,
-                    audio.signal_type == AUDIO_AUTHENTICITY_SIGNAL,
-                ),
-            )
-            .order_by(Analysis.created_at.desc(), Analysis.id.desc())
-            .limit(RECENT_ANALYSES_LIMIT)
-        ).all()
+        .outerjoin(
+            audio,
+            and_(
+                audio.analysis_id == Analysis.id,
+                audio.provider == AASIST_PROVIDER,
+                audio.signal_type == AUDIO_AUTHENTICITY_SIGNAL,
+            ),
+        )
+    )
 
-        segments = strongest_segments(
-            session, [row.signal_id for row in rows if row.signal_id is not None]
-        )
-        timelines = speaking_timeline(
-            session,
-            [row.active_speaker_id for row in rows if row.active_speaker_id is not None],
-        )
-        windows = audio_windows(
-            session, [row.audio_id for row in rows if row.audio_id is not None]
-        )
-    except SQLAlchemyError:
-        # Statements, connection strings and driver errors stay in the server log.
-        logger.exception("Reading the analysis listing failed.")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="analyses are temporarily unavailable",
-        ) from None
+
+def analysis_payloads(session: Session, rows: list[Any]) -> list[AnalysisSummary]:
+    """Attach the stored evidence to already-read analysis rows and shape the response.
+
+    Three further statements, whatever the number of rows: the clip evidence, the speaking
+    timeline and the audio windows. They are kept apart because they read different columns
+    in different orders — clips come back strongest first, the timeline chronologically, the
+    windows in the order the audio was cut — and each takes every signal id at once, so
+    neither caller pays a query per analysis.
+
+    Everything is passed through exactly as stored, nulls included. Nothing here derives a
+    figure, and in particular nothing turns a detector score into a classification.
+    """
+    segments = strongest_segments(
+        session, [row.signal_id for row in rows if row.signal_id is not None]
+    )
+    timelines = speaking_timeline(
+        session,
+        [row.active_speaker_id for row in rows if row.active_speaker_id is not None],
+    )
+    windows = audio_windows(
+        session, [row.audio_id for row in rows if row.audio_id is not None]
+    )
 
     return [
         AnalysisSummary(
@@ -1075,3 +1074,78 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
         )
         for row in rows
     ]
+
+
+@router.get("/analyses", response_model=list[AnalysisSummary])
+def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSummary]:
+    """Return the most recent analyses, with all four of their signals, for the dashboard.
+
+    Four statements serve the whole page — the analyses with their signals, then the three
+    evidence reads in `analysis_payloads`. All four are fixed in number: none grows with how
+    many analyses are listed, so there is no query per analysis.
+
+    Ordering falls back to the id because `created_at` defaults to the transaction
+    timestamp, which two analyses committed together can share — without the tiebreak their
+    relative order would be arbitrary between calls.
+    """
+    try:
+        rows = session.execute(
+            analysis_evidence_select()
+            .order_by(Analysis.created_at.desc(), Analysis.id.desc())
+            .limit(RECENT_ANALYSES_LIMIT)
+        ).all()
+
+        return analysis_payloads(session, rows)
+    except SQLAlchemyError:
+        # Statements, connection strings and driver errors stay in the server log.
+        logger.exception("Reading the analysis listing failed.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="analyses are temporarily unavailable",
+        ) from None
+
+
+@router.get("/analyses/{analysis_id}", response_model=AnalysisSummary)
+def get_analysis(
+    analysis_id: uuid.UUID, session: Session = Depends(get_session)
+) -> AnalysisSummary:
+    """Return one analysis with all four of its signals and their stored evidence.
+
+    The report route reads this. It exists so a single report is built from the row it is
+    about: filtering the listing down to one analysis in the browser would make the report
+    silently dependent on that analysis still being among the most recent, and would ship
+    every other analysis to a page that shows one.
+
+    Four statements, the same as the listing and for the same reason — the shape of the read
+    does not change just because one row comes back.
+
+    The response model is the listing's. That is not laziness: the report needs exactly the
+    persisted facts the dashboard needs, and a second model repeating them would be two
+    places to add a field to and one place to forget. The name says "summary" because what
+    both readers get is a summary *of the stored evidence* — the full record lives in the
+    database, and neither endpoint invents anything on top of it.
+
+    A `uuid.UUID` path parameter means a malformed id is rejected by validation as a 422
+    before any statement runs; only a well-formed id that names nothing reaches the 404.
+    """
+    try:
+        rows = session.execute(
+            analysis_evidence_select().where(Analysis.id == analysis_id)
+        ).all()
+
+        payloads = analysis_payloads(session, rows)
+    except SQLAlchemyError:
+        logger.exception("Reading analysis %s failed.", analysis_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="analyses are temporarily unavailable",
+        ) from None
+
+    if not payloads:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="analysis not found",
+        )
+
+    # The id is a primary key, so the narrowed select cannot return a second row.
+    return payloads[0]
