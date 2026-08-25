@@ -44,6 +44,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-deepguard}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
+      # A second database on the same server, used by `pytest` and by nothing else. This
+      # container is where the suite runs, so the setting lives here and deliberately not
+      # on `api-worker`: the worker has no business knowing this database exists, and the
+      # suite queueing jobs the worker can never see is the whole point (P6-F1). The
+      # credentials above reach it — same server, different database — so no second set of
+      # secrets is introduced to support tests.
+      TEST_POSTGRES_DB: ${TEST_POSTGRES_DB:-deepguard_test}
       # Object storage is reached over the Docker network, never the published host port.
       MINIO_ENDPOINT: minio:9000
       MINIO_SECURE: "false"
