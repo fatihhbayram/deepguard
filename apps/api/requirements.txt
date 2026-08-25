@@ -10,6 +10,11 @@ c2pa-python==0.37.7
 fastapi==0.141.1
 grpcio==1.76.0
 minio==7.2.20
+# Runs the AASIST audio anti-spoofing checkpoint (P6-T2). The CPU-only wheel — there is no
+# GPU build here and none is wanted — is 17.4 MB down / ~52 MB installed, against a 1.6 MB
+# checkpoint and ~60 MiB resident at inference. Pinned to the version P6-T1 benchmarked on,
+# so the numbers in that report describe the same runtime that ships.
+onnxruntime==1.23.2
 protobuf==6.33.6
 psycopg2-binary==2.9.12
 pyannote.audio==4.0.7
