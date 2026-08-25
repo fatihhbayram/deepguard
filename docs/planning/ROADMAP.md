@@ -261,6 +261,15 @@ HIGH
 UNKNOWN
 ```
 
+## v1 output policy
+
+v1 output classes: HIGH / MEDIUM / UNKNOWN. LOW was calibrated (T_LOW=0.05) but intentionally
+disabled because the validated detector does not support a defensible product-level LOW claim,
+especially for face-swap/manipulation media.
+
+The vocabulary above is what the data model declares. It is not a commitment that every band is
+activated: `LOW` is measured, recorded in the calibration artifact, and never emitted.
+
 ## Rules
 
 - deterministic;
