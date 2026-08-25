@@ -310,6 +310,16 @@ PDF export if needed.
 - risk classification
 - limitations/disclaimer
 
+## Exit criteria
+
+- A single analysis has a standalone HTML forensic evidence report.
+- The report renders persisted media facts, risk trace, provider/model identities, independent signals, provenance, evidence segments and limitations/disclaimer.
+- Risk is read from the persisted P7 decision and is never recomputed on read.
+- The generated-video / face-swap scope limitation is prominently disclosed.
+- The report is printable using browser Print / Save as PDF.
+- Existing reports return 200 and valid-but-missing analysis IDs return 404.
+- No server-side PDF pipeline is required for P8 v1.
+
 ---
 
 # P9 — Public API
