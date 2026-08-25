@@ -26,6 +26,10 @@ EXPECTED_FIELDS = {
     "id",
     "status",
     "created_at",
+    "risk_level",
+    "risk_rules_version",
+    "risk_rule_id",
+    "risk_calibration_id",
     "original_filename",
     "declared_content_type",
     "size_bytes",
@@ -53,8 +57,9 @@ EXPECTED_MEDIA_FIELDS = {
 }
 
 # The signal object the dashboard receives: the provider's own identity, state and
-# figures. `risk_level` is not among them — no phase owns risk yet — and neither is the
-# raw metadata document, which carries diagnostic detail on a failure.
+# figures. `risk_level` is not among them — risk is a product-level decision on the
+# analysis, never a per-detector verdict (rule 11) — and neither is the raw metadata
+# document, which carries diagnostic detail on a failure.
 EXPECTED_SIGNAL_FIELDS = {
     "provider",
     "signal_type",
@@ -128,6 +133,15 @@ EXPECTED_AUDIO_WINDOW_FIELDS = {
 
 PROBABILITY = 0.7929722666740417
 FUNCTION_ID = "847b6e53-0133-452d-ab85-d7acf3ace723"
+
+# The risk trace, spelled out rather than imported from `app.risk_engine`. These tests are
+# about the listing handing back what the row holds; reading the engine's own constants
+# here would let an endpoint that recomputed the decision pass anyway.
+RULES_VERSION = "p7-v1.0.0"
+CALIBRATION_ID = "3e362e8edfe253437234e3c291230a2921a6344555ab0861ee5871c53d20949c"
+RULE_CALIBRATED_HIGH = "R100"
+RULE_INDETERMINATE_BAND = "R200"
+RULE_UNVALIDATED_PROVIDER = "R010"
 ASD_FUNCTION_ID = "9e93cf1e-de1e-4f1f-8b1e-0c3f1a2d5b77"
 C2PA_SDK_VERSION = "0.90.14"
 AASIST_CHECKPOINT = (
@@ -139,12 +153,17 @@ def listing_row(**overrides):
     """A row shaped like the one the select emits, with column names, not model names.
 
     The default carries a successful NVIDIA signal, since that is what an analysis run
-    through the current pipeline has.
+    through the current pipeline has, and the risk decision that signal's score earns it:
+    0.79 sits below `T_HIGH`, so the indeterminate band is what the engine wrote.
     """
     values = {
         "id": uuid.uuid4(),
         "status": "completed",
         "created_at": CREATED_AT,
+        "risk_level": "MEDIUM",
+        "risk_rules_version": RULES_VERSION,
+        "risk_rule_id": RULE_INDETERMINATE_BAND,
+        "risk_calibration_id": CALIBRATION_ID,
         "original_filename": "clip.mp4",
         # The column is `content_type`; the response renames it to `declared_content_type`.
         "content_type": "video/mp4",
@@ -222,8 +241,14 @@ def listing_row(**overrides):
 
 
 def unsignalled_row(**overrides):
-    """A row for an analysis neither outer join found a signal for."""
+    """A row for an analysis neither outer join found a signal for.
+
+    The risk decision is `UNKNOWN`, which is what the engine concludes when there is no
+    eligible direct evidence to weigh — a decision that was taken, not a missing one.
+    """
     return listing_row(
+        risk_level="UNKNOWN",
+        risk_rule_id=RULE_UNVALIDATED_PROVIDER,
         signal_id=None,
         signal_provider=None,
         signal_type=None,
@@ -402,6 +427,10 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
             "id": str(row.id),
             "status": "completed",
             "created_at": "2026-08-19T18:08:01Z",
+            "risk_level": "MEDIUM",
+            "risk_rules_version": RULES_VERSION,
+            "risk_rule_id": RULE_INDETERMINATE_BAND,
+            "risk_calibration_id": CALIBRATION_ID,
             "original_filename": "clip.mp4",
             "declared_content_type": "video/mp4",
             "size_bytes": 13054,
@@ -492,6 +521,144 @@ def test_normalized_analysis_reports_it(client, fake_session):
     response = client.get("/api/v1/analyses")
 
     assert response.json()[0]["was_normalized"] is True
+
+
+# The risk decision. What the engine concluded and committed, read back off the analysis
+# row. The listing reports it; it never takes it, and never reconstructs one from the
+# detector scores sitting beside it in the same response.
+
+
+def test_a_high_risk_decision_is_returned_with_its_whole_trace(client, fake_session):
+    fake_session.rows = [
+        listing_row(
+            risk_level="HIGH",
+            risk_rule_id=RULE_CALIBRATED_HIGH,
+            signal_score=0.9912,
+        )
+    ]
+
+    analysis = client.get("/api/v1/analyses").json()[0]
+
+    assert analysis["risk_level"] == "HIGH"
+    assert analysis["risk_rules_version"] == RULES_VERSION
+    assert analysis["risk_rule_id"] == RULE_CALIBRATED_HIGH
+    assert analysis["risk_calibration_id"] == CALIBRATION_ID
+
+
+def test_a_medium_risk_decision_is_returned_with_its_whole_trace(client, fake_session):
+    fake_session.rows = [listing_row()]
+
+    analysis = client.get("/api/v1/analyses").json()[0]
+
+    assert analysis["risk_level"] == "MEDIUM"
+    assert analysis["risk_rules_version"] == RULES_VERSION
+    assert analysis["risk_rule_id"] == RULE_INDETERMINATE_BAND
+    assert analysis["risk_calibration_id"] == CALIBRATION_ID
+
+
+def test_an_unknown_decision_stays_explicitly_unknown(client, fake_session):
+    """`UNKNOWN` is an answer, not the absence of one.
+
+    The engine ran, a rule fired, and what it concluded is that the evidence does not
+    support a classification. Rendering that as no decision would throw away the fact that
+    the question was asked and answered.
+    """
+    fake_session.rows = [
+        listing_row(risk_level="UNKNOWN", risk_rule_id=RULE_UNVALIDATED_PROVIDER)
+    ]
+
+    analysis = client.get("/api/v1/analyses").json()[0]
+
+    assert analysis["risk_level"] == "UNKNOWN"
+    assert analysis["risk_rule_id"] == RULE_UNVALIDATED_PROVIDER
+    assert analysis["risk_rules_version"] == RULES_VERSION
+    assert analysis["risk_calibration_id"] == CALIBRATION_ID
+
+
+def test_an_analysis_with_no_decision_reports_null_rather_than_unknown(
+    client, fake_session
+):
+    """A queued or in-flight analysis has no decision, and null is how that is said."""
+    fake_session.rows = [
+        listing_row(
+            status="queued",
+            risk_level=None,
+            risk_rules_version=None,
+            risk_rule_id=None,
+            risk_calibration_id=None,
+        )
+    ]
+
+    analysis = client.get("/api/v1/analyses").json()[0]
+
+    assert analysis["risk_level"] is None
+    assert analysis["risk_rules_version"] is None
+    assert analysis["risk_rule_id"] is None
+    assert analysis["risk_calibration_id"] is None
+
+
+def test_a_pre_p7_analysis_stays_distinguishable_from_an_unknown_decision(
+    client, fake_session
+):
+    """The distinction the whole risk column rests on, asserted on one response.
+
+    An analysis completed before the engine existed carries null: nothing ever classified
+    it. An analysis the engine classified as `UNKNOWN` carries `UNKNOWN`. Both are listed
+    here at once, and the listing must not hand back the same thing for the two.
+    """
+    legacy = listing_row(
+        risk_level=None,
+        risk_rules_version=None,
+        risk_rule_id=None,
+        risk_calibration_id=None,
+    )
+    classified = listing_row(
+        risk_level="UNKNOWN", risk_rule_id=RULE_UNVALIDATED_PROVIDER
+    )
+    fake_session.rows = [legacy, classified]
+
+    analyses = client.get("/api/v1/analyses").json()
+
+    assert analyses[0]["risk_level"] is None
+    assert analyses[0]["risk_rules_version"] is None
+    assert analyses[1]["risk_level"] == "UNKNOWN"
+    assert analyses[1]["risk_rules_version"] == RULES_VERSION
+
+
+def test_the_stored_decision_is_reported_even_when_the_score_beside_it_disagrees(
+    client, fake_session
+):
+    """The N+1 guard's cousin: the listing reads the decision, it does not re-derive it.
+
+    The score here is well above `T_HIGH`, so an endpoint that classified from the signal
+    would answer `HIGH`. The stored decision says `MEDIUM` — taken under whichever ruleset
+    was in force at the time — and that is what a forensic record means. Re-deriving it
+    would let this response contradict the row it is reporting.
+    """
+    fake_session.rows = [listing_row(signal_score=0.999)]
+
+    analysis = client.get("/api/v1/analyses").json()[0]
+
+    assert analysis["risk_level"] == "MEDIUM"
+    assert analysis["risk_rule_id"] == RULE_INDETERMINATE_BAND
+
+
+def test_the_decision_is_read_in_the_same_statement_as_the_listing(client, fake_session):
+    """The risk columns cost no extra query: they are on the analysis row already."""
+    fake_session.rows = [listing_row() for _ in range(20)]
+
+    client.get("/api/v1/analyses")
+
+    sql = compiled(fake_session)
+    for column in (
+        "analyses.risk_level",
+        "analyses.risk_rules_version",
+        "analyses.risk_rule_id",
+        "analyses.risk_calibration_id",
+    ):
+        assert column in sql
+
+    assert len(fake_session.statements) == 4
 
 
 # Media facts. What ffprobe read out of the original, as distinct from what the client
@@ -653,9 +820,20 @@ def test_the_signal_join_is_restricted_to_the_nvidia_synthetic_video_signal(
 def test_the_query_selects_no_signal_column_the_dashboard_must_not_show(client, fake_session):
     client.get("/api/v1/analyses")
 
-    # Risk classification does not exist yet, and reading it would imply it does. Neither
-    # signal join may select it, aliased or not.
-    assert "risk_level" not in compiled(fake_session)
+    sql = compiled(fake_session)
+    # `analysis_signals` carries a `risk_level` column of its own. It is a per-detector
+    # figure and must never reach the dashboard: risk is one product-level decision over
+    # all the evidence, and a verdict per signal beside it would be the very collapse rule
+    # 11 refuses. Only the analysis row's decision is read — no signal join, aliased or
+    # not, may select its own.
+    assert "analyses.risk_level" in sql
+    for signal_table in (
+        "analysis_signals",
+        "analysis_signals_1",
+        "analysis_signals_2",
+        "analysis_signals_3",
+    ):
+        assert f"{signal_table}.risk_level" not in sql
 
 
 def test_a_successful_signal_is_exposed_with_the_provider_figures(client, fake_session):

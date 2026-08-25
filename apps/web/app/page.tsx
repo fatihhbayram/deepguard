@@ -146,6 +146,20 @@ type AnalysisSummary = {
   id: string;
   status: string;
   created_at: string;
+  // What the risk engine concluded, as the API read it off the analysis row. `HIGH`,
+  // `MEDIUM` or `UNKNOWN` — never `LOW`, which ruleset v1 measures but does not emit.
+  //
+  // Null is not `UNKNOWN`. Null means no decision exists for this analysis; `UNKNOWN` means
+  // one was taken and it is that the evidence supports no classification. This page keeps
+  // the two apart everywhere, because collapsing them would turn "we have not looked yet"
+  // and "we looked and cannot say" into the same sentence.
+  risk_level: string | null;
+  // The trace behind the level: the immutable ruleset in force, the single rule that fired
+  // and the calibration its thresholds were measured under. Null exactly when the level is.
+  // A level without them is unreadable once the rules move on, so they are shown with it.
+  risk_rules_version: string | null;
+  risk_rule_id: string | null;
+  risk_calibration_id: string | null;
   original_filename: string | null;
   declared_content_type: string;
   was_normalized: boolean;
@@ -168,10 +182,88 @@ type AnalysisSummary = {
 
 const SIGNAL_STATUS_SUCCESS = "SUCCESS";
 
+// The two states an analysis ends in. Anything else is still on its way through the
+// pipeline, which is what separates a decision that has not been taken yet from one that
+// never will be.
+const ANALYSIS_STATUS_COMPLETED = "completed";
+const ANALYSIS_STATUS_FAILED = "failed";
+
 // Shown where a detector produced no figure. Never 0%, which would read as an answer.
 const UNAVAILABLE = "N/A";
 // Shown where there is no detector result to speak of.
 const ABSENT = "—";
+// Shown where the analysis has not finished, so its decision is still owed.
+const PENDING = "Pending";
+
+// The complete vocabulary of risk states this dashboard is entitled to present as a
+// DeepGuard classification. It is an allowlist, not a default: a value is rendered as an
+// official risk class because it appears here, never because it arrived from the database.
+//
+// There is deliberately no LOW. P7-T2 measured a low-risk threshold and ruleset v1 does not
+// activate it, so no analysis carries that level — and a badge for it would advertise a
+// reassurance the engine is not able to give.
+const SUPPORTED_RISK_LEVELS = ["HIGH", "MEDIUM", "UNKNOWN"] as const;
+
+type SupportedRiskLevel = (typeof SUPPORTED_RISK_LEVELS)[number];
+
+// The supported levels in the words the dashboard says them in.
+//
+// Every word here is about *risk*, which is what this column reports: a deterministic
+// classification of calibrated forensic evidence. None of them is a claim about whether
+// the media is genuine, and none of them may become one.
+//
+// Keyed by the union rather than by `string`, so this table and the allowlist above cannot
+// drift apart: adding a level to one without the other fails `tsc --noEmit`, and a lookup
+// on an arbitrary database string does not type-check at all.
+const RISK_LABELS: Record<SupportedRiskLevel, string> = {
+  HIGH: "High risk",
+  MEDIUM: "Medium risk",
+  UNKNOWN: "Unknown",
+};
+
+// Colour is supportive only: the label carries the meaning and stays legible without it.
+const RISK_STYLES: Record<SupportedRiskLevel, string> = {
+  HIGH: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+  MEDIUM: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  UNKNOWN: "bg-slate-500/10 text-slate-700 dark:text-slate-300",
+};
+
+// What a non-null level outside the allowlist is shown as. Deliberately not the stored
+// string: rendering `LOW`, `CRITICAL`, `FAKE` or `REAL` in the risk column would let a value
+// this build has no calibrated meaning for read as an official DeepGuard classification —
+// and in the case of a `FAKE`/`REAL` row, as exactly the certainty semantics the product
+// refuses to claim. The state reported is that the value is unsupported, which is the only
+// thing that is actually known about it.
+const UNSUPPORTED = "Unsupported";
+
+// Neutral styling for that state: the same muted treatment as any other non-answer on this
+// page, carrying no band colour that would imply a severity was read out of the value.
+const RISK_UNSUPPORTED_STYLE = "bg-slate-500/10 text-slate-700 dark:text-slate-300";
+
+/**
+ * Whether a stored level is one this build may present as a DeepGuard risk class.
+ *
+ * Exact membership of the allowlist, which is what makes the guard total: every other
+ * non-null string — a level from a later ruleset, a hand-edited row, `LOW` from a build that
+ * activated it — lands in the unsupported state instead of borrowing a supported band's
+ * label and colour. The predicate narrows to the union, so the label and style lookups after
+ * it are the only place a level is indexed and TypeScript proves the key is in range.
+ */
+function isSupportedRiskLevel(level: string): level is SupportedRiskLevel {
+  return (SUPPORTED_RISK_LEVELS as readonly string[]).includes(level);
+}
+
+// Compile-time proof that the allowlist excludes the states this column must never present
+// as official, checked by `tsc --noEmit` — the frontend's existing verification command.
+// Activating LOW, or widening the union to `string`, breaks the build here rather than
+// silently shipping a reassurance the engine cannot give.
+type Excluded<L extends string> = L extends SupportedRiskLevel ? never : L;
+type ExcludedRiskStates = Excluded<"LOW" | "CRITICAL" | "FAKE" | "REAL">;
+// Each must survive `Excluded` unchanged, which holds only while none is assignable to
+// `SupportedRiskLevel`. If any became supported it would collapse to `never` and this
+// assignment would stop compiling.
+const _EXCLUDED_RISK_STATES: ExcludedRiskStates[] = ["LOW", "CRITICAL", "FAKE", "REAL"];
+void _EXCLUDED_RISK_STATES;
 
 // The three provenance outcomes that are not a C2PA state: the file was read and carries
 // no credentials, the file names a manifest kept somewhere else, and the file could not be
@@ -642,6 +734,10 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     id,
     status,
     created_at,
+    risk_level,
+    risk_rules_version,
+    risk_rule_id,
+    risk_calibration_id,
     original_filename,
     declared_content_type,
     was_normalized,
@@ -651,6 +747,14 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     active_speaker,
     audio_authenticity,
   } = payload as Record<string, unknown>;
+
+  // Each parsed on its own three-way rule: a real value, a legitimate null, or `undefined`
+  // for a payload that is neither. Null is preserved rather than defaulted — the whole
+  // point of the column is that "no decision" is a state of its own.
+  const riskLevel = parseOptionalString(risk_level);
+  const riskRulesVersion = parseOptionalString(risk_rules_version);
+  const riskRuleId = parseOptionalString(risk_rule_id);
+  const riskCalibrationId = parseOptionalString(risk_calibration_id);
 
   const signal = parseSignal(synthetic_video);
   const provenanceSignal = parseProvenance(provenance);
@@ -664,6 +768,10 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     typeof created_at !== "string" ||
     typeof declared_content_type !== "string" ||
     typeof was_normalized !== "boolean" ||
+    riskLevel === undefined ||
+    riskRulesVersion === undefined ||
+    riskRuleId === undefined ||
+    riskCalibrationId === undefined ||
     signal === undefined ||
     provenanceSignal === undefined ||
     activeSpeaker === undefined ||
@@ -678,6 +786,10 @@ function parseAnalysis(payload: unknown): AnalysisSummary | null {
     id,
     status,
     created_at,
+    risk_level: riskLevel,
+    risk_rules_version: riskRulesVersion,
+    risk_rule_id: riskRuleId,
+    risk_calibration_id: riskCalibrationId,
     original_filename,
     declared_content_type,
     was_normalized,
@@ -1006,6 +1118,116 @@ function Provenance({ signal }: { signal: ProvenanceSignal | null }) {
   );
 }
 
+/**
+ * Whether an analysis has run its course, and so whether a decision is still owed.
+ *
+ * Only `completed` and `failed` are ends. Everything before them — `queued`, and whatever
+ * the pipeline calls the states in between — is an analysis whose risk decision has simply
+ * not been taken yet, which is why the absence is named against the status rather than
+ * being read as a verdict of its own.
+ */
+function isDecided(status: string): boolean {
+  return status === ANALYSIS_STATUS_COMPLETED || status === ANALYSIS_STATUS_FAILED;
+}
+
+/** The head of the calibration hash. The full value stays on hover, never truncated away. */
+function shortCalibration(id: string): string {
+  return `${id.slice(0, 8)}…`;
+}
+
+/**
+ * The risk DeepGuard classified one analysis at, with the trace that makes it explainable.
+ *
+ * This is a **risk** classification, not a Fake/Real determination, and the column is
+ * worded throughout so it cannot be read as one. `High risk` says the calibrated evidence
+ * crossed a threshold measured for that purpose; it does not say the media is a deepfake.
+ * `Medium risk` is the indeterminate band — evidence that settles nothing — and emphatically
+ * not "probably synthetic". No level here rules anything out either: an analysis that is
+ * not HIGH has not been cleared of face manipulation, it has only failed to trip a rule
+ * that looks at one calibrated signal.
+ *
+ * Five states, deliberately never merged into fewer:
+ *
+ * - a level the engine concluded (`HIGH`, `MEDIUM`, `UNKNOWN`);
+ * - no decision on an analysis still working, which is `Pending`;
+ * - no decision on an analysis that finished, which is nothing at all — everything stored
+ *   before the engine existed;
+ * - `UNKNOWN`, which belongs to the first group and not the last two: the engine ran, a
+ *   rule fired, and the answer is that the evidence supports no classification;
+ * - a non-null level outside the allowlist, which is `Unsupported` — the row holds a state
+ *   this build has no calibrated meaning for, and saying so is the whole of what is known.
+ *
+ * The decision is displayed exactly as the API read it off the row. Nothing here derives a
+ * level, and in particular nothing looks at the detector scores in the same row to do it:
+ * the decision was taken once, under a named ruleset, and re-deriving it in a browser would
+ * let the page contradict the record.
+ *
+ * What the page will not do is repeat a value it cannot vouch for. Presenting an unknown
+ * string in the risk column would let whatever is in the database — a level from a later
+ * ruleset, a `LOW` this ruleset disabled, a hand-written `FAKE` — appear as an official
+ * DeepGuard classification, and the dashboard has no basis for any of those. So the badge is
+ * reserved for the allowlist and everything else is named as unsupported.
+ */
+function Risk({ analysis }: { analysis: AnalysisSummary }) {
+  const level = analysis.risk_level;
+
+  if (level === null) {
+    return isDecided(analysis.status) ? (
+      <>{ABSENT}</>
+    ) : (
+      <span title={`Analysis ${analysis.status}: no risk decision has been taken yet.`}>
+        {PENDING}
+      </span>
+    );
+  }
+
+  // The stored value is only ever a lookup key, never something to echo. A level that is
+  // not on the allowlist gets the unsupported state and neutral styling; the raw string
+  // stays available for diagnosis on hover, where it reads as the datum it is rather than
+  // as a risk class this product recognizes.
+  if (!isSupportedRiskLevel(level)) {
+    return (
+      <div>
+        <div
+          className={`inline-block rounded px-1.5 py-0.5 ${RISK_UNSUPPORTED_STYLE}`}
+          title={`Stored risk state ${level} is not a supported DeepGuard risk classification${
+            analysis.risk_rules_version ? ` (ruleset ${analysis.risk_rules_version})` : ""
+          }.`}
+        >
+          {UNSUPPORTED}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className={`inline-block rounded px-1.5 py-0.5 ${RISK_STYLES[level]}`}>
+        {RISK_LABELS[level]}
+      </div>
+      {analysis.risk_rules_version && (
+        <div className="opacity-60">{analysis.risk_rules_version}</div>
+      )}
+      {/* The rest of the trace, one <details> away. A level is only explainable alongside
+          the rule that produced it and the measurement that rule was calibrated on, so
+          all three stay reachable without a detail page or any client-side state. */}
+      <details className="mt-0.5">
+        <summary className="cursor-pointer opacity-60">Trace</summary>
+        <ul className="mt-1 space-y-0.5">
+          <li>Rule: {analysis.risk_rule_id ?? ABSENT}</li>
+          <li>Ruleset: {analysis.risk_rules_version ?? ABSENT}</li>
+          <li title={analysis.risk_calibration_id ?? undefined}>
+            Calibration:{" "}
+            {analysis.risk_calibration_id
+              ? shortCalibration(analysis.risk_calibration_id)
+              : ABSENT}
+          </li>
+        </ul>
+      </details>
+    </div>
+  );
+}
+
 /** The provider's frame rate as text, without inventing precision it does not have. */
 function frameRateText(rate: number): string {
   return Number.isInteger(rate) ? `${rate}` : rate.toFixed(2);
@@ -1050,6 +1272,7 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
             <th className="py-2 pr-4 font-medium">Declared type</th>
             <th className="py-2 pr-4 font-medium">Media (ffprobe)</th>
             <th className="py-2 pr-4 font-medium">Status</th>
+            <th className="py-2 pr-4 font-medium">Risk</th>
             <th className="py-2 pr-4 font-medium">Normalized</th>
             <th className="py-2 pr-4 font-medium">NVIDIA SVD</th>
             <th className="py-2 pr-4 font-medium">Synthetic probability</th>
@@ -1079,6 +1302,12 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
                 <Media media={analysis.media} />
               </td>
               <td className="py-2 pr-4">{analysis.status}</td>
+              {/* DeepGuard's own classification of the calibrated evidence — a risk level
+                  and the ruleset that produced it, never a Fake/Real verdict. Read from
+                  the analysis row as the engine committed it, never recomputed here. */}
+              <td className="py-2 pr-4 align-top font-mono text-xs whitespace-nowrap">
+                <Risk analysis={analysis} />
+              </td>
               <td className="py-2 pr-4">{analysis.was_normalized ? "yes" : "no"}</td>
               {/* The detector's own state, verbatim: SUCCESS, FAILED or TIMEOUT are three
                   different forensic facts, and an analysis may carry no signal at all. */}
@@ -1176,6 +1405,22 @@ export default async function Home() {
 
       <section className="rounded-lg border border-black/10 p-6 dark:border-white/15">
         <h2 className="text-lg font-semibold">Recent analyses</h2>
+        <p className="mt-1 text-sm opacity-70">
+          Risk is a deterministic DeepGuard classification based on calibrated forensic
+          evidence. It is not a Fake/Real determination.{" "}
+          <span className="font-mono">{RISK_LABELS.MEDIUM}</span> is the indeterminate band
+          — evidence that settles nothing either way — and the absence of{" "}
+          <span className="font-mono">{RISK_LABELS.HIGH}</span> does not rule out face
+          manipulation. <span className="font-mono">{RISK_LABELS.UNKNOWN}</span> means the
+          engine ran and could not classify, which is not the same as{" "}
+          <span className="font-mono">{PENDING}</span>, where no decision has been taken
+          yet, or <span className="font-mono">{ABSENT}</span>, where an analysis finished
+          before there was an engine to take one. Each level is shown with the ruleset that
+          produced it, since the same word means something different under a different one.{" "}
+          <span className="font-mono">{UNSUPPORTED}</span> means the stored state is not one
+          this build classifies under, so it is reported as unsupported rather than shown as
+          a risk class DeepGuard has no calibrated meaning for.
+        </p>
         <p className="mt-1 text-sm opacity-70">
           Synthetic probability is NVIDIA&apos;s own score for its synthetic-video detector,
           shown as returned. It is not a verdict.

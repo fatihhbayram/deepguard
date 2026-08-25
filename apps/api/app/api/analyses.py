@@ -326,13 +326,35 @@ class AnalysisSummary(BaseModel):
     """One row of the dashboard listing.
 
     Deliberately narrower than `CreatedAnalysis`: only what the list view renders. The
-    storage keys and derivative identity are not shown there, and risk and report fields
-    do not exist yet.
+    storage keys and derivative identity are not shown there, and report fields do not
+    exist yet.
+
+    The risk fields are read straight off the `analyses` row. Nothing here evaluates a
+    rule or looks at a detector score: the decision the worker committed is the decision,
+    and recomputing it in a read path would let the listing disagree with the record it is
+    supposed to be showing.
     """
 
     id: uuid.UUID
     status: str
     created_at: datetime
+    # What the risk engine concluded, as it was persisted: `HIGH`, `MEDIUM` or `UNKNOWN`.
+    # `LOW` is measured but not activated in ruleset v1, so no analysis carries it.
+    #
+    # Null and `UNKNOWN` are two different facts and must never be folded together. Null
+    # is the absence of a decision — an analysis still queued or being worked on, or one
+    # completed before the engine existed. `UNKNOWN` is a decision: the engine ran, a rule
+    # fired, and the answer is that the evidence does not support a classification.
+    risk_level: str | None = None
+    # The trace behind the level: which immutable ruleset was in force, which single rule
+    # fired, and which calibration measurement its thresholds came from. Null exactly when
+    # `risk_level` is, since all four columns are written in one transaction.
+    #
+    # Without these a stored level is unreadable once the rules move on — `HIGH` under
+    # `p7-v1.0.0` is not the same statement as `HIGH` under whatever replaces it.
+    risk_rules_version: str | None = None
+    risk_rule_id: str | None = None
+    risk_calibration_id: str | None = None
     original_filename: str | None
     # Named for what it is: the MIME the client declared. ffprobe proves the bytes are
     # video, but it never confirms this string, so the listing must not imply it did.
@@ -891,6 +913,12 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
     cut. All four are fixed in number: none grows with how many analyses are listed, so
     there is no query per analysis.
 
+    The risk decision rides along on the analysis row itself, so it costs neither a join
+    nor a statement. It is read, never taken: this endpoint does not call the risk engine
+    and does not look at a detector score to decide anything, because the decision the
+    worker committed under a named ruleset is the decision, and a read path that recomputed
+    it could quietly answer differently from the record.
+
     Ordering falls back to the id because `created_at` defaults to the transaction
     timestamp, which two analyses committed together can share — without the tiebreak
     their relative order would be arbitrary between calls.
@@ -908,6 +936,12 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
                 Analysis.id,
                 Analysis.status,
                 Analysis.created_at,
+                # The persisted decision and its trace. Already on the analysis row, so
+                # naming them costs no extra statement and nothing is recomputed.
+                Analysis.risk_level,
+                Analysis.risk_rules_version,
+                Analysis.risk_rule_id,
+                Analysis.risk_calibration_id,
                 MediaFile.original_filename,
                 MediaFile.content_type,
                 MediaFile.size_bytes,
@@ -1010,6 +1044,11 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
             id=row.id,
             status=row.status,
             created_at=row.created_at,
+            # Passed through exactly as stored, null included.
+            risk_level=row.risk_level,
+            risk_rules_version=row.risk_rules_version,
+            risk_rule_id=row.risk_rule_id,
+            risk_calibration_id=row.risk_calibration_id,
             original_filename=row.original_filename,
             declared_content_type=row.content_type,
             size_bytes=row.size_bytes,
