@@ -7,6 +7,11 @@ no gRPC — because what is under test is this module's own work: the integers i
 frames it collapses into time ranges, the failures it converts into a signal, and the audio
 it must not extract twice.
 
+The chain is driven through `analyse_audio`, which is what actually prepares that audio since
+P6-T3 and hands the same WAV to a fourth reader. The active-speaker half of what it returns
+is what this module looks at; the local checkpoint is stubbed out and is covered in
+`test_audio_authenticity_detection.py`.
+
 Persistence is not here. Nothing in this module opens a transaction or writes a row.
 """
 
@@ -19,7 +24,7 @@ from app import detection, nvidia_active_speaker, speaker_diarization
 from app.detection import (
     ACTIVE_SPEAKER_SIGNAL,
     MAX_PERSISTED_SPEAKING_SEGMENTS,
-    detect_active_speaker,
+    analyse_audio,
     diarization_for_nvidia,
     speaker_ids,
     speaking_runs,
@@ -152,8 +157,25 @@ def fake_nvidia(monkeypatch):
     return recorder
 
 
+@pytest.fixture(autouse=True)
+def fake_aasist(monkeypatch):
+    """Stand in for the local checkpoint, which shares this chain's WAV and nothing else.
+
+    Autouse so no test here loads onnxruntime or a 1.6 MB model to exercise NVIDIA's half of
+    the pair. What it returns is irrelevant to every assertion below — that it is called at
+    all, and cannot disturb the active-speaker signal, is the point.
+    """
+
+    def analyze(audio_path, **kwargs):
+        raise detection.AudioDetectorError("stubbed out")
+
+    monkeypatch.setattr(detection, "analyze_audio_authenticity", analyze)
+
+
 def run(video=VIDEO, frame_rate=FRAME_RATE):
-    return asyncio.run(detect_active_speaker(video, frame_rate))
+    """The active-speaker half of what the orchestrator returns."""
+    speaker, _audio = asyncio.run(analyse_audio(video, frame_rate))
+    return speaker
 
 
 # --- mapping pyannote's labels onto NVIDIA's integers -------------------------------------

@@ -28,6 +28,11 @@ from app import (
     storage,
     worker,
 )
+from app.audio_detector import (
+    AudioAuthenticityEvidence,
+    AudioDetectorModelUnavailable,
+    WindowEvidence,
+)
 from app.c2pa_extractor import C2paEvidence
 from app.db.models import (
     Analysis,
@@ -58,6 +63,15 @@ C2PA_SDK_VERSION = "0.90.14"
 C2PA_SIGNATURE_ISSUER = "Test Signing Cert"
 
 ASD_FUNCTION_ID = "f286f937-05c4-454b-8312-fba67a2a6fa7"
+
+# The pinned AASIST artifact, and the shape of the audio it is fed. Restated rather than
+# imported, so a checkpoint or a window length changed without anyone noticing shows up here
+# as a failing test instead of a silently different measurement.
+AASIST_REPOSITORY = "SpeechAntiSpoofingBenchmarks/AASIST"
+AASIST_REVISION = "16774d458d86d2a021ae31646c1bf66a5331b53e"
+AASIST_SHA256 = "130e536266b7c537f9a13029e1612a9f392fd1cc827783683b6d1c062a3db5e1"
+AASIST_WINDOW_SAMPLES = 64600
+AASIST_SAMPLE_RATE = 16000
 # The rate every queued upload below is probed at, and therefore the rate NVIDIA's frame
 # indices are read against.
 QUEUED_FRAME_RATE = 30.0
@@ -357,6 +371,53 @@ def fake_active_speaker(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def fake_aasist(monkeypatch):
+    """Stand in for the local checkpoint, so no test here loads onnxruntime or a model file.
+
+    Three windows of scripted raw output, which is enough to prove the rows land in
+    chronological order and keep both of the model's figures.
+    """
+
+    class Recorder:
+        def __init__(self):
+            self.error = None
+            self.audio_paths = []
+            self.evidence = AudioAuthenticityEvidence(
+                model_repository=AASIST_REPOSITORY,
+                model_revision=AASIST_REVISION,
+                model_sha256=AASIST_SHA256,
+                sample_rate=AASIST_SAMPLE_RATE,
+                channels=1,
+                window_samples=AASIST_WINDOW_SAMPLES,
+                window_padding_scheme="repeat-tile",
+                total_samples=3 * AASIST_WINDOW_SAMPLES,
+                windows=tuple(
+                    WindowEvidence(
+                        window_index=index,
+                        start_sample=index * AASIST_WINDOW_SAMPLES,
+                        end_sample=(index + 1) * AASIST_WINDOW_SAMPLES,
+                        padded_samples=0,
+                        logits=logits,
+                        bona_fide_logit=logits[1],
+                    )
+                    # Deliberately disagreeing with each other, the way genuine speech does
+                    # across consecutive windows (P6-T1 §7).
+                    for index, logits in enumerate([(-1.5, 4.25), (2.0, -0.5), (-0.75, 3.0)])
+                ),
+            )
+
+        def analyze(self, audio_path, **kwargs):
+            self.audio_paths.append(Path(audio_path))
+            if self.error:
+                raise self.error
+            return self.evidence
+
+    recorder = Recorder()
+    monkeypatch.setattr(detection, "analyze_audio_authenticity", recorder.analyze)
+    return recorder
+
+
+@pytest.fixture(autouse=True)
 def fake_c2pa(monkeypatch):
     """Stand in for the C2PA reader, which would reject the fake video bytes outright.
 
@@ -624,7 +685,12 @@ def test_both_evidence_sources_are_persisted_as_independent_signals(queue, fake_
 
     signals = read_signals(analysis_id)
 
-    assert sorted(signals) == ["active_speaker", "provenance", "synthetic_video"]
+    assert sorted(signals) == [
+        "active_speaker",
+        "audio_authenticity",
+        "provenance",
+        "synthetic_video",
+    ]
     assert read_job(job_id).status == "completed"
 
     provenance = signals["provenance"]
@@ -1070,7 +1136,7 @@ def test_a_derivative_upload_failure_leaves_nothing_on_disk(
 
 
 @pytest.mark.integration
-def test_all_three_evidence_sources_are_persisted_as_independent_signals(
+def test_all_four_evidence_sources_are_persisted_as_independent_signals(
     queue, fake_storage
 ):
     analysis_id, job_id = queue()
@@ -1081,7 +1147,12 @@ def test_all_three_evidence_sources_are_persisted_as_independent_signals(
     signals = read_signals(analysis_id)
 
     assert read_job(job_id).status == "completed"
-    assert sorted(signals) == ["active_speaker", "provenance", "synthetic_video"]
+    assert sorted(signals) == [
+        "active_speaker",
+        "audio_authenticity",
+        "provenance",
+        "synthetic_video",
+    ]
 
     speaker = signals["active_speaker"]
     # NVIDIA answers two questions about one analysis, and they are two rows: the provider
@@ -1170,10 +1241,11 @@ def test_each_signal_owns_only_its_own_evidence(queue, fake_storage):
 
     signals = read_signals(analysis_id)
 
-    # Two signals with segments, and no row belongs to both. Provenance owns none at all:
-    # it produces no timeline evidence.
+    # Three signals with evidence rows, and no row belongs to two of them. Provenance owns
+    # none at all: it produces no within-media evidence.
     assert len(read_segments(signals["synthetic_video"].id)) == 2
     assert len(read_segments(signals["active_speaker"].id)) == 2
+    assert len(read_segments(signals["audio_authenticity"].id)) == 3
     assert read_segments(signals["provenance"].id) == []
 
 
@@ -1230,7 +1302,7 @@ def test_the_prepared_artifact_is_what_both_nvidia_signals_see(
 
 @pytest.mark.integration
 def test_the_audio_is_extracted_once_from_that_artifact(
-    queue, fake_storage, fake_audio, fake_diarization, fake_active_speaker
+    queue, fake_storage, fake_audio, fake_diarization, fake_active_speaker, fake_aasist
 ):
     queue(was_normalized=True)
 
@@ -1238,7 +1310,7 @@ def test_the_audio_is_extracted_once_from_that_artifact(
         worker.process_one(session)
 
     # One extraction for the whole job: doing it per consumer would decode the same media
-    # twice to produce two identical files.
+    # three times to produce three identical files.
     assert len(fake_audio.calls) == 1
     _, destination = fake_audio.calls[0]
 
@@ -1248,6 +1320,9 @@ def test_the_audio_is_extracted_once_from_that_artifact(
     _, _, nvidia_audio = fake_active_speaker.calls[0]
     assert fake_diarization.audio_paths == [destination]
     assert nvidia_audio == destination
+    # And the local checkpoint reads that same file rather than extracting its own, so
+    # every audio signal on this analysis describes one recording.
+    assert fake_aasist.audio_paths == [destination]
 
 
 @pytest.mark.integration
@@ -1280,6 +1355,13 @@ def test_media_with_no_audio_keeps_the_other_two_signals(queue, fake_storage, fa
     assert read_analysis(analysis_id).status == "completed"
     assert signals["active_speaker"].status == "FAILED"
     assert signals["active_speaker"].signal_metadata == {
+        "error": "SpeakerDiarizationAudioError"
+    }
+    # Both audio-dependent signals were waiting on the same file, so both record the gap —
+    # each in its own row, neither standing in for the other.
+    assert signals["audio_authenticity"].provider == "aasist"
+    assert signals["audio_authenticity"].status == "FAILED"
+    assert signals["audio_authenticity"].signal_metadata == {
         "error": "SpeakerDiarizationAudioError"
     }
     # Silent video is common, and it says nothing about whether the video is synthetic or
@@ -1370,10 +1452,14 @@ def test_a_synthetic_video_failure_does_not_cost_the_speaker_timeline(
 
 
 @pytest.mark.integration
-def test_media_that_cannot_be_transcoded_fails_both_nvidia_signals(
+def test_media_that_cannot_be_transcoded_fails_every_artifact_signal(
     queue, fake_storage, fake_ffmpeg
 ):
-    """Both NIMs are asked about the prepared artifact, so neither is reachable without it."""
+    """All three read the prepared artifact, so none is reachable without it.
+
+    The audio the local checkpoint reads is extracted from that artifact too, which is why
+    a failed transcode reaches it as well even though it calls no provider.
+    """
     analysis_id, job_id = queue(was_normalized=True)
     fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
 
@@ -1385,9 +1471,12 @@ def test_media_that_cannot_be_transcoded_fails_both_nvidia_signals(
     assert read_job(job_id).status == "completed"
     assert signals["synthetic_video"].status == "FAILED"
     assert signals["active_speaker"].status == "FAILED"
+    assert signals["audio_authenticity"].status == "FAILED"
     # Each records the gap in its own right rather than one standing in for the other.
     assert signals["active_speaker"].signal_type == "active_speaker"
     assert signals["active_speaker"].signal_metadata == {"error": "NormalizationError"}
+    assert signals["audio_authenticity"].provider == "aasist"
+    assert signals["audio_authenticity"].signal_metadata == {"error": "NormalizationError"}
     # And the source that had already answered keeps its evidence.
     assert signals["provenance"].status == "SUCCESS"
 
@@ -1407,3 +1496,199 @@ def test_an_active_speaker_failure_leaves_no_temp_files_behind(
     _, destination = fake_audio.calls[0]
     assert not destination.exists()
     assert [path for path in fake_storage.paths if path.exists()] == []
+
+
+# The local audio evidence. A fourth signal, sharing the prepared WAV with active speaker
+# and sharing nothing else.
+
+
+@pytest.mark.integration
+def test_the_audio_signal_is_persisted_without_a_file_level_score(queue, fake_storage):
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signal = read_signals(analysis_id)["audio_authenticity"]
+
+    assert signal.provider == "aasist"
+    assert signal.status == "SUCCESS"
+    # The checkpoint publishes no softmax, threshold or class over its two logits, so there
+    # is no file-level figure to store and none is invented (rule 11).
+    assert signal.score is None
+    assert signal.risk_level is None
+    assert signal.provider_version == f"{AASIST_REPOSITORY}@{AASIST_REVISION}"
+
+
+@pytest.mark.integration
+def test_audio_windows_are_persisted_chronologically_with_both_logits(queue, fake_storage):
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    segments = read_segments(read_signals(analysis_id)["audio_authenticity"].id)
+
+    # One row per window, in the order the recording was cut, each keeping both of the
+    # model's raw outputs in graph order. Neither can be derived from the other, so
+    # dropping one would throw away half of what the model said.
+    assert [s.clip_index for s in segments] == [0, 1, 2]
+    assert [(s.logit, s.bona_fide_logit) for s in segments] == [
+        (-1.5, 4.25),
+        (2.0, -0.5),
+        (-0.75, 3.0),
+    ]
+
+
+@pytest.mark.integration
+def test_audio_window_bounds_are_the_preprocessing_boundaries(queue, fake_storage):
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signal = read_signals(analysis_id)["audio_authenticity"]
+    segments = read_segments(signal.id)
+
+    # 64600 samples at 16 kHz is 4.0375 s. These are the bounds of the windows DeepGuard cut
+    # and fed to the graph — AASIST publishes no chunk-to-time mapping and reports no
+    # segments, so they are never a claim that the model located anything in that interval.
+    assert [(s.start_time, s.end_time) for s in segments] == [
+        (0.0, 4.0375),
+        (4.0375, 8.075),
+        (8.075, 12.1125),
+    ]
+    assert signal.signal_metadata["window_bounds"] == "deepguard_preprocessing"
+    # There is no face and no voice identity in an anti-spoofing result.
+    assert [(s.face_id, s.speaker_label) for s in segments] == [(None, None)] * 3
+
+
+@pytest.mark.integration
+def test_the_audio_signal_records_what_produced_its_windows(queue, fake_storage):
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    metadata = read_signals(analysis_id)["audio_authenticity"].signal_metadata
+
+    # Enough to reproduce the measurement: a different checkpoint revision, sample rate or
+    # window length is a different number, not a refinement of this one.
+    assert metadata["model_repository"] == AASIST_REPOSITORY
+    assert metadata["model_revision"] == AASIST_REVISION
+    assert metadata["model_sha256"] == AASIST_SHA256
+    assert metadata["sample_rate"] == AASIST_SAMPLE_RATE
+    assert metadata["window_samples"] == AASIST_WINDOW_SAMPLES
+    assert metadata["window_padding_scheme"] == "repeat-tile"
+    assert metadata["total_audio_windows"] == 3
+    assert metadata["persisted_audio_windows"] == 3
+    assert metadata["windows_truncated"] is False
+    # Which of the two stored logits carries the meaning upstream gives it.
+    assert metadata["bona_fide_logit_index"] == 1
+
+
+@pytest.mark.integration
+def test_a_truncated_audio_sweep_says_so_on_the_signal(queue, fake_storage, fake_aasist):
+    total = detection.MAX_PERSISTED_AUDIO_WINDOWS + 6
+    fake_aasist.evidence = AudioAuthenticityEvidence(
+        model_repository=AASIST_REPOSITORY,
+        model_revision=AASIST_REVISION,
+        model_sha256=AASIST_SHA256,
+        sample_rate=AASIST_SAMPLE_RATE,
+        channels=1,
+        window_samples=AASIST_WINDOW_SAMPLES,
+        window_padding_scheme="repeat-tile",
+        total_samples=total * AASIST_WINDOW_SAMPLES,
+        windows=tuple(
+            WindowEvidence(
+                window_index=index,
+                start_sample=index * AASIST_WINDOW_SAMPLES,
+                end_sample=(index + 1) * AASIST_WINDOW_SAMPLES,
+                padded_samples=0,
+                # The largest logits are last, so a cap that ranked by magnitude would keep
+                # exactly the windows this one drops.
+                logits=(0.0, 99.0) if index >= total - 3 else (0.0, 0.0),
+                bona_fide_logit=99.0 if index >= total - 3 else 0.0,
+            )
+            for index in range(total)
+        ),
+    )
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signal = read_signals(analysis_id)["audio_authenticity"]
+    segments = read_segments(signal.id)
+
+    assert len(segments) == detection.MAX_PERSISTED_AUDIO_WINDOWS
+    assert [s.clip_index for s in segments] == list(
+        range(detection.MAX_PERSISTED_AUDIO_WINDOWS)
+    )
+    assert signal.signal_metadata["total_audio_windows"] == total
+    assert signal.signal_metadata["windows_truncated"] is True
+
+
+@pytest.mark.integration
+def test_a_broken_checkpoint_costs_only_the_audio_signal(queue, fake_storage, fake_aasist):
+    """A model this container never received says nothing about the media."""
+    analysis_id, job_id = queue()
+    fake_aasist.error = AudioDetectorModelUnavailable("checkpoint is missing")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert signals["audio_authenticity"].status == "FAILED"
+    # The failure kind and nothing else: the message can quote the local artifact's path.
+    assert signals["audio_authenticity"].signal_metadata == {
+        "error": "AudioDetectorModelUnavailable"
+    }
+    assert read_segments(signals["audio_authenticity"].id) == []
+    # Every other source keeps its evidence, down to the rows behind it.
+    assert signals["synthetic_video"].status == "SUCCESS"
+    assert signals["active_speaker"].status == "SUCCESS"
+    assert signals["provenance"].status == "SUCCESS"
+    assert len(read_segments(signals["synthetic_video"].id)) == 2
+    assert len(read_segments(signals["active_speaker"].id)) == 2
+
+
+@pytest.mark.integration
+def test_an_unconfigured_diarizer_does_not_cost_the_audio_windows(
+    queue, fake_storage, fake_diarization
+):
+    """The isolation runs both ways: the checkpoint needs no token and no network."""
+    analysis_id, _ = queue()
+    fake_diarization.error = speaker_diarization.SpeakerDiarizationUnavailable(
+        "HUGGINGFACE_TOKEN is not configured"
+    )
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert signals["active_speaker"].status == "FAILED"
+    assert signals["audio_authenticity"].status == "SUCCESS"
+    assert len(read_segments(signals["audio_authenticity"].id)) == 3
+
+
+@pytest.mark.integration
+def test_the_other_evidence_rows_are_unchanged_by_the_audio_signal(queue, fake_storage):
+    """The synthetic-video and active-speaker rows still look exactly as they did."""
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+    clips = read_segments(signals["synthetic_video"].id)
+    speaking = read_segments(signals["active_speaker"].id)
+
+    assert sorted((s.clip_index, s.logit) for s in clips) == [(0, -2.25), (8, 3.5)]
+    # The column the audio evidence added stays null on every row that is not audio.
+    assert {s.bona_fide_logit for s in clips + speaking} == {None}
+    assert [(s.start_time, s.end_time) for s in speaking] == [(0.0, 1.0), (1.0, 2.0)]
+    assert [s.speaker_label for s in speaking] == ["SPEAKER_00", "SPEAKER_01"]

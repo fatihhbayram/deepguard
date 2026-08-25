@@ -7,8 +7,8 @@ schedule.
 Three transactions per job, never one:
 
 1. claim — take a `queued` job, mark it `processing`, commit, release the lock;
-2. nothing — the download, provenance, transcoding, diarization and both NVIDIA
-   inferences all happen with no transaction open at all;
+2. nothing — the download, provenance, transcoding, diarization, both NVIDIA inferences
+   and the local audio checkpoint all happen with no transaction open at all;
 3. finish — write the derivative's identity and the evidence, and close the job out.
 
 The middle step is the reason for the other two. NVIDIA can take minutes on one video and
@@ -55,9 +55,10 @@ from app.db.session import SessionLocal
 from app.detection import (
     ACTIVE_SPEAKER_SIGNAL,
     SYNTHETIC_VIDEO_SIGNAL,
-    detect_active_speaker,
+    analyse_audio,
     detect_synthetic_video,
     extract_provenance,
+    unanalysable_audio,
     undetectable_media,
 )
 from app.normalization import NormalizationError, normalize_to_mp4
@@ -236,17 +237,19 @@ def run_detection(path: Path):
     return asyncio.run(detect_synthetic_video(path))
 
 
-def run_active_speaker(path: Path, frame_rate: float):
-    """Ask NVIDIA who is speaking when in the prepared artifact.
+def run_audio_evidence(path: Path, frame_rate: float):
+    """Ask both audio questions about the prepared artifact, off one extracted WAV.
 
     A second event loop rather than one shared with the detection above, because the two
     are independent evidence and are deliberately not made to depend on each other's
     lifetime: one being slow, cancelled or broken must not reach into the other.
 
-    The whole chain — audio extraction, diarization, NVIDIA — happens inside this one
-    call, so the temporary WAV never outlives it.
+    Active speaker and AASIST share this loop because they share the WAV, and only that.
+    The whole chain — audio extraction, diarization, NVIDIA, the local checkpoint —
+    happens inside this one call, so the temporary WAV never outlives it, and the two
+    answers it returns are still separate signals that never inform each other.
     """
-    return asyncio.run(detect_active_speaker(path, frame_rate))
+    return asyncio.run(analyse_audio(path, frame_rate))
 
 
 @dataclass(frozen=True)
@@ -266,10 +269,10 @@ class SignalEvidence:
 class Evidence:
     """Everything asking about one prepared artifact produced, and what preparing it left.
 
-    Both NVIDIA signals travel together because both are asked about the same artifact and
-    the transcode that produces it either serves both or neither. They are still wholly
+    All three travel together because all three are asked about the same artifact and the
+    transcode that produces it either serves them or none of them. They are still wholly
     separate findings — separate rows, separate statuses, separate evidence — and one
-    failing says nothing about the other.
+    failing says nothing about the others.
 
     The derivative's identity travels with them because it succeeds or fails with the
     preparation: there is no derivative to record when the transcode is what went wrong,
@@ -278,26 +281,30 @@ class Evidence:
 
     detection: SignalEvidence
     active_speaker: SignalEvidence
+    audio_authenticity: SignalEvidence
     derivative_storage_key: str | None = None
     derivative_sha256: str | None = None
 
 
 def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
-    """Prepare the artifact NVIDIA needs, ask both questions about it, report the outcomes.
+    """Prepare the artifact detection needs, ask every question about it, report the outcomes.
 
-    One preparation serves both: the transcode is the expensive step and the artifact it
-    produces is exactly what each NIM wants, so it is produced once and held for the
-    length of both calls rather than transcoded twice.
+    One preparation serves them all: the transcode is the expensive step and the artifact
+    it produces is exactly what each NIM wants and what the analysable audio is extracted
+    from, so it is produced once and held for the length of every call rather than
+    transcoded again per consumer.
 
-    Active speaker is run second and cannot fail this job. `detect_active_speaker` records
-    every failure of its own chain as a signal, so a missing Hugging Face token or an
-    unreachable second NVIDIA function costs that one signal and nothing else.
+    The audio pair is run second and cannot fail this job. `analyse_audio` records every
+    failure of its own chains as a signal, so a missing Hugging Face token, an unreachable
+    second NVIDIA function or a missing local checkpoint costs the affected signal and
+    nothing else.
 
     Media that cannot be transcoded is a fact about the media, so it becomes a failed
     signal rather than a failed job — the same treatment a provider that refuses gets, and
     for the same reason: the provenance already read off this file must not be thrown away
-    because ffmpeg could not produce an MP4. Both NVIDIA signals record it, because
-    neither provider was reachable without the artifact.
+    because ffmpeg could not produce an MP4. All three artifact-dependent signals record
+    it, because none of them was reachable without the artifact — the audio the local
+    checkpoint reads is extracted from it too.
 
     `NormalizationUnavailable` is deliberately not caught. ffmpeg missing from the image is
     a broken container, not broken media, and recording it as evidence about the video
@@ -311,14 +318,17 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
             # the artifact just handed over: a derivative was transcoded to hold exactly
             # this rate constant, and media that needed no derivative is the original,
             # whose probed rate this is.
-            speaker_signal, speaker_segments = run_active_speaker(
-                artifact.path, claimed.frame_rate
+            (speaker_signal, speaker_segments), (audio_signal, audio_segments) = (
+                run_audio_evidence(artifact.path, claimed.frame_rate)
             )
 
             return Evidence(
                 detection=SignalEvidence(signal=signal, segments=segments),
                 active_speaker=SignalEvidence(
                     signal=speaker_signal, segments=speaker_segments
+                ),
+                audio_authenticity=SignalEvidence(
+                    signal=audio_signal, segments=audio_segments
                 ),
                 derivative_storage_key=artifact.storage_key,
                 derivative_sha256=artifact.sha256,
@@ -331,6 +341,9 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
             ),
             active_speaker=SignalEvidence(
                 signal=undetectable_media(error, ACTIVE_SPEAKER_SIGNAL), segments=[]
+            ),
+            audio_authenticity=SignalEvidence(
+                signal=unanalysable_audio(error), segments=[]
             ),
         )
 
@@ -354,11 +367,11 @@ def complete_job(
     name an object no analysis had used, and a key committed after would leave a completed
     analysis unable to say what was detected.
 
-    All three signals are written as separate rows and none waits on another: they are
+    All four signals are written as separate rows and none waits on another: they are
     independent evidence, and an analysis that got provenance and a speaker timeline but
     no synthetic-video verdict — or any other combination — records exactly that.
-    Provenance is the one that never owns segments; it produces no timeline evidence at
-    all, while the two NVIDIA signals each own their own and never share a row.
+    Provenance is the one that never owns segments; it produces no evidence rows at all,
+    while the other three each own their own and never share a row.
 
     A detector that failed still finishes the job, and so does media that could not be
     transcoded for one. Neither is a fact about this worker — both are already recorded as
@@ -371,6 +384,7 @@ def complete_job(
         SignalEvidence(signal=provenance_signal, segments=[]),
         evidence.detection,
         evidence.active_speaker,
+        evidence.audio_authenticity,
     )
 
     for entry in persisted:
@@ -492,11 +506,12 @@ def process_one(session: Session) -> bool:
         return True
 
     logger.info(
-        "Completed job %s with a %s detection signal, a %s active-speaker signal and a %s "
-        "provenance signal%s.",
+        "Completed job %s with a %s detection signal, a %s active-speaker signal, a %s "
+        "audio-authenticity signal and a %s provenance signal%s.",
         claimed.job_id,
         evidence.detection.signal.status,
         evidence.active_speaker.signal.status,
+        evidence.audio_authenticity.signal.status,
         provenance_signal.status,
         " against a normalized derivative" if evidence.derivative_storage_key else "",
     )

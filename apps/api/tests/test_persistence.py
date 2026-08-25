@@ -141,17 +141,20 @@ def test_migration_created_the_analysis_schema(database):
         "metadata",
         "created_at",
     }
-    # Clip evidence carries the two facts NVIDIA reports and nothing else: no start_time,
-    # no end_time, no score, no risk_level. Times would have to be invented, and a clip
-    # logit is not a probability (D019).
+    # Evidence rows carry what their source reports and nothing else: no score and no
+    # risk_level anywhere. A clip logit is not a probability (D019), and neither is an
+    # audio one.
     assert {column["name"] for column in inspector.get_columns("analysis_segments")} == {
         "id",
         "signal_id",
-        # Clip evidence, from the synthetic-video detector.
+        # Clip evidence, from the synthetic-video detector. Audio window evidence reuses
+        # `clip_index` for the window's place in the sequence and fills both logits.
         "clip_index",
         "logit",
-        # Temporal evidence, from Active Speaker Detection. A row fills one group or the
-        # other; neither is required, because neither provider reports the other's facts.
+        "bona_fide_logit",
+        # Temporal evidence, from Active Speaker Detection, and the preprocessing bounds of
+        # an audio window. A row fills the group its source has facts for; none is required,
+        # because no source reports another's facts.
         "start_time",
         "end_time",
         "face_id",
@@ -177,6 +180,9 @@ def test_neither_kind_of_segment_evidence_is_required(database):
     assert columns["end_time"]["nullable"] is True
     assert columns["face_id"]["nullable"] is True
     assert columns["speaker_label"]["nullable"] is True
+    # Only AASIST emits a second figure for one scored unit; every other source leaves it
+    # empty rather than repeating the first.
+    assert columns["bona_fide_logit"]["nullable"] is True
 
 
 def test_analysis_and_media_round_trip_through_postgresql(session):
@@ -806,3 +812,194 @@ def test_the_listing_returns_at_most_the_display_count_of_clips(session):
     assert [segment["clip_index"] for segment in segments] == list(
         range(DASHBOARD_SEGMENTS + 2, 2, -1)
     )
+
+
+# Audio window evidence. The third source to write into `analysis_segments`, and the first
+# whose rows carry two figures for one scored unit.
+
+
+def aasist_signal(analysis_id: uuid.UUID, **overrides) -> AnalysisSignal:
+    """A signal row shaped exactly like the one a successful audio reading persists."""
+    values = {
+        "analysis_id": analysis_id,
+        "provider": "aasist",
+        "signal_type": "audio_authenticity",
+        # The checkpoint publishes no calibration over its logits, so there is no
+        # file-level figure and the column stays empty.
+        "score": None,
+        "provider_version": (
+            "SpeechAntiSpoofingBenchmarks/AASIST@16774d458d86d2a021ae31646c1bf66a5331b53e"
+        ),
+        "status": SIGNAL_STATUS_SUCCESS,
+        "signal_metadata": {
+            "sample_rate": 16000,
+            "window_samples": 64600,
+            "total_audio_windows": 2,
+            "persisted_audio_windows": 2,
+            "windows_truncated": False,
+            "window_bounds": "deepguard_preprocessing",
+            "bona_fide_logit_index": 1,
+        },
+    }
+
+    return AnalysisSignal(**{**values, **overrides})
+
+
+def audio_window(signal_id: uuid.UUID, index: int, logits, bounds) -> AnalysisSegment:
+    """An audio window row shaped exactly like the one an audio reading persists."""
+    return AnalysisSegment(
+        signal_id=signal_id,
+        clip_index=index,
+        logit=logits[0],
+        bona_fide_logit=logits[1],
+        start_time=bounds[0],
+        end_time=bounds[1],
+    )
+
+
+def test_audio_window_evidence_round_trips_through_postgresql(session):
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    signal = aasist_signal(analysis.id)
+    db.add(signal)
+    db.flush()
+    db.add_all(
+        [
+            audio_window(signal.id, 0, (-1.5, 4.25), (0.0, 4.0375)),
+            audio_window(signal.id, 1, (2.0, -0.5), (4.0375, 8.075)),
+        ]
+    )
+    db.commit()
+
+    with SessionLocal() as reader:
+        stored = (
+            reader.query(AnalysisSegment)
+            .filter(AnalysisSegment.signal_id == signal.id)
+            .order_by(AnalysisSegment.clip_index)
+            .all()
+        )
+
+    # Both of the model's raw outputs survive, in graph order and at full double precision.
+    # Neither can be derived from the other, so a schema that held one would have lost half
+    # of what the model said.
+    assert [(row.logit, row.bona_fide_logit) for row in stored] == [
+        (-1.5, 4.25),
+        (2.0, -0.5),
+    ]
+    # 64600 samples at 16 kHz, exactly, in the order the recording was cut.
+    assert [(row.start_time, row.end_time) for row in stored] == [
+        (0.0, 4.0375),
+        (4.0375, 8.075),
+    ]
+    assert [row.clip_index for row in stored] == [0, 1]
+    # No face and no voice identity in an anti-spoofing result.
+    assert [(row.face_id, row.speaker_label) for row in stored] == [(None, None)] * 2
+
+
+def test_an_audio_signal_persists_without_a_score(session):
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    db.add(aasist_signal(analysis.id))
+    db.commit()
+
+    with SessionLocal() as reader:
+        stored = reader.query(AnalysisSignal).filter_by(analysis_id=analysis.id).one()
+
+    assert stored.provider == "aasist"
+    assert stored.signal_type == "audio_authenticity"
+    assert stored.status == SIGNAL_STATUS_SUCCESS
+    assert stored.score is None
+    assert stored.risk_level is None
+    assert stored.signal_metadata["window_bounds"] == "deepguard_preprocessing"
+
+
+def test_the_audio_signal_is_independent_of_the_other_evidence(session):
+    """Four sources, four rows, one analysis — and none of them waits on another."""
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    detection_signal = nvidia_signal(analysis.id)
+    audio_signal = aasist_signal(analysis.id, status=SIGNAL_STATUS_FAILED, score=None)
+    db.add_all([detection_signal, audio_signal])
+    db.flush()
+    db.add_all(
+        [
+            nvidia_segment(detection_signal.id, 8, 3.5),
+            nvidia_segment(detection_signal.id, 0, -2.25),
+        ]
+    )
+    db.commit()
+
+    with SessionLocal() as reader:
+        clips = (
+            reader.query(AnalysisSegment)
+            .filter(AnalysisSegment.signal_id == detection_signal.id)
+            .all()
+        )
+        audio_rows = (
+            reader.query(AnalysisSegment)
+            .filter(AnalysisSegment.signal_id == audio_signal.id)
+            .all()
+        )
+
+    # A failed audio reading owns no rows, and the clip evidence beside it is untouched —
+    # including the column the audio source added, which stays null on rows that are not
+    # audio rather than repeating a figure NVIDIA never gave.
+    assert audio_rows == []
+    assert sorted((row.clip_index, row.logit) for row in clips) == [(0, -2.25), (8, 3.5)]
+    assert {row.bona_fide_logit for row in clips} == {None}
+
+
+def test_deleting_an_analysis_takes_its_audio_evidence_with_it(session):
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    signal = aasist_signal(analysis.id)
+    db.add(signal)
+    db.flush()
+    db.add(audio_window(signal.id, 0, (-1.5, 4.25), (0.0, 4.0375)))
+    db.commit()
+
+    db.query(Analysis).filter(Analysis.id == analysis.id).delete()
+    db.commit()
+
+    with SessionLocal() as reader:
+        assert reader.query(AnalysisSegment).filter_by(signal_id=signal.id).count() == 0
+
+
+def test_the_audio_signal_does_not_reach_the_listing_yet(session):
+    """The dashboard is P6-T4. Until then the evidence is stored and simply not read.
+
+    Every join in the listing names one provider and one signal type, so a fourth signal
+    on the same analysis cannot multiply its rows or land in another source's fields.
+    """
+    db, created = session
+    analysis = Analysis(status=ANALYSIS_STATUS_COMPLETED)
+    db.add(analysis)
+    db.flush()
+    created.append(analysis.id)
+    db.add(media_file(analysis.id))
+    db.add_all([nvidia_signal(analysis.id), aasist_signal(analysis.id)])
+    db.commit()
+
+    with TestClient(app) as client:
+        body = client.get("/api/v1/analyses").json()
+
+    listed = [row for row in body if row["id"] == str(analysis.id)]
+    assert len(listed) == 1
+    assert listed[0]["synthetic_video"]["provider"] == "nvidia"
+    assert "aasist" not in client.get("/api/v1/analyses").text

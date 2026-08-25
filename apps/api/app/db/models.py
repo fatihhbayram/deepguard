@@ -243,13 +243,13 @@ class AnalysisSignal(Base):
 
 
 class AnalysisSegment(Base):
-    """One piece of within-video evidence behind a signal, as the provider reported it.
+    """One piece of within-media evidence behind a signal, as the provider reported it.
 
-    Two evidence sources write rows here and they describe the video in different units,
-    so the columns come in two groups and a row fills exactly one of them. Which group is
-    populated follows from the parent signal's `signal_type`; nothing is duplicated into
-    the other group's columns to make the table look uniform, because a filled-in figure
-    a provider never gave is a fabricated one (rule 11).
+    Three evidence sources write rows here and they describe the media in different units,
+    so the columns come in groups and a row fills the one its source has facts for. Which
+    group is populated follows from the parent signal's `signal_type`; nothing is
+    duplicated into another group's columns to make the table look uniform, because a
+    filled-in figure a provider never gave is a fabricated one (rule 11).
 
     Clip evidence — `synthetic_video`. NVIDIA's synthetic-video detector scores the video
     in clips and reports, per clip, a frame index and a raw model logit, and nothing else.
@@ -265,11 +265,29 @@ class AnalysisSegment(Base):
     in seconds plus the identity the range is about, and leave `clip_index`/`logit` null:
     there is no clip and no logit in an active-speaker result.
 
-    There is deliberately no `score` column for either. The clip figure is a raw logit on
-    the model's own scale rather than a probability like `AnalysisSignal.score`, and an
+    Audio window evidence — `audio_authenticity`. The local AASIST checkpoint consumes a
+    fixed 64600-sample window and emits two raw logits for it, so a recording is cut into
+    consecutive windows and each becomes a row. `clip_index` holds the window's position in
+    that chronological sequence — the third source to use the column, and the same thing it
+    has always held: the index of the unit the parent signal's provider was given, which for
+    NVIDIA is a clip identified by its middle frame and here is DeepGuard's own window.
+    `logit` and `bona_fide_logit` hold the graph's two outputs in graph order.
+
+    `start_time`/`end_time` are filled on these rows too, and they mean something narrower
+    than they do on an active-speaker row: they are `start_sample / 16000` and
+    `end_sample / 16000` for the window this codebase cut, which is a record of what was fed
+    to the model. AASIST publishes no chunk-to-time mapping and reports no segments, so these
+    bounds are DeepGuard preprocessing metadata and are never a claim that the model located
+    anything in that interval. The parent signal's `signal_type` is what tells the two
+    readings apart. `face_id` and `speaker_label` stay null: there is no face and no voice
+    identity in an anti-spoofing result.
+
+    There is deliberately no `score` column for any of them. The clip figure is a raw logit
+    on the model's own scale rather than a probability like `AnalysisSignal.score`, an
     active-speaker range has no number attached at all — NVIDIA's per-frame
     `face_detection_confidence` is confidence in having found a face, not in that face
-    speaking, and storing it in a `score` column would advertise it as the latter.
+    speaking, and storing it in a `score` column would advertise it as the latter — and the
+    audio logits are likewise raw model output with no calibration behind them.
 
     Rows hang off the signal rather than the analysis, because either kind of evidence is
     only meaningful for the detector run that produced it.
@@ -287,14 +305,22 @@ class AnalysisSegment(Base):
         index=True,
     )
 
-    # The frame index of the clip's middle frame, exactly as NVIDIA reported it. The
-    # provider's field is a uint32, which outgrows a 32-bit column, so it is stored wide.
-    # Null on evidence that is not clip-scored.
+    # Which scored unit this row is. On synthetic-video evidence it is the frame index of
+    # the clip's middle frame, exactly as NVIDIA reported it; the provider's field is a
+    # uint32, which outgrows a 32-bit column, so it is stored wide. On audio evidence it is
+    # the window's zero-based position in the chronological sequence this codebase cut.
+    # Null on evidence that scores no discrete unit.
     clip_index: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
-    # The provider's raw model output for this clip. Untransformed: not a probability,
-    # not rescaled, not rounded. Null on evidence that carries no logit.
+    # Raw model output for the unit above. Untransformed: not a probability, not rescaled,
+    # not rounded. NVIDIA's synthetic-video detector emits one figure per clip and fills
+    # only `logit`; AASIST emits two per window and fills both columns, in graph order —
+    # `logit` is output column 0 and `bona_fide_logit` is output column 1, which is the
+    # column the checkpoint's own repository reads as the bona fide score
+    # (`clovaai/aasist/main.py:307`). That mapping is the model's, not a threshold or a
+    # class this codebase assigned. Null on evidence that carries no logit.
     logit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bona_fide_logit: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # The time range this row covers, in seconds from the start of the analysed video.
     # Null on evidence the provider reported no times for.

@@ -4,20 +4,28 @@ This is what the worker runs. It sits beside `media.py` and `normalization.py` a
 step that takes a local artifact and describes it — it opens no transaction, writes no
 row, and does not know a job exists.
 
-Three sources are wired in and they answer different questions about different artifacts:
+Four sources are wired in and they answer different questions about different artifacts:
 NVIDIA's synthetic-video detector is asked whether the canonical derivative looks
 generated, NVIDIA's Active Speaker NIM is asked which visible face is speaking when in
-that same derivative, and C2PA is read off the forensic original to see what provenance
-travels with the bytes as uploaded. Each becomes its own signal row and none is ever
-folded into another (rule 11).
+that same derivative, the local AASIST checkpoint is run over the audio prepared from it,
+and C2PA is read off the forensic original to see what provenance travels with the bytes
+as uploaded. Each becomes its own signal row and none is ever folded into another
+(rule 11).
 
 It lived in the upload route until P3-T2, back when detection happened on the request.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.audio_detector import (
+    BONA_FIDE_LOGIT_INDEX,
+    AudioAuthenticityEvidence,
+    AudioDetectorError,
+    analyze_audio_authenticity,
+)
 from app.c2pa_extractor import C2paEvidence, extract_c2pa_evidence
 from app.db.models import (
     SIGNAL_STATUS_FAILED,
@@ -65,6 +73,14 @@ ACTIVE_SPEAKER_SIGNAL = "active_speaker"
 C2PA_PROVIDER = "c2pa"
 PROVENANCE_SIGNAL = "provenance"
 
+# Identity of the local audio evidence. "aasist" is the checkpoint that produced it, not a
+# company that was called: nothing leaves this machine to obtain it, and the exact artifact
+# behind a stored signal is recorded in the signal's metadata rather than implied by the
+# name. It is a fourth, wholly independent signal — it shares the prepared WAV with active
+# speaker and shares nothing else, least of all a conclusion (rule 11).
+AASIST_PROVIDER = "aasist"
+AUDIO_AUTHENTICITY_SIGNAL = "audio_authenticity"
+
 # How many clip results one detection may leave behind. NVIDIA scores a clip every few
 # frames, so a long video produces thousands and persisting all of them would let one
 # provider's output grow the database without limit. The strongest evidence is kept and
@@ -85,6 +101,18 @@ MAX_PERSISTED_SEGMENTS = 20
 # the table without limit. Where the timeline stops is never silent:
 # `total_speaking_segments` and `segments_truncated` on the signal both say so.
 MAX_PERSISTED_SPEAKING_SEGMENTS = 50
+
+# How many AASIST windows one audio reading may leave behind. The model consumes 4.0375 s
+# at a time, so an hour of audio is 892 windows and nothing bounds how long an upload is.
+#
+# Cut the same way the speaking timeline is, and for a stronger reason. These windows are a
+# chronological sweep of one recording, and the model publishes no threshold, no class and
+# no calibration over its two logits — so there is no defensible sense in which one window
+# is "the strongest" evidence, and ranking by logit would be this codebase inventing the
+# operating point the checkpoint deliberately does not ship. The first fifty windows are the
+# first ~3.4 minutes of audio, in order, and `total_audio_windows` plus `windows_truncated`
+# on the signal say exactly where that stops.
+MAX_PERSISTED_AUDIO_WINDOWS = 50
 
 
 def strongest_clips(clips: tuple[NvidiaClipResult, ...]) -> list[AnalysisSegment]:
@@ -389,24 +417,24 @@ def speaking_segments(
 
 
 async def detect_active_speaker(
-    video_path: Path, frame_rate: float
+    video_path: Path, frame_rate: float, audio_path: Path
 ) -> tuple[AnalysisSignal, list[AnalysisSegment]]:
     """Run the whole active-speaker chain over one prepared artifact and record the outcome.
 
-    Audio is extracted from `video_path` once and used twice: pyannote diarizes it, and the
-    same WAV is streamed to NVIDIA as the separate audio track it wants beside the video.
-    Extracting it from the artifact NVIDIA is given, rather than from the forensic original,
-    is what keeps the two timelines the same one — diarization times are matched against the
-    frames of this video, so audio from a differently-timed file would misattribute voices to
-    faces. The WAV is removed on every path out of this function.
+    `audio_path` is the WAV `prepared_audio` extracted from `video_path`, and it is used
+    twice here: pyannote diarizes it, and the same file is streamed to NVIDIA as the separate
+    audio track it wants beside the video. It belongs to the caller — since P6-T3 a third
+    reader shares it — so this function only reads it and never removes it. Its coming from
+    the artifact NVIDIA is given, rather than from the forensic original, is what keeps the
+    two timelines the same one: diarization times are matched against the frames of this
+    video, so audio from a differently-timed file would misattribute voices to faces.
 
-    Nothing here raises for a failure of the chain itself. WAV preparation, diarization and
-    NVIDIA are all recorded as a `FAILED` active-speaker signal, so the analysis keeps the
-    provenance and synthetic-video evidence it already has. That is deliberately more
-    forgiving than `detect_synthetic_video`, which lets a local file error fail the whole job:
-    this chain depends on a gated model, a Hugging Face token and a second NVIDIA function,
-    and an analysis must not lose its other two evidence sources because one of those is not
-    configured.
+    Nothing here raises for a failure of the chain itself. Diarization and NVIDIA are both
+    recorded as a `FAILED` active-speaker signal, so the analysis keeps the provenance and
+    synthetic-video evidence it already has. That is deliberately more forgiving than
+    `detect_synthetic_video`, which lets a local file error fail the whole job: this chain
+    depends on a gated model, a Hugging Face token and a second NVIDIA function, and an
+    analysis must not lose its other evidence sources because one of those is not configured.
 
     Media with no speech in it takes the same route. pyannote returns no turns, there is
     nothing to hand NVIDIA — which requires diarization and reports every face as unmatched
@@ -420,14 +448,13 @@ async def detect_active_speaker(
     signal = AnalysisSignal(provider=NVIDIA_PROVIDER, signal_type=ACTIVE_SPEAKER_SIGNAL)
 
     try:
-        async with prepared_audio(video_path) as audio_path:
-            turns = await diarize_speakers(audio_path)
-            assigned = speaker_ids(turns)
-            result = await analyze_active_speaker(
-                video_path,
-                diarization_for_nvidia(turns, assigned),
-                audio_path=audio_path,
-            )
+        turns = await diarize_speakers(audio_path)
+        assigned = speaker_ids(turns)
+        result = await analyze_active_speaker(
+            video_path,
+            diarization_for_nvidia(turns, assigned),
+            audio_path=audio_path,
+        )
     except NvidiaActiveSpeakerTimeout as error:
         # The one failure worth telling apart at a glance, and for the same reason as in
         # synthetic-video detection: NVIDIA may still have been working, so this says
@@ -470,6 +497,178 @@ async def detect_active_speaker(
     }
 
     return signal, segments
+
+
+def audio_windows(
+    evidence: AudioAuthenticityEvidence,
+) -> tuple[list[AnalysisSegment], int]:
+    """Turn AASIST's per-window output into persistable rows, capped, chronological.
+
+    One row per window, in the order the recording was cut, carrying both raw logits in
+    graph order and the sample bounds that produced them restated in seconds. The division
+    by the sample rate is exact arithmetic on numbers this codebase chose — the window
+    boundaries are DeepGuard's own preprocessing — and is emphatically not a timestamp the
+    model published: AASIST reports no segments and no chunk-to-time mapping at all, so a
+    row here says "this is the audio the graph was fed", never "the model found something
+    between these two times".
+
+    Nothing is aggregated, averaged, ranked or thresholded, and no window stands in for
+    another. P6-T1 §7 measured consecutive windows of the same genuine recording crossing
+    zero in both directions; the rows disagree with each other and are stored as they are.
+
+    Returns the rows to persist and how many windows there were in total. The cap keeps the
+    chronological prefix, so what is stored is the sweep from the start of the audio up to
+    wherever it fell — never a selection by logit, which would smuggle in the operating
+    point the checkpoint does not define.
+    """
+    segments = [
+        AnalysisSegment(
+            clip_index=window.window_index,
+            # Graph order, untouched. `bona_fide_logit` is output column 1, which is the
+            # column upstream reads as the bona fide score; `logit` is column 0. Both are
+            # raw logits, and neither is a probability or a distance from a threshold.
+            logit=window.logits[0],
+            bona_fide_logit=window.logits[BONA_FIDE_LOGIT_INDEX],
+            start_time=window.start_sample / evidence.sample_rate,
+            end_time=window.end_sample / evidence.sample_rate,
+        )
+        for window in evidence.windows[:MAX_PERSISTED_AUDIO_WINDOWS]
+    ]
+
+    return segments, len(evidence.windows)
+
+
+def detect_audio_authenticity(audio_path: Path) -> tuple[AnalysisSignal, list[AnalysisSegment]]:
+    """Run the local checkpoint over prepared audio and record what it emitted.
+
+    `audio_path` is the WAV `prepared_audio` extracted for this job, shared with pyannote and
+    NVIDIA and owned by neither of them nor by this function. Extracting the audio a second
+    time would decode the same media twice to produce the same file, and — worse — would make
+    it possible for the two extractions to disagree about what was analysed.
+
+    `score` stays null, on success as much as on failure. The model emits two raw logits per
+    window with no softmax, threshold or class over them, so there is no file-level figure to
+    put in that column; anything written there would be this codebase inventing a number and
+    parking it beside NVIDIA's probability as though the two were comparable (rule 11). The
+    evidence is the windows.
+
+    Nothing raises. Every `AudioDetectorError` — a missing checkpoint, audio in the wrong
+    shape, a decode failure, ONNX Runtime breaking — becomes a `FAILED` signal carrying the
+    failure kind and nothing else, so one source going wrong costs this signal and no other.
+
+    Blocking CPU work, so callers on an event loop reach it through `analyse_audio`.
+    """
+    signal = AnalysisSignal(provider=AASIST_PROVIDER, signal_type=AUDIO_AUTHENTICITY_SIGNAL)
+
+    try:
+        evidence = analyze_audio_authenticity(audio_path)
+    except AudioDetectorError as error:
+        # The failure kind, never the message: it can quote the local artifact's path.
+        logger.warning("Local audio authenticity detection failed.", exc_info=True)
+        signal.status = SIGNAL_STATUS_FAILED
+        signal.signal_metadata = {"error": type(error).__name__}
+        return signal, []
+
+    segments, total = audio_windows(evidence)
+
+    signal.status = SIGNAL_STATUS_SUCCESS
+    # Which artifact produced this, exactly. A different revision is a different measurement,
+    # and the digest is what lets a stored signal be checked against the model that made it.
+    signal.provider_version = f"{evidence.model_repository}@{evidence.model_revision}"
+    signal.signal_metadata = {
+        "model_repository": evidence.model_repository,
+        "model_revision": evidence.model_revision,
+        "model_sha256": evidence.model_sha256,
+        # The input contract every window above was produced under. The same audio cut at a
+        # different offset, rate or window length is a different number (P6-T1 §7), so the
+        # preparation is recorded alongside the output rather than assumed from the code.
+        "sample_rate": evidence.sample_rate,
+        "channels": evidence.channels,
+        "window_samples": evidence.window_samples,
+        "window_padding_scheme": evidence.window_padding_scheme,
+        "total_samples": evidence.total_samples,
+        # What the sweep produced, against what survived the cap — so a truncated set of
+        # windows is never mistaken for the whole recording.
+        "total_audio_windows": total,
+        "persisted_audio_windows": len(segments),
+        "windows_truncated": total > len(segments),
+        # What the segment rows' times are. Stated in the evidence itself so a reader of the
+        # database never has to assume: these are the bounds of the windows this codebase cut
+        # and fed to the graph, not intervals the model reported anything about.
+        "window_bounds": "deepguard_preprocessing",
+        # Which of the two stored logits carries the meaning the checkpoint's own repository
+        # gives it. Recorded rather than left to the column name, because the mapping is
+        # upstream's fact about its model and not something this codebase decided.
+        "bona_fide_logit_index": BONA_FIDE_LOGIT_INDEX,
+    }
+
+    return signal, segments
+
+
+def unanalysable_audio(error: Exception) -> AnalysisSignal:
+    """Record that the checkpoint could not be run, because no audio could be prepared.
+
+    The counterpart of `undetectable_media` for the audio side, and separate from it because
+    the two name different providers and are reached by different failures. Written as a real
+    signal so an analysis that has provenance and a synthetic-video verdict keeps them when
+    the media turns out to carry no audio at all — which is an ordinary property of an upload,
+    not a fault.
+    """
+    return AnalysisSignal(
+        provider=AASIST_PROVIDER,
+        signal_type=AUDIO_AUTHENTICITY_SIGNAL,
+        status=SIGNAL_STATUS_FAILED,
+        # The failure kind, never the message: it can quote the local artifact's path.
+        signal_metadata={"error": type(error).__name__},
+    )
+
+
+async def analyse_audio(
+    video_path: Path, frame_rate: float
+) -> tuple[
+    tuple[AnalysisSignal, list[AnalysisSegment]],
+    tuple[AnalysisSignal, list[AnalysisSegment]],
+]:
+    """Prepare the audio once, ask both audio questions of it, report both outcomes.
+
+    Extraction is the shared step and the only one: `prepared_audio` writes a single mono
+    16 kHz PCM WAV from the artifact NVIDIA is given, and pyannote, the Active Speaker NIM
+    and AASIST all read that same file. Extracting it per consumer would decode the same
+    media three times to produce three identical files, and would leave open the possibility
+    of three readings of what was supposed to be one recording.
+
+    Sharing the input is the whole of what these two signals share. They are asked different
+    questions, answer in different units, are written as separate rows with separate statuses,
+    and are never combined — an analysis that has a speaker timeline and no audio windows, or
+    the reverse, records exactly that.
+
+    So the isolation runs in both directions, and neither call can reach the other: active
+    speaker records its own failures internally, and AASIST is run afterwards regardless of
+    what came back. A missing Hugging Face token costs the timeline and leaves the windows; a
+    missing checkpoint costs the windows and leaves the timeline.
+
+    Audio that cannot be prepared at all is the one failure both share, because both were
+    waiting on the same file. Media with no audio stream is the common case and is an
+    ordinary fact about an upload, so it is recorded as two failed signals rather than a
+    failed job — the provenance and synthetic-video evidence this analysis already has must
+    survive it.
+
+    AASIST is blocking CPU work, so it goes to a thread the way diarization does; running it
+    on the event loop would stall the ffmpeg and gRPC I/O this coroutine is built around.
+    """
+    try:
+        async with prepared_audio(video_path) as audio_path:
+            speaker = await detect_active_speaker(video_path, frame_rate, audio_path)
+            audio = await asyncio.to_thread(detect_audio_authenticity, audio_path)
+
+            return speaker, audio
+    except SpeakerDiarizationError as error:
+        logger.warning("Preparing the audio for analysis failed.", exc_info=True)
+        signal = AnalysisSignal(provider=NVIDIA_PROVIDER, signal_type=ACTIVE_SPEAKER_SIGNAL)
+        signal.status = SIGNAL_STATUS_FAILED
+        signal.signal_metadata = {"error": type(error).__name__}
+
+        return (signal, []), (unanalysable_audio(error), [])
 
 
 async def detect_synthetic_video(file_path: Path) -> tuple[AnalysisSignal, list[AnalysisSegment]]:
