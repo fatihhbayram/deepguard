@@ -25,3 +25,9 @@ torch==2.13.0+cpu
 torchaudio==2.11.0+cpu
 torchcodec==0.16.0+cpu
 uvicorn==0.52.3
+# Downloads media from public URLs (P10-T1). Used as a library, never as a subprocess: the
+# URL is a Python argument rather than a token in a command line, so there is no shell for a
+# crafted URL to reach. Pinned like everything else here, and worth re-pinning deliberately —
+# extractors track sites that change under them, so an old pin quietly stops working while a
+# blind upgrade changes behaviour nothing tested.
+yt-dlp==2026.8.19
