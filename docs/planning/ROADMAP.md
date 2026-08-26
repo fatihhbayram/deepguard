@@ -345,6 +345,14 @@ Expose the stabilized analysis workflow to B2B customers.
 
 until real customer demand exists.
 
+## Exit criteria
+
+- API Keys can be generated, hashed and persisted.
+- External REST endpoints for media upload and status polling are available.
+- Ownership of analyses is strictly isolated (HTTP 404 for unauthorized reads).
+- Concurrency limits throttle heavy users to protect internal worker resources.
+- Worker crashes do not strand API capacity limits (Stale Job Recovery).
+
 ---
 
 # P10 — URL Ingestion
