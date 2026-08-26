@@ -84,16 +84,101 @@ async function fetchHealth(): Promise<HealthResult> {
 }
 function StatusRow({ label, ok, detail }: { label: string; ok: boolean; detail: string }) {
   return (
-    <div className="flex items-center justify-between gap-6 border-b border-black/10 py-3 last:border-b-0 dark:border-white/15">
-      <span className="font-medium">{label}</span>
-      <span className="flex items-center gap-2 font-mono text-sm">
+    <div className="flex items-center justify-between gap-6 py-2">
+      <span className="text-sm text-muted">{label}</span>
+      <span className="flex items-center gap-2 font-mono text-xs">
         <span
           aria-hidden
-          className={`inline-block size-2.5 rounded-full ${ok ? "bg-green-500" : "bg-red-500"}`}
+          className={`inline-block size-2 rounded-full ${ok ? "bg-emerald-500" : "bg-rose-500"}`}
         />
         {detail}
       </span>
     </div>
+  );
+}
+
+/**
+ * The one drawn mark on this page.
+ *
+ * There is no icon library in this project and adding one is outside this task, so the
+ * disclosure chevron is authored here and reused by every `<details>` that gets a control
+ * affordance — one path, one stroke weight, one size. Nothing else on the page needs a
+ * glyph, which is why nothing else has one.
+ */
+function Chevron({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`size-3.5 shrink-0 transition-transform duration-200 group-open:rotate-180 ${className}`}
+    >
+      <path d="M4 6.5 8 10.5 12 6.5" />
+    </svg>
+  );
+}
+
+/**
+ * System health as a header control rather than a block of the page.
+ *
+ * A native `<details>`, deliberately: the detail behind the summary has to be reachable by
+ * click, tap and keyboard, and this page ships no JavaScript to open a scripted popover
+ * with. The panel is absolutely positioned and the header clips nothing, so it escapes the
+ * bar instead of being cut off by it.
+ *
+ * What it deliberately does not show: the API's base URL, and the reason the health probe
+ * failed. `fetchHealth` still distinguishes a timeout from a refused connection from an
+ * unparseable body, but that text is a transport error carrying an internal hostname, a
+ * port, or a socket message, and this page is served to anyone who can reach it. The three
+ * rows below say which component is not answering, which is the whole of what a reader
+ * needs; `unreachable` and `unknown` are the generic states that stand in for the detail.
+ * Do not render `result.error` or `API_URL` here.
+ */
+function HealthControl({
+  result,
+  apiOk,
+  dbOk,
+  systemOk,
+}: {
+  result: HealthResult;
+  apiOk: boolean;
+  dbOk: boolean;
+  systemOk: boolean;
+}) {
+  return (
+    <details className="group relative">
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-full border border-line px-3 py-1.5 text-xs font-medium tracking-wide transition-colors duration-150 select-none hover:bg-surface [&::-webkit-details-marker]:hidden">
+        <span className="sr-only">System status: </span>
+        <span
+          aria-hidden
+          className={`inline-block size-2 rounded-full ${systemOk ? "bg-emerald-500" : "bg-rose-500"}`}
+        />
+        {systemOk ? "OPERATIONAL" : "DEGRADED"}
+        <Chevron className="text-faint" />
+      </summary>
+
+      <div className="absolute right-0 z-30 mt-2 w-80 rounded-xl border border-line bg-background p-4 shadow-lg shadow-slate-950/10">
+        <p className="text-xs text-faint">Web → API → DB connectivity check</p>
+
+        <div className="mt-3 divide-y divide-line">
+          <StatusRow label="Web" ok detail="running" />
+          <StatusRow
+            label="API"
+            ok={apiOk}
+            detail={result.reachable ? result.health.status : "unreachable"}
+          />
+          <StatusRow
+            label="Database"
+            ok={dbOk}
+            detail={result.reachable ? result.health.database : "unknown"}
+          />
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -189,7 +274,7 @@ function ActiveSpeaker({ signal }: { signal: ActiveSpeakerSignal | null }) {
 
   return (
     <details>
-      <summary className="cursor-pointer">
+      <summary className="cursor-pointer text-muted transition-colors duration-150 select-none hover:text-foreground">
         {count} segment{shown === 1 && !truncated ? "" : "s"}
       </summary>
       <ul className="mt-1 space-y-0.5">
@@ -243,7 +328,10 @@ function AudioEvidence({ signal }: { signal: AudioAuthenticitySignal | null }) {
 
   return (
     <details>
-      <summary className="cursor-pointer" title={audioModelTitle(signal)}>
+      <summary
+        className="cursor-pointer text-muted transition-colors duration-150 select-none hover:text-foreground"
+        title={audioModelTitle(signal)}
+      >
         {count} audio window{shown === 1 && !truncated ? "" : "s"}
       </summary>
       <ul className="mt-1 space-y-0.5">
@@ -331,7 +419,7 @@ function Provenance({ signal }: { signal: ProvenanceSignal | null }) {
   return (
     <>
       <div title={provenanceTitle(signal)}>{provenanceText(signal)}</div>
-      {source && <div className="opacity-60">{source}</div>}
+      {source && <div className="text-faint">{source}</div>}
     </>
   );
 }
@@ -424,13 +512,15 @@ function Risk({ analysis }: { analysis: AnalysisSummary }) {
         {RISK_LABELS[level]}
       </div>
       {analysis.risk_rules_version && (
-        <div className="opacity-60">{analysis.risk_rules_version}</div>
+        <div className="text-faint">{analysis.risk_rules_version}</div>
       )}
       {/* The rest of the trace, one <details> away. A level is only explainable alongside
           the rule that produced it and the measurement that rule was calibrated on, so
           all three stay reachable without a detail page or any client-side state. */}
       <details className="mt-0.5">
-        <summary className="cursor-pointer opacity-60">Trace</summary>
+        <summary className="cursor-pointer text-faint transition-colors duration-150 select-none hover:text-foreground">
+          Trace
+        </summary>
         <ul className="mt-1 space-y-0.5">
           <li>Rule: {analysis.risk_rule_id ?? ABSENT}</li>
           <li>Ruleset: {analysis.risk_rules_version ?? ABSENT}</li>
@@ -474,64 +564,101 @@ function Media({ media }: { media: MediaFacts }) {
       <div>
         {media.codec_name} · {media.width}×{media.height} · {frameRateText(media.frame_rate)} fps
       </div>
-      <div className="opacity-60">{media.format_name}</div>
+      <div className="text-faint">{media.format_name}</div>
     </div>
   );
 }
 
+/** One column heading. Sentence case: several of these are phrases that caps make worse. */
+function Th({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <th
+      scope="col"
+      className={`border-b border-line px-3 py-2.5 text-xs font-medium whitespace-nowrap text-muted ${className}`}
+    >
+      {children}
+    </th>
+  );
+}
+
+/**
+ * The evidence table.
+ *
+ * Sixteen columns of forensic record, so the scroll container owns both axes: it is the
+ * vertical scrollport that makes `sticky` work on the header, and the horizontal one that
+ * keeps the table usable below its own minimum width instead of crushing the columns. The
+ * table carries `tabular-nums` throughout — logits, window bounds and percentages only
+ * compare down a column when the digits are the same width.
+ *
+ * Two weights of cell, not one. Identity and outcome — id, file, status, risk, report —
+ * read at full contrast; the measurement behind them is the same evidence at a lower
+ * emphasis. Nothing is hidden by the distinction: every figure that was on the page before
+ * is still on it, in the same words.
+ */
 function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-sm">
-        <thead className="border-b border-black/10 text-xs uppercase opacity-70 dark:border-white/15">
+    <div className="max-h-[75vh] overflow-auto rounded-lg border border-line">
+      <table className="w-full min-w-[1400px] border-collapse text-left text-sm tabular-nums">
+        <thead className="sticky top-0 z-10 bg-surface">
           <tr>
-            <th className="py-2 pr-4 font-medium">ID</th>
-            <th className="py-2 pr-4 font-medium">File</th>
-            <th className="py-2 pr-4 font-medium">Declared type</th>
-            <th className="py-2 pr-4 font-medium">Media (ffprobe)</th>
-            <th className="py-2 pr-4 font-medium">Status</th>
-            <th className="py-2 pr-4 font-medium">Risk</th>
-            <th className="py-2 pr-4 font-medium">Normalized</th>
-            <th className="py-2 pr-4 font-medium">NVIDIA SVD</th>
-            <th className="py-2 pr-4 font-medium">Synthetic probability</th>
-            <th className="py-2 pr-4 font-medium">Clips</th>
-            <th className="py-2 pr-4 font-medium">Strongest clips (logit)</th>
-            <th className="py-2 pr-4 font-medium">Active speaker</th>
-            <th className="py-2 pr-4 font-medium">Audio</th>
-            <th className="py-2 pr-4 font-medium">Provenance (C2PA)</th>
-            <th className="py-2 pr-4 font-medium">Created</th>
-            <th className="py-2 font-medium">Report</th>
+            <Th>ID</Th>
+            <Th>File</Th>
+            <Th>Declared type</Th>
+            <Th>Media (ffprobe)</Th>
+            <Th>Status</Th>
+            <Th>Risk</Th>
+            <Th>Normalized</Th>
+            <Th>NVIDIA SVD</Th>
+            <Th>Synthetic probability</Th>
+            <Th>Clips</Th>
+            <Th>Strongest clips (logit)</Th>
+            <Th>Active speaker</Th>
+            <Th>Audio</Th>
+            <Th>Provenance (C2PA)</Th>
+            <Th>Created</Th>
+            <Th>Report</Th>
           </tr>
         </thead>
-        <tbody>
+        <tbody className="divide-y divide-line">
           {analyses.map((analysis) => (
             <tr
               key={analysis.id}
-              className="border-b border-black/5 last:border-b-0 dark:border-white/10"
+              className="transition-colors duration-150 hover:bg-surface"
             >
               {/* The full id stays in the title so it remains available without a detail page. */}
-              <td className="py-2 pr-4 font-mono text-xs" title={analysis.id}>
+              <td className="px-3 py-3 align-top font-mono text-xs" title={analysis.id}>
                 {analysis.id.slice(0, 8)}
               </td>
-              <td className="py-2 pr-4">{analysis.original_filename ?? "—"}</td>
-              <td className="py-2 pr-4 font-mono text-xs">{analysis.declared_content_type}</td>
+              <td
+                className="max-w-64 truncate px-3 py-3 align-top"
+                title={analysis.original_filename ?? undefined}
+              >
+                {analysis.original_filename ?? "—"}
+              </td>
+              <td className="px-3 py-3 align-top font-mono text-xs text-muted">
+                {analysis.declared_content_type}
+              </td>
               {/* What the bytes actually are, as opposed to what the client declared them
                   to be. ffprobe established these before any detector ran. */}
-              <td className="py-2 pr-4 align-top font-mono text-xs whitespace-nowrap">
+              <td className="px-3 py-3 align-top font-mono text-xs whitespace-nowrap text-muted">
                 <Media media={analysis.media} />
               </td>
-              <td className="py-2 pr-4">{analysis.status}</td>
+              <td className="px-3 py-3 align-top font-medium whitespace-nowrap">
+                {analysis.status}
+              </td>
               {/* DeepGuard's own classification of the calibrated evidence — a risk level
                   and the ruleset that produced it, never a Fake/Real verdict. Read from
                   the analysis row as the engine committed it, never recomputed here. */}
-              <td className="py-2 pr-4 align-top font-mono text-xs whitespace-nowrap">
+              <td className="px-3 py-3 align-top font-mono text-xs whitespace-nowrap">
                 <Risk analysis={analysis} />
               </td>
-              <td className="py-2 pr-4">{analysis.was_normalized ? "yes" : "no"}</td>
+              <td className="px-3 py-3 align-top text-muted">
+                {analysis.was_normalized ? "yes" : "no"}
+              </td>
               {/* The detector's own state, verbatim: SUCCESS, FAILED or TIMEOUT are three
                   different forensic facts, and an analysis may carry no signal at all. */}
               <td
-                className="py-2 pr-4 font-mono text-xs"
+                className="px-3 py-3 align-top font-mono text-xs text-muted"
                 title={
                   analysis.synthetic_video?.provider_version
                     ? `Provider version: ${analysis.synthetic_video.provider_version}`
@@ -541,38 +668,43 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
                 {analysis.synthetic_video?.status ?? "no signal"}
               </td>
               <td
-                className="py-2 pr-4 font-mono text-xs"
+                className="px-3 py-3 align-top font-mono text-xs text-muted"
                 title={probabilityTitle(analysis.synthetic_video)}
               >
                 {probabilityText(analysis.synthetic_video)}
               </td>
-              <td className="py-2 pr-4 font-mono text-xs">
+              <td className="px-3 py-3 align-top font-mono text-xs text-muted">
                 {analysis.synthetic_video?.total_clips ?? ABSENT}
               </td>
-              <td className="py-2 pr-4 align-top font-mono text-xs whitespace-nowrap">
+              <td className="px-3 py-3 align-top font-mono text-xs whitespace-nowrap text-muted">
                 <ClipEvidence signal={analysis.synthetic_video} />
               </td>
               {/* When a tracked face was seen speaking. An absent, failed or empty
                   timeline is never rendered as a finding about the media. */}
-              <td className="py-2 pr-4 align-top font-mono text-xs whitespace-nowrap">
+              <td className="px-3 py-3 align-top font-mono text-xs whitespace-nowrap text-muted">
                 <ActiveSpeaker signal={analysis.active_speaker} />
               </td>
               {/* The raw figures the local checkpoint emitted per window of audio, with the
                   preprocessing bounds of the window each came from. Never aggregated, and
                   never rendered as a verdict about the audio. */}
-              <td className="py-2 pr-4 align-top font-mono text-xs whitespace-nowrap">
+              <td className="px-3 py-3 align-top font-mono text-xs whitespace-nowrap text-muted">
                 <AudioEvidence signal={analysis.audio_authenticity} />
               </td>
               {/* What the file itself claims, read from the forensic original. A missing
                   or invalid manifest is never rendered as a verdict about the media. */}
-              <td className="py-2 pr-4 align-top font-mono text-xs">
+              <td className="px-3 py-3 align-top font-mono text-xs text-muted">
                 <Provenance signal={analysis.provenance} />
               </td>
-              <td className="py-2 pr-4 font-mono text-xs">{analysis.created_at}</td>
+              <td className="px-3 py-3 align-top font-mono text-xs whitespace-nowrap text-muted">
+                {analysis.created_at}
+              </td>
               {/* A separate link, deliberately not the risk badge: a badge that navigated
                   would make the classification look like a control rather than a finding. */}
-              <td className="py-2 text-xs whitespace-nowrap">
-                <Link href={`/report/${analysis.id}`} className="underline">
+              <td className="px-3 py-3 align-top text-xs whitespace-nowrap">
+                <Link
+                  href={`/report/${analysis.id}`}
+                  className="font-medium underline decoration-line transition-colors duration-150 hover:decoration-current"
+                >
                   View report
                 </Link>
               </td>
@@ -609,69 +741,224 @@ function SubmissionPanel({
   error: string | null;
 }) {
   return (
-    <section className="rounded-lg border border-black/10 p-6 dark:border-white/15">
-      <h2 className="text-lg font-semibold">Submit media</h2>
-      <p className="mt-1 text-sm opacity-70">
+    <section className="rounded-xl border border-line bg-surface p-6 sm:p-8">
+      <h2 className="text-lg font-semibold tracking-tight">Submit media</h2>
+      <p className="mt-2 max-w-[68ch] text-sm text-muted">
         An MP4 or MOV file, or a link to one. A URL is downloaded by the API first, so the
         page waits for the download before the analysis is queued; both then go through the
         same pipeline and appear in the table below. Live streams cannot be analysed.
       </p>
 
+      {/* One form, two lanes. The divider is presentation only: the route accepts either
+          field, so splitting them into separate forms — or into a scripted toggle this
+          page has no JavaScript for — would change the submission, not just the look. */}
       <form
         action="/submit"
         method="post"
         encType="multipart/form-data"
-        className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end"
+        className="mt-6"
       >
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="opacity-70">File</span>
-          <input
-            type="file"
-            name="file"
-            accept="video/mp4,video/quicktime"
-            className="text-sm"
-          />
-        </label>
+        <div className="grid items-stretch gap-5 sm:grid-cols-[1fr_auto_1fr]">
+          <label className="flex flex-col gap-2">
+            <span className="text-sm font-medium">Upload file</span>
+            <input
+              type="file"
+              name="file"
+              accept="video/mp4,video/quicktime"
+              className="w-full cursor-pointer rounded-lg border border-line bg-background px-3 py-2.5 text-sm text-muted transition-colors duration-150 file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-foreground file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-background hover:border-faint"
+            />
+          </label>
 
-        <label className="flex flex-1 flex-col gap-1 text-sm">
-          <span className="opacity-70">or URL</span>
-          <input
-            type="url"
-            name="url"
-            placeholder="https://example.com/clip.mp4"
-            className="rounded border border-black/15 px-2 py-1 font-mono text-xs dark:border-white/20"
-          />
-        </label>
+          {/* `sm:pt-7` clears the label line above the inputs, so the rule spans the two
+              controls it separates rather than starting level with their labels. */}
+          <div className="flex items-center gap-3 sm:flex-col sm:self-stretch sm:pt-7">
+            <span aria-hidden className="h-px flex-1 bg-line sm:h-auto sm:w-px" />
+            <span className="text-xs text-faint">or</span>
+            <span aria-hidden className="h-px flex-1 bg-line sm:h-auto sm:w-px" />
+          </div>
 
-        <button
-          type="submit"
-          className="rounded border border-black/15 px-3 py-1.5 text-sm font-medium dark:border-white/20"
-        >
-          Analyse
-        </button>
+          <label className="flex flex-col gap-2">
+            <span className="text-sm font-medium">From URL</span>
+            <input
+              type="url"
+              name="url"
+              placeholder="https://example.com/clip.mp4"
+              className="w-full rounded-lg border border-line bg-background px-3 py-2.5 font-mono text-sm transition-colors duration-150 placeholder:text-faint hover:border-faint"
+            />
+          </label>
+        </div>
+
+        <div className="mt-6 flex flex-col gap-4 border-t border-line pt-5 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-faint">If both are filled in, the URL is used.</p>
+          <button
+            type="submit"
+            className="shrink-0 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-[opacity,transform] duration-150 hover:opacity-90 active:translate-y-px"
+          >
+            Analyse
+          </button>
+        </div>
       </form>
-
-      <p className="mt-2 text-xs opacity-60">
-        If both are filled in, the URL is used.
-      </p>
 
       {/* The API's own refusal, shown as text. It is DeepGuard's client-facing wording —
           extractor, socket and storage detail stay in the server log — and it says which
           rule the submission broke rather than what went wrong inside. */}
-      {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      {error && (
+        <div className="mt-6">
+          <Alert tone="error">{error}</Alert>
+        </div>
+      )}
       {submitted !== null && !error && (
-        <p className="mt-3 text-sm text-green-600">
-          Queued for analysis
-          {submitted ? <span className="font-mono"> · {submitted.slice(0, 8)}</span> : null}.
-        </p>
+        <div className="mt-6">
+          <Alert tone="success">
+            Queued for analysis
+            {submitted ? <span className="font-mono"> · {submitted.slice(0, 8)}</span> : null}.
+          </Alert>
+        </div>
       )}
     </section>
+  );
+}
+
+/**
+ * The outcome of the last submission, and the only place on this page that speaks in a
+ * state colour rather than an evidence one. A tinted field and a hairline, deliberately:
+ * the risk column owns the loud colour on this page and an alert that shouted over it
+ * would compete with the finding it sits above.
+ */
+function Alert({
+  tone,
+  children,
+}: {
+  tone: "error" | "success";
+  children: React.ReactNode;
+}) {
+  const styles =
+    tone === "error"
+      ? { field: "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300", dot: "bg-rose-500" }
+      : {
+          field: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+          dot: "bg-emerald-500",
+        };
+
+  return (
+    <p
+      role="status"
+      className={`flex items-start gap-2.5 rounded-lg border px-4 py-3 text-sm ${styles.field}`}
+    >
+      <span aria-hidden className={`mt-1.5 size-2 shrink-0 rounded-full ${styles.dot}`} />
+      <span>{children}</span>
+    </p>
   );
 }
 
 /** One query-string value, or null. A repeated parameter is not a submission outcome. */
 function singleParam(value: string | string[] | undefined): string | null {
   return typeof value === "string" ? value : null;
+}
+
+/** One entry of the methodology disclosure: what a column is, and what it is not. */
+function Note({ term, children }: { term: string; children: React.ReactNode }) {
+  return (
+    <div className="mb-6 break-inside-avoid">
+      <dt className="text-sm font-medium">{term}</dt>
+      <dd className="mt-1 max-w-[65ch] text-sm text-muted">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * The forensic methodology, one disclosure away rather than seven paragraphs deep.
+ *
+ * Every word here is the wording the page carried before, unchanged: these are the
+ * disclaimers that keep a risk level from being read as a Fake/Real verdict, and they are
+ * not the sort of copy a visual pass gets to shorten. What changed is that they are now
+ * titled and grouped, so a reader looking up one column is not made to read the other six.
+ *
+ * A native `<details>`, closed by default and reachable by click, tap and keyboard. Not a
+ * tooltip and not a separate page: forensic semantics a reader cannot get to on a phone
+ * are semantics the product did not actually publish.
+ */
+function Methodology() {
+  return (
+    <details className="group rounded-lg border border-line">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3 text-sm font-medium transition-colors duration-150 select-none hover:bg-surface [&::-webkit-details-marker]:hidden">
+        How to interpret these results
+        <Chevron className="text-faint" />
+      </summary>
+
+      {/* Column flow rather than a grid: these notes differ wildly in length, and grid rows
+          size to the tallest cell — which left a short note like "Synthetic probability"
+          sitting above a block of dead space as tall as the Risk note beside it. */}
+      <dl className="border-t border-line px-4 pt-6 pb-0 sm:columns-2 sm:gap-10">
+        <Note term="Risk">
+          Risk is a deterministic DeepGuard classification based on calibrated forensic
+          evidence. It is not a Fake/Real determination.{" "}
+          <span className="font-mono">{RISK_LABELS.MEDIUM}</span> is the indeterminate band
+          — evidence that settles nothing either way — and the absence of{" "}
+          <span className="font-mono">{RISK_LABELS.HIGH}</span> does not rule out face
+          manipulation. <span className="font-mono">{RISK_LABELS.UNKNOWN}</span> means the
+          engine ran and could not classify, which is not the same as{" "}
+          <span className="font-mono">{PENDING}</span>, where no decision has been taken
+          yet, or <span className="font-mono">{ABSENT}</span>, where an analysis finished
+          before there was an engine to take one. Each level is shown with the ruleset that
+          produced it, since the same word means something different under a different one.{" "}
+          <span className="font-mono">{UNSUPPORTED}</span> means the stored state is not one
+          this build classifies under, so it is reported as unsupported rather than shown as
+          a risk class DeepGuard has no calibrated meaning for.
+        </Note>
+
+        <Note term="Synthetic probability">
+          Synthetic probability is NVIDIA&apos;s own score for its synthetic-video detector,
+          shown as returned. It is not a verdict.
+        </Note>
+
+        <Note term="Provenance (C2PA)">
+          Provenance is what the file itself carries: C2PA Content Credentials, read from
+          the forensic original and shown in C2PA&apos;s own words. Most media carries none,
+          so <span className="font-mono">{NO_PROVENANCE}</span> is the ordinary case and not
+          a finding — and an invalid manifest means the credentials do not verify, not that
+          the media is fake. <span className="font-mono">{REMOTE_PROVENANCE}</span> means the
+          file named a manifest stored somewhere else; that URL was recorded and deliberately
+          never visited, so nothing is known about what it holds.
+        </Note>
+
+        <Note term="Media (ffprobe)">
+          Media is what ffprobe read out of the original before any detector ran, shown as
+          ffprobe reported it. The container is its demuxer family — one name covers MOV and
+          MP4 alike — and it is not narrowed to a container the stored evidence cannot prove.
+          The declared type beside it is only what the client claimed.
+        </Note>
+
+        <Note term="Active speaker">
+          Active speaker is when NVIDIA saw a tracked face speaking, in seconds from the start
+          of the analysed video, with the face it tracked and the diarized voice matched to
+          it. It is a record of what was observed, not a finding:{" "}
+          <span className="font-mono">{NO_SPEAKING_FACES}</span> means the detector ran and
+          saw nobody speaking, which is the ordinary case for most footage, and{" "}
+          <span className="font-mono">{SPEAKER_UNAVAILABLE}</span> means it did not get to
+          look at all. Neither says the video is fake.
+        </Note>
+
+        <Note term="Audio">
+          Audio is the two raw logits a local anti-spoofing checkpoint emitted for each
+          window of audio it was given, shown as emitted. The times are the bounds of those
+          windows — DeepGuard cut the audio into fixed 4.04s pieces because that is all the
+          model accepts — and not stretches the model found anything in. The model publishes
+          no threshold and no calibration, so neither figure is a probability, a confidence
+          or a verdict, and consecutive windows of genuine speech routinely disagree.{" "}
+          <span className="font-mono">{NO_AUDIO_WINDOWS}</span> means the reading ran and
+          stored none, which is not proof the file carries no audio, and{" "}
+          <span className="font-mono">{AUDIO_UNAVAILABLE}</span> means it did not get to run.
+        </Note>
+
+        <Note term="Strongest clips (logit)">
+          Strongest clips are the highest-scoring of the clips NVIDIA examined, identified by
+          frame index because the detector reports no timestamps. The figure is its raw model
+          logit, not a probability and not comparable with the percentage beside it.
+        </Note>
+      </dl>
+    </details>
+  );
 }
 
 export default async function Home({
@@ -687,121 +974,63 @@ export default async function Home({
   const systemOk = apiOk && dbOk;
 
   return (
-    <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col justify-center gap-6 p-8">
-      <div>
-        <h1 className="text-2xl font-semibold">DeepGuard</h1>
-        <p className="text-sm opacity-70">Web → API → DB connectivity check</p>
-      </div>
-
-      <div className="rounded-lg border border-black/10 p-6 dark:border-white/15">
-        <StatusRow
-          label="Web"
-          ok
-          detail="running"
-        />
-        <StatusRow
-          label="API"
-          ok={apiOk}
-          detail={result.reachable ? result.health.status : "unreachable"}
-        />
-        <StatusRow
-          label="Database"
-          ok={dbOk}
-          detail={result.reachable ? result.health.database : "unknown"}
-        />
-      </div>
-
-      <p className="text-sm">
-        System status:{" "}
-        <strong className={systemOk ? "text-green-600" : "text-red-600"}>
-          {systemOk ? "OPERATIONAL" : "DEGRADED"}
-        </strong>
-      </p>
-
-      {!result.reachable && (
-        <p className="font-mono text-xs opacity-70">
-          {API_URL} — {result.error}
-        </p>
-      )}
-
-      <SubmissionPanel
-        submitted={singleParam(params.submitted)}
-        error={singleParam(params.error)}
-      />
-
-      <section className="rounded-lg border border-black/10 p-6 dark:border-white/15">
-        <h2 className="text-lg font-semibold">Recent analyses</h2>
-        <p className="mt-1 text-sm opacity-70">
-          Risk is a deterministic DeepGuard classification based on calibrated forensic
-          evidence. It is not a Fake/Real determination.{" "}
-          <span className="font-mono">{RISK_LABELS.MEDIUM}</span> is the indeterminate band
-          — evidence that settles nothing either way — and the absence of{" "}
-          <span className="font-mono">{RISK_LABELS.HIGH}</span> does not rule out face
-          manipulation. <span className="font-mono">{RISK_LABELS.UNKNOWN}</span> means the
-          engine ran and could not classify, which is not the same as{" "}
-          <span className="font-mono">{PENDING}</span>, where no decision has been taken
-          yet, or <span className="font-mono">{ABSENT}</span>, where an analysis finished
-          before there was an engine to take one. Each level is shown with the ruleset that
-          produced it, since the same word means something different under a different one.{" "}
-          <span className="font-mono">{UNSUPPORTED}</span> means the stored state is not one
-          this build classifies under, so it is reported as unsupported rather than shown as
-          a risk class DeepGuard has no calibrated meaning for.
-        </p>
-        <p className="mt-1 text-sm opacity-70">
-          Synthetic probability is NVIDIA&apos;s own score for its synthetic-video detector,
-          shown as returned. It is not a verdict.
-        </p>
-        <p className="mt-1 text-sm opacity-70">
-          Provenance is what the file itself carries: C2PA Content Credentials, read from
-          the forensic original and shown in C2PA&apos;s own words. Most media carries none,
-          so <span className="font-mono">{NO_PROVENANCE}</span> is the ordinary case and not
-          a finding — and an invalid manifest means the credentials do not verify, not that
-          the media is fake. <span className="font-mono">{REMOTE_PROVENANCE}</span> means the
-          file named a manifest stored somewhere else; that URL was recorded and deliberately
-          never visited, so nothing is known about what it holds.
-        </p>
-        <p className="mt-1 text-sm opacity-70">
-          Media is what ffprobe read out of the original before any detector ran, shown as
-          ffprobe reported it. The container is its demuxer family — one name covers MOV and
-          MP4 alike — and it is not narrowed to a container the stored evidence cannot prove.
-          The declared type beside it is only what the client claimed.
-        </p>
-        <p className="mt-1 text-sm opacity-70">
-          Active speaker is when NVIDIA saw a tracked face speaking, in seconds from the start
-          of the analysed video, with the face it tracked and the diarized voice matched to
-          it. It is a record of what was observed, not a finding:{" "}
-          <span className="font-mono">{NO_SPEAKING_FACES}</span> means the detector ran and
-          saw nobody speaking, which is the ordinary case for most footage, and{" "}
-          <span className="font-mono">{SPEAKER_UNAVAILABLE}</span> means it did not get to
-          look at all. Neither says the video is fake.
-        </p>
-        <p className="mt-1 text-sm opacity-70">
-          Audio is the two raw logits a local anti-spoofing checkpoint emitted for each
-          window of audio it was given, shown as emitted. The times are the bounds of those
-          windows — DeepGuard cut the audio into fixed 4.04s pieces because that is all the
-          model accepts — and not stretches the model found anything in. The model publishes
-          no threshold and no calibration, so neither figure is a probability, a confidence
-          or a verdict, and consecutive windows of genuine speech routinely disagree.{" "}
-          <span className="font-mono">{NO_AUDIO_WINDOWS}</span> means the reading ran and
-          stored none, which is not proof the file carries no audio, and{" "}
-          <span className="font-mono">{AUDIO_UNAVAILABLE}</span> means it did not get to run.
-        </p>
-        <p className="mt-1 text-sm opacity-70">
-          Strongest clips are the highest-scoring of the clips NVIDIA examined, identified by
-          frame index because the detector reports no timestamps. The figure is its raw model
-          logit, not a probability and not comparable with the percentage beside it.
-        </p>
-
-        {!analysesResult.ok ? (
-          <p className="mt-4 text-sm text-red-600">{analysesResult.error}</p>
-        ) : analysesResult.analyses.length === 0 ? (
-          <p className="mt-4 text-sm opacity-70">No analyses yet.</p>
-        ) : (
-          <div className="mt-4">
-            <AnalysisTable analyses={analysesResult.analyses} />
+    <>
+      {/* The bar carries the product name and the one piece of ambient state worth showing
+          at all times. It clips nothing, so the health panel opens over the page below. */}
+      <header className="sticky top-0 z-20 border-b border-line bg-surface">
+        <div className="mx-auto flex h-16 w-full max-w-[1600px] items-center justify-between gap-4 px-6 sm:px-8">
+          <div className="flex items-center gap-3">
+            <h1 className="text-base font-semibold tracking-tight">DeepGuard</h1>
+            {/* Dropped rather than wrapped below `sm`: a two-line bar reads as a defect,
+                and the name alone is enough once the viewport is that narrow. */}
+            <span aria-hidden className="hidden h-4 w-px bg-line sm:block" />
+            <span className="hidden text-sm whitespace-nowrap text-muted sm:inline">
+              Media forensics
+            </span>
           </div>
-        )}
-      </section>
-    </main>
+
+          <HealthControl
+            result={result}
+            apiOk={apiOk}
+            dbOk={dbOk}
+            systemOk={systemOk}
+          />
+        </div>
+      </header>
+
+      <main className="mx-auto grid w-full max-w-[1600px] flex-1 gap-10 px-6 py-8 sm:px-8">
+        <SubmissionPanel
+          submitted={singleParam(params.submitted)}
+          error={singleParam(params.error)}
+        />
+
+        {/* `min-w-0` is load-bearing: a grid item defaults to `min-width: auto`, which sizes
+            this column to the table's 1400px minimum and pushes the overflow onto the page
+            instead of leaving it inside the table's own scroll container. */}
+        <section className="min-w-0">
+          <h2 className="text-lg font-semibold tracking-tight">Recent analyses</h2>
+          <div className="mt-4">
+            <Methodology />
+          </div>
+
+          {!analysesResult.ok ? (
+            <div className="mt-4">
+              <Alert tone="error">{analysesResult.error}</Alert>
+            </div>
+          ) : analysesResult.analyses.length === 0 ? (
+            <div className="mt-4 rounded-lg border border-dashed border-line px-6 py-12 text-center">
+              <p className="text-sm font-medium">No analyses yet</p>
+              <p className="mx-auto mt-1 max-w-[48ch] text-sm text-muted">
+                Submit a file or a URL above. Each accepted submission becomes a row here.
+              </p>
+            </div>
+          ) : (
+            <div className="mt-4">
+              <AnalysisTable analyses={analysesResult.analyses} />
+            </div>
+          )}
+        </section>
+      </main>
+    </>
   );
 }

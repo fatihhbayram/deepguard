@@ -1,19 +1,44 @@
 @import "tailwindcss";
 
+/*
+ * One neutral family for the whole surface: slate. The risk palette in `analysis.ts`
+ * already classifies evidence in rose / amber / slate, so the chrome stays in the same
+ * cool family rather than introducing a second grey that would read as a different
+ * product mid-page.
+ *
+ * `--muted` and `--faint` exist because secondary text used to be dimmed with `opacity`,
+ * which makes contrast unmeasurable — the computed colour depends on whatever is behind
+ * it. These are real colours: 7.5:1 and 4.8:1 against the light background, 8.7:1 and
+ * 6.5:1 against the dark one, so every tier clears WCAG AA for body text.
+ */
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --surface: #f8fafc;
+  --line: #e2e8f0;
+  --muted: #475569;
+  --faint: #64748b;
+  --selection: #cbd5e1;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-line: var(--line);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+    --surface: #111318;
+    --line: #26292f;
+    --muted: #a3adbb;
+    --faint: #8b95a3;
+    --selection: #334155;
   }
 }
 
@@ -21,4 +46,38 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: system-ui, sans-serif;
+}
+
+/*
+ * The surfaces the browser draws for us. Left at their defaults they belong to no design
+ * system, and on a page that is mostly data they are a large share of what the reader
+ * actually touches: the selection they drag across a hash, the caret in the URL field,
+ * the scrollbar of the evidence table, the ring that shows where the keyboard is.
+ */
+::selection {
+  background: var(--selection);
+}
+
+html {
+  caret-color: var(--foreground);
+  scrollbar-color: var(--line) transparent;
+  scrollbar-width: thin;
+}
+
+:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 2px;
+}
+
+a {
+  text-underline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }
