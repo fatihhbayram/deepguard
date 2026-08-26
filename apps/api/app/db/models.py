@@ -5,6 +5,9 @@ storage, ffprobe and normalization, the queued work that detection still owes it
 row per detector signal, and — since P7-T3 — the risk decision the analysis ended in,
 recorded with the ruleset and calibration it was taken under.
 
+Alongside them, and belonging to no analysis, is `api_keys` — the credentials the public
+API authenticates B2B callers with (P9-T1).
+
 Media identity is not analysis identity. Storage keys and hashes are content-addressed,
 so the same bytes can legitimately be uploaded and analysed more than once; none of
 those columns is unique.
@@ -24,6 +27,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    true as sa_true,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -268,6 +272,57 @@ class AnalysisSignal(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ApiKey(Base):
+    """A credential a B2B caller authenticates the public API with.
+
+    The plaintext key exists once, at the moment it is generated, and is handed to whoever
+    asked for it. What is stored here is its SHA-256 digest and nothing else: a database
+    dump, a backup or a leaked replica therefore yields no usable credential, and DeepGuard
+    itself cannot show a customer their key again — it can only replace it.
+
+    SHA-256 rather than a password hash on purpose. The secret is 256 bits of `secrets`
+    output, not a human-chosen password, so there is no dictionary to slow an attacker
+    down; the cost a bcrypt-class hash buys would be paid on every single request instead.
+
+    `key_hash` is unique because it identifies the row — authentication hashes the
+    presented key and looks it up directly, which is what keeps verification a single
+    indexed lookup rather than a scan over every key on file.
+
+    Deactivation is `is_active`, not deletion: a key that authenticated real analyses stays
+    on file so those requests remain attributable after it stops working.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+
+    # Who the key is for, for an operator reading the table. Not a secret and not an
+    # identifier — nothing authenticates by name.
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    key_hash: Mapped[str] = mapped_column(
+        String(SHA256_HEX_LENGTH), nullable=False, unique=True, index=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_true()
+    )
+
+    # When the key last authenticated a request. Null until it ever has — which is every
+    # row today, because nothing writes this column yet. Recording it means a write on the
+    # hot path of every authenticated request, and that trade belongs to the task that
+    # actually needs the figure rather than to the one that adds the column.
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 
