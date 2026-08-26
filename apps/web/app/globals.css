@@ -1,72 +1,76 @@
 @import "tailwindcss";
 
 /*
- * One neutral family for the whole surface: slate. The risk palette in `analysis.ts`
- * already classifies evidence in rose / amber / slate, so the chrome stays in the same
- * cool family rather than introducing a second grey that would read as a different
- * product mid-page.
- *
- * `--muted` and `--faint` exist because secondary text used to be dimmed with `opacity`,
- * which makes contrast unmeasurable — the computed colour depends on whatever is behind
- * it. These are real colours: 7.5:1 and 4.8:1 against the light background, 8.7:1 and
- * 6.5:1 against the dark one, so every tier clears WCAG AA for body text.
+ * `dark:` resolves off the class on <html>, not off the system theme. DeepGuard ships one
+ * theme, and the risk palette in `analysis.ts` states its legible foreground in `dark:`
+ * variants — leaving those to `prefers-color-scheme` would drop rose-700 onto an ink
+ * background for anyone whose machine is set to light.
  */
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-  --surface: #f8fafc;
-  --line: #e2e8f0;
-  --muted: #475569;
-  --faint: #64748b;
-  --selection: #cbd5e1;
-}
+@custom-variant dark (&:where(.dark, .dark *));
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-surface: var(--surface);
-  --color-line: var(--line);
-  --color-muted: var(--muted);
-  --color-faint: var(--faint);
-}
+@theme {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", monospace;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-    --surface: #111318;
-    --line: #26292f;
-    --muted: #a3adbb;
-    --faint: #8b95a3;
-    --selection: #334155;
-  }
-}
+  /*
+   * A warm base, not a cool one. The greys are tinted toward the ink so the surface reads
+   * as one material under long viewing rather than as a neutral chrome the evidence sits
+   * on top of.
+   *
+   * `accent` is reserved for the system speaking — focus, interaction, ingest, live state.
+   * It is never used on an evidence surface: it sits between rose and amber in hue, and a
+   * forensic figure tinted with it would read as a risk signal the engine never emitted.
+   * Colour on evidence belongs to `RISK_STYLES` alone.
+   */
+  --color-ink: #141311;
+  --color-ink-2: #1a1917;
+  --color-bone: #ece9e2;
+  --color-muted: #8d8779;
+  --color-line: #2b2925;
+  --color-accent: #ff4a00;
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: system-ui, sans-serif;
-}
-
-/*
- * The surfaces the browser draws for us. Left at their defaults they belong to no design
- * system, and on a page that is mostly data they are a large share of what the reader
- * actually touches: the selection they drag across a hash, the caret in the URL field,
- * the scrollbar of the evidence table, the ring that shows where the keyboard is.
- */
-::selection {
-  background: var(--selection);
+  /* Hairlines tinted from the foreground rather than flat greys, so they hold their weight
+     against both the base and the raised plate. */
+  --color-hair: rgba(236, 233, 226, 0.08);
+  --color-plate: rgba(236, 233, 226, 0.1);
+  --color-chip: rgba(236, 233, 226, 0.15);
+  --color-rule: rgba(236, 233, 226, 0.3);
 }
 
 html {
-  caret-color: var(--foreground);
-  scrollbar-color: var(--line) transparent;
+  background: var(--color-ink);
+  color-scheme: dark;
+}
+
+body {
+  color: var(--color-bone);
+  font-family: var(--font-sans);
+}
+
+/*
+ * The surfaces the browser draws. On a page that is mostly figures these are a large share
+ * of what a reader actually touches: the selection dragged across a hash, the caret in the
+ * URL field, the scrollbar of the evidence drawer, the ring that says where the keyboard is.
+ */
+::selection {
+  background: var(--color-accent);
+  color: var(--color-ink);
+}
+
+html {
+  caret-color: var(--color-accent);
+  scrollbar-color: var(--color-line) transparent;
   scrollbar-width: thin;
 }
 
 :focus-visible {
-  outline: 2px solid var(--foreground);
-  outline-offset: 2px;
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+
+  /* Tailwind's `transition-colors` animates `outline-color`, which fades the ring in over
+     the hover duration. Focus indication is the one thing that must never lag the input
+     that caused it, so transitions are dropped for as long as the ring is showing. */
+  transition-property: none;
 }
 
 a {
