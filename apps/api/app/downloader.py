@@ -66,6 +66,28 @@ TEMP_DIR_PREFIX = "deepguard-download-"
 # bytes later, so what is fetched should be what was published.
 MEDIA_FORMAT = "best[ext=mp4]/best[ext=mov]/best"
 
+# YouTube is the exception that needs a word said about it. Its default player clients
+# answer with DASH and HLS only — every format they list is video-only or audio-only — so
+# `MEDIA_FORMAT` finds no single muxed file and the extractor refuses with "Requested format
+# is not available". That is not a bot block and no credential fixes it; it is a catalogue
+# that contains nothing of the shape this module asks for.
+#
+# The `android` player client still lists itag 18: one progressive MP4, H.264 video and AAC
+# audio already muxed together, which is exactly what `MEDIA_FORMAT` wants and what the rest
+# of this module was written around. Naming the client is therefore the whole fix — the
+# format selector, the size ceiling, the live-stream refusal and both SSRF guards are
+# untouched, and nothing is merged, so the bytes on disk are still bytes YouTube served.
+#
+# The cost is that itag 18 is capped at 360p, so a YouTube analysis sees a lower-resolution
+# frame than the same video uploaded as a file would. That is the deliberate trade: the
+# alternative is fetching a video stream and an audio stream and re-muxing them into a
+# container no publisher ever produced, which is the thing the comment above refuses to do.
+#
+# Scoped to `youtube` alone. Every other extractor keeps yt-dlp's own defaults, because no
+# other site tested here needs steering and pinning clients per-site is a maintenance debt
+# that only pays off where it is actually required.
+EXTRACTOR_ARGS = {"youtube": {"player_client": ["android"]}}
+
 # How long a single stalled read may hang before the download gives up.
 SOCKET_TIMEOUT_SECONDS = 30
 
@@ -317,6 +339,7 @@ def _options(directory: Path) -> dict:
     """
     return {
         "format": MEDIA_FORMAT,
+        "extractor_args": EXTRACTOR_ARGS,
         "paths": {"home": str(directory)},
         "outtmpl": {"default": "media.%(ext)s"},
         # A URL that happens to name a playlist is one video's worth of work, not a channel's.

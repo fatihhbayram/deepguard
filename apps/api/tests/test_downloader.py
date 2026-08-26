@@ -582,6 +582,38 @@ def test_fragments_are_fetched_on_the_guarded_thread(dns, site):
     assert site.instances[0].options["concurrent_fragment_downloads"] == 1
 
 
+def test_youtube_is_asked_for_a_client_that_serves_a_muxed_format(dns, site):
+    """Without this, YouTube offers nothing `MEDIA_FORMAT` can select.
+
+    YouTube's default player clients list DASH and HLS only — every format video-only or
+    audio-only — so asking for one already-muxed file matches nothing and the extractor
+    refuses. The `android` client still lists itag 18, a progressive H.264/AAC MP4, which
+    is the shape the rest of this module is built around.
+
+    Asserted as the exact option yt-dlp receives, because this is a real download's only
+    protection against a well-meaning edit that drops it and turns every YouTube URL back
+    into "Requested format is not available".
+    """
+    with downloader.download(PUBLIC_URL):
+        pass
+
+    extractor_args = site.instances[0].options["extractor_args"]
+
+    assert extractor_args["youtube"]["player_client"] == ["android"]
+
+
+def test_no_other_extractor_is_steered(dns, site):
+    """Only YouTube needs a client named, so only YouTube gets one.
+
+    A direct media URL and every other site keep yt-dlp's own defaults; pinning clients
+    per-site is maintenance debt that only pays off where it is actually required.
+    """
+    with downloader.download(PUBLIC_URL):
+        pass
+
+    assert set(site.instances[0].options["extractor_args"]) == {"youtube"}
+
+
 # --- cleanup ------------------------------------------------------------------------------
 
 
