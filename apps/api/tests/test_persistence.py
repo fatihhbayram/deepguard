@@ -98,6 +98,8 @@ def test_migration_created_the_analysis_schema(database):
     } <= set(inspector.get_table_names())
     # The risk columns are the decision trace P7-T3 added, and they are the whole of it:
     # no score, no threshold, no clip count is copied here from the evidence rows.
+    # `api_key_id` (P9-T2) is the public API's owner and is null for every dashboard
+    # analysis, which is what keeps internal uploads out of every customer's reads.
     assert {column["name"] for column in inspector.get_columns("analyses")} == {
         "id",
         "status",
@@ -106,6 +108,7 @@ def test_migration_created_the_analysis_schema(database):
         "risk_rules_version",
         "risk_calibration_id",
         "risk_rule_id",
+        "api_key_id",
     }
     assert {column["name"] for column in inspector.get_columns("media_files")} == {
         "id",

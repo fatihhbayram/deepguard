@@ -439,8 +439,15 @@ def persist_analysis(
     metadata: MediaMetadata,
     was_normalized: bool,
     derivative_storage_key: str | None,
+    api_key_id: uuid.UUID | None = None,
 ) -> Analysis:
     """Write the queued analysis, its media and the job it is owed in one transaction.
+
+    `api_key_id` is the key that submitted the upload, or None for the dashboard, which
+    authenticates nobody. It is written in the same insert as the analysis rather than
+    updated onto it afterwards: ownership is what the public API's isolation rests on, and
+    a row that existed for even one commit without its owner would be a row no public read
+    could reach and no owner could be inferred for.
 
     Called once the original is stored and probed, which is everything the worker needs to
     start: it can fetch those bytes, read their provenance, transcode them if they need it
@@ -459,7 +466,7 @@ def persist_analysis(
     On failure the session is rolled back and the stored objects are reported rather than
     deleted, since they are content-addressed and may be shared.
     """
-    analysis = Analysis(status=ANALYSIS_STATUS_QUEUED)
+    analysis = Analysis(status=ANALYSIS_STATUS_QUEUED, api_key_id=api_key_id)
     session.add(analysis)
     # Assigns the analysis id the media row needs, still inside the same transaction.
     session.flush()
@@ -492,12 +499,33 @@ def persist_analysis(
     return analysis
 
 
-@router.post(
-    "/analyses", response_model=CreatedAnalysis, status_code=status.HTTP_202_ACCEPTED
-)
-async def create_analysis(
-    file: UploadFile, session: Session = Depends(get_session)
-) -> CreatedAnalysis:
+@dataclass(frozen=True)
+class AcceptedUpload:
+    """A committed, queued analysis and everything the request established about it.
+
+    Internal, and shaped by what the pipeline produced rather than by what any one response
+    shows: the dashboard's `CreatedAnalysis` reports nearly all of it, the public API
+    reports the id and the status and nothing else. Neither endpoint is the reason these
+    fields exist, which is why the storage keys can sit here without being exposed anywhere
+    they should not be.
+    """
+
+    analysis: Analysis
+    filename: str | None
+    content_type: str
+    stored: StoredUpload
+    storage_key: str
+    metadata: MediaMetadata
+    was_normalized: bool
+    derivative_storage_key: str | None
+
+
+async def accept_upload(
+    file: UploadFile,
+    session: Session,
+    *,
+    api_key_id: uuid.UUID | None = None,
+) -> AcceptedUpload:
     """Admit an upload, prove it is real media, stage it, and queue it for detection.
 
     The declared content type is not proof that the bytes are a real MP4/MOV container,
@@ -527,6 +555,13 @@ async def create_analysis(
 
     On failure the temp file is dropped; the stored object is kept, because its
     content-addressed key may be shared with an earlier analysis.
+
+    Extracted from the route at the second caller (P9-T2) rather than in advance: the
+    public API accepts uploads under the same rules, and a second copy of this admission,
+    validation and queueing would be a second place for the size limit, the content-type
+    set, the orphan reporting and the failure mapping to drift apart. The route it came
+    from now only shapes a response; every `HTTPException` a caller can raise is raised
+    here, so both endpoints refuse the same upload for the same reason with the same status.
     """
     content_type = (file.content_type or "").strip().lower()
     if content_type not in ALLOWED_CONTENT_TYPES:
@@ -592,6 +627,7 @@ async def create_analysis(
             metadata=metadata,
             was_normalized=was_normalized,
             derivative_storage_key=canonical_key,
+            api_key_id=api_key_id,
         )
     except SQLAlchemyError:
         try:
@@ -608,17 +644,46 @@ async def create_analysis(
             detail="analysis could not be persisted",
         ) from None
 
-    return CreatedAnalysis(
-        id=analysis.id,
-        status=analysis.status,
+    return AcceptedUpload(
+        analysis=analysis,
         filename=file.filename,
         content_type=content_type,
-        size_bytes=stored.size_bytes,
-        sha256=stored.sha256,
+        stored=stored,
         storage_key=storage_key,
         metadata=metadata,
         was_normalized=was_normalized,
         derivative_storage_key=canonical_key,
+    )
+
+
+@router.post(
+    "/analyses", response_model=CreatedAnalysis, status_code=status.HTTP_202_ACCEPTED
+)
+async def create_analysis(
+    file: UploadFile, session: Session = Depends(get_session)
+) -> CreatedAnalysis:
+    """Accept a dashboard upload and report everything the request established about it.
+
+    No `api_key_id`: this is the internal route, it authenticates nobody, and the analyses
+    it commits are owned by nobody. That is what keeps them out of every public read.
+
+    The work is `accept_upload`; what is left here is the response, which is wider than the
+    public one on purpose — the dashboard is the same trust boundary as the server, so the
+    storage keys and content identity it needs are not a leak to it.
+    """
+    accepted = await accept_upload(file, session)
+
+    return CreatedAnalysis(
+        id=accepted.analysis.id,
+        status=accepted.analysis.status,
+        filename=accepted.filename,
+        content_type=accepted.content_type,
+        size_bytes=accepted.stored.size_bytes,
+        sha256=accepted.stored.sha256,
+        storage_key=accepted.storage_key,
+        metadata=accepted.metadata,
+        was_normalized=accepted.was_normalized,
+        derivative_storage_key=accepted.derivative_storage_key,
     )
 
 

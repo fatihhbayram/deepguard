@@ -5,8 +5,9 @@ storage, ffprobe and normalization, the queued work that detection still owes it
 row per detector signal, and — since P7-T3 — the risk decision the analysis ended in,
 recorded with the ruleset and calibration it was taken under.
 
-Alongside them, and belonging to no analysis, is `api_keys` — the credentials the public
-API authenticates B2B callers with (P9-T1).
+Alongside them is `api_keys` — the credentials the public API authenticates B2B callers
+with (P9-T1). Since P9-T2 an analysis may name the key that submitted it, which is what
+keeps one customer's analyses out of another's reads.
 
 Media identity is not analysis identity. Storage keys and hashes are content-addressed,
 so the same bytes can legitimately be uploaded and analysed more than once; none of
@@ -105,6 +106,22 @@ class Analysis(Base):
         String(SHA256_HEX_LENGTH), nullable=True
     )
     risk_rule_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    # Which API key submitted this analysis, when one did (P9-T2). Null is not missing
+    # data: it means the analysis came in through the internal dashboard, which
+    # authenticates nobody and owns nothing. Every public read filters on this column, so a
+    # null row is unreachable through the public API by construction — no key's id can
+    # equal null — and the dashboard keeps seeing everything, as it did before.
+    #
+    # `RESTRICT` rather than `CASCADE`: deleting a key must never take the analyses it
+    # authenticated with it, because those are forensic records that outlive the
+    # credential. Retiring a key is `is_active = false`, which leaves this intact.
+    api_key_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("api_keys.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
 
 
 class MediaFile(Base):

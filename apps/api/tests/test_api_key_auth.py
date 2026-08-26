@@ -339,30 +339,35 @@ def walk_routes(routes):
             yield from contexts()
 
 
-def test_existing_routes_do_not_require_an_api_key():
-    """The product app gained a credential, not a gate.
+def requires_api_key(dependant) -> bool:
+    """Whether a route's dependency tree reaches `require_api_key` at any depth."""
+    if dependant.call is require_api_key:
+        return True
+    return any(requires_api_key(child) for child in dependant.dependencies)
 
-    `/health` and the analyses routes answered unauthenticated before P9-T1 and still do;
-    a dependency accidentally mounted app-wide would show up here as a 401.
+
+def test_the_api_key_gate_covers_the_public_routes_and_nothing_else():
+    """Exactly the public API is authenticated — every route of it, and no route beside it.
+
+    Asserted as one set equality rather than as two separate checks, because both failures
+    matter and they are opposite mistakes: a public route missing from this set is an
+    unauthenticated external endpoint, and an internal route appearing in it is the
+    dashboard suddenly demanding a credential it has never had.
+
+    The internal paths are named explicitly so that a future FastAPI release changing how
+    included routers are stored breaks this loudly, instead of quietly narrowing the walk to
+    `/health` and passing because it inspected almost nothing.
     """
-    def requires_api_key(dependant) -> bool:
-        if dependant.call is require_api_key:
-            return True
-        return any(requires_api_key(child) for child in dependant.dependencies)
-
     inspected = list(walk_routes(production_app.routes))
     paths = {route.path for route in inspected}
 
-    # The routes this test exists to cover. Asserted explicitly so that a future FastAPI
-    # release changing how included routers are stored breaks the test loudly instead of
-    # narrowing it back down to `/health`.
-    assert {"/health", "/api/v1/analyses", "/api/v1/analyses/{analysis_id}"} <= paths
+    internal = {"/health", "/api/v1/analyses", "/api/v1/analyses/{analysis_id}"}
+    public = {"/api/public/v1/analyses", "/api/public/v1/analyses/{analysis_id}"}
+    assert internal | public <= paths
 
-    guarded = [
-        route.path for route in inspected if requires_api_key(route.dependant)
-    ]
+    guarded = {route.path for route in inspected if requires_api_key(route.dependant)}
 
-    assert guarded == []
+    assert guarded == public
 
 
 def test_health_still_answers_without_credentials():

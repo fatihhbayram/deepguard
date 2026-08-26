@@ -5,6 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.analyses import router as analyses_router
+from app.api.public_v1.analyses import router as public_analyses_router
 from app.db.session import get_session
 from app.request_limits import UploadRequestSizeLimit
 
@@ -14,6 +15,9 @@ app = FastAPI(title="DeepGuard API")
 app.add_middleware(UploadRequestSizeLimit)
 
 app.include_router(analyses_router)
+# The external B2B surface. Mounted under its own prefix and carrying its own API-key
+# dependency, so the internal routes above stay exactly as unauthenticated as they were.
+app.include_router(public_analyses_router)
 
 
 @app.get("/health")
