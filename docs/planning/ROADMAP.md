@@ -372,3 +372,10 @@ Expand media ingestion beyond direct file uploads to support public media URLs.
 
 - P1 data model must not be speculatively complicated to support URL ingestion.
 - Implemented strictly when URL ingestion becomes the immediate priority.
+
+## Exit criteria
+
+- Public API and Dashboard can accept URL inputs.
+- YouTube and direct public media URLs work end-to-end through the existing analysis pipeline.
+- TikTok is supported on a best-effort basis; Instagram remains unsupported without an authenticated session.
+- URL ingestion does not require changes to the P1 analysis data model.
