@@ -513,7 +513,7 @@ def test_the_limit_is_the_upload_limit(dns, site):
     A URL download allowed to be larger than an upload would be the upload limit with a hole
     in it.
     """
-    from app.api.analyses import MAX_UPLOAD_BYTES
+    from app.media import MAX_UPLOAD_BYTES
 
     assert downloader.MAX_DOWNLOAD_BYTES == MAX_UPLOAD_BYTES
 

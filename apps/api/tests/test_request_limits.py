@@ -14,7 +14,7 @@ import json
 
 import pytest
 
-from app.api.analyses import MAX_UPLOAD_BYTES
+from app.media import MAX_UPLOAD_BYTES
 from app.request_limits import (
     MAX_REQUEST_BYTES,
     MULTIPART_OVERHEAD_BYTES,

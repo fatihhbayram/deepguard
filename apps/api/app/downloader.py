@@ -42,7 +42,7 @@ from urllib.parse import urlsplit
 
 import yt_dlp
 
-from app.api.analyses import MAX_UPLOAD_BYTES
+from app.media import MAX_UPLOAD_BYTES
 
 logger = logging.getLogger(__name__)
 

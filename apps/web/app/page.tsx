@@ -584,7 +584,102 @@ function AnalysisTable({ analyses }: { analyses: AnalysisSummary[] }) {
   );
 }
 
-export default async function Home() {
+/**
+ * The one control on this dashboard: submit a local file, or a URL, for analysis.
+ *
+ * A plain HTML form posting to `/submit`, which forwards to the API. No client component and
+ * no JavaScript: the rest of this page is server-rendered, the API serves no CORS headers
+ * for a browser to post across, and a form is what works without either. The trade is that
+ * the outcome arrives as a redirect rather than as an in-place update, which is why the
+ * result of the last submission is read out of the query string here.
+ *
+ * Two inputs and one button, deliberately. There is no queue view, no progress, no history
+ * of submissions and no drag-and-drop: an accepted submission becomes a row in the table
+ * below, which is where the state of an analysis already lives.
+ *
+ * A URL submission waits for the download, so the request can take as long as fetching the
+ * media takes. That is stated on the form rather than hidden, because the page gives no
+ * other sign that anything is happening.
+ */
+function SubmissionPanel({
+  submitted,
+  error,
+}: {
+  submitted: string | null;
+  error: string | null;
+}) {
+  return (
+    <section className="rounded-lg border border-black/10 p-6 dark:border-white/15">
+      <h2 className="text-lg font-semibold">Submit media</h2>
+      <p className="mt-1 text-sm opacity-70">
+        An MP4 or MOV file, or a link to one. A URL is downloaded by the API first, so the
+        page waits for the download before the analysis is queued; both then go through the
+        same pipeline and appear in the table below. Live streams cannot be analysed.
+      </p>
+
+      <form
+        action="/submit"
+        method="post"
+        encType="multipart/form-data"
+        className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end"
+      >
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="opacity-70">File</span>
+          <input
+            type="file"
+            name="file"
+            accept="video/mp4,video/quicktime"
+            className="text-sm"
+          />
+        </label>
+
+        <label className="flex flex-1 flex-col gap-1 text-sm">
+          <span className="opacity-70">or URL</span>
+          <input
+            type="url"
+            name="url"
+            placeholder="https://example.com/clip.mp4"
+            className="rounded border border-black/15 px-2 py-1 font-mono text-xs dark:border-white/20"
+          />
+        </label>
+
+        <button
+          type="submit"
+          className="rounded border border-black/15 px-3 py-1.5 text-sm font-medium dark:border-white/20"
+        >
+          Analyse
+        </button>
+      </form>
+
+      <p className="mt-2 text-xs opacity-60">
+        If both are filled in, the URL is used.
+      </p>
+
+      {/* The API's own refusal, shown as text. It is DeepGuard's client-facing wording —
+          extractor, socket and storage detail stay in the server log — and it says which
+          rule the submission broke rather than what went wrong inside. */}
+      {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      {submitted !== null && !error && (
+        <p className="mt-3 text-sm text-green-600">
+          Queued for analysis
+          {submitted ? <span className="font-mono"> · {submitted.slice(0, 8)}</span> : null}.
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** One query-string value, or null. A repeated parameter is not a submission outcome. */
+function singleParam(value: string | string[] | undefined): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+export default async function Home({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
   const [result, analysesResult] = await Promise.all([fetchHealth(), fetchAnalyses()]);
 
   const apiOk = result.reachable && result.httpOk && result.health.status === "ok";
@@ -628,6 +723,11 @@ export default async function Home() {
           {API_URL} — {result.error}
         </p>
       )}
+
+      <SubmissionPanel
+        submitted={singleParam(params.submitted)}
+        error={singleParam(params.error)}
+      />
 
       <section className="rounded-lg border border-black/10 p-6 dark:border-white/15">
         <h2 className="text-lg font-semibold">Recent analyses</h2>

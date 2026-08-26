@@ -34,7 +34,13 @@ from app.detection import (
     PROVENANCE_SIGNAL,
     SYNTHETIC_VIDEO_SIGNAL,
 )
-from app.media import MediaMetadata, MediaProbeError, MediaProbeUnavailable, probe_media
+from app.media import (
+    MAX_UPLOAD_BYTES,
+    MediaMetadata,
+    MediaProbeError,
+    MediaProbeUnavailable,
+    probe_media,
+)
 from app.normalization import needs_normalization
 from app.storage import store_original
 
@@ -43,7 +49,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["analyses"])
 
 ALLOWED_CONTENT_TYPES = frozenset({"video/mp4", "video/quicktime"})
-MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
 TEMP_FILE_PREFIX = "deepguard-upload-"
 
@@ -746,6 +751,27 @@ async def accept_upload(
     )
 
 
+def created_analysis(accepted: AcceptedUpload) -> CreatedAnalysis:
+    """The internal response for a staged analysis, however the media reached the pipeline.
+
+    Extracted at the second caller (P10-T2), which is the URL route: an upload and a URL
+    submission establish exactly the same facts, and two copies of this projection would be
+    two places to add a field to and one place to forget.
+    """
+    return CreatedAnalysis(
+        id=accepted.analysis.id,
+        status=accepted.analysis.status,
+        filename=accepted.filename,
+        content_type=accepted.content_type,
+        size_bytes=accepted.stored.size_bytes,
+        sha256=accepted.stored.sha256,
+        storage_key=accepted.storage_key,
+        metadata=accepted.metadata,
+        was_normalized=accepted.was_normalized,
+        derivative_storage_key=accepted.derivative_storage_key,
+    )
+
+
 @router.post(
     "/analyses", response_model=CreatedAnalysis, status_code=status.HTTP_202_ACCEPTED
 )
@@ -761,20 +787,7 @@ async def create_analysis(
     public one on purpose — the dashboard is the same trust boundary as the server, so the
     storage keys and content identity it needs are not a leak to it.
     """
-    accepted = await accept_upload(file, session)
-
-    return CreatedAnalysis(
-        id=accepted.analysis.id,
-        status=accepted.analysis.status,
-        filename=accepted.filename,
-        content_type=accepted.content_type,
-        size_bytes=accepted.stored.size_bytes,
-        sha256=accepted.stored.sha256,
-        storage_key=accepted.storage_key,
-        metadata=accepted.metadata,
-        was_normalized=accepted.was_normalized,
-        derivative_storage_key=accepted.derivative_storage_key,
-    )
+    return created_analysis(await accept_upload(file, session))
 
 
 def signal_figure(metadata: object, key: str, expected: type | tuple[type, ...]) -> Any | None:

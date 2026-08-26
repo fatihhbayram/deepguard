@@ -36,6 +36,7 @@ from app.api.analyses import (
     analysis_evidence_select,
     analysis_payloads,
 )
+from app.api.url_analyses import UrlSubmission, accept_url
 from app.auth import ApiKeyPrincipal, require_api_key
 from app.db.models import Analysis
 from app.db.session import get_session
@@ -169,6 +170,38 @@ def public_signals(summary: AnalysisSummary) -> list[PublicSignal]:
     )
 
 
+def limit_reached(
+    api_key_id: uuid.UUID, limit: ActiveAnalysisLimitReached
+) -> HTTPException:
+    """The `429` a key at its concurrency ceiling gets, whichever door it submitted through.
+
+    One copy for both submission routes (P10-T2): a URL submission occupies a slot exactly
+    as an upload does, and a second wording of the refusal would let the two answers drift.
+
+    The limit itself is worth telling the caller — it is their own outstanding work, and a
+    client that cannot see the ceiling can only guess at it. The count behind it is not: it
+    is the same number the caller can already get by polling their own analyses, and echoing
+    it here would be one more field to keep true.
+
+    No `Retry-After`. It would have to be a guess — what frees a slot is a detector
+    finishing, and nothing here knows when that will be — and a fabricated number is worse
+    than none, because a client would trust it.
+    """
+    logger.info(
+        "API key %s is at its concurrent analysis limit (%s active).",
+        api_key_id,
+        limit.active,
+    )
+
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=(
+            f"At most {limit.limit} analyses may be in progress at once. "
+            "Wait for one to finish."
+        ),
+    )
+
+
 def public_analysis(summary: AnalysisSummary) -> PublicAnalysis:
     """The stored record, narrowed to what the public contract promises."""
     return PublicAnalysis(
@@ -213,10 +246,6 @@ async def submit_analysis(
     cannot slip past it together — see `persist_analysis`. It is a temporary condition and
     says so: the caller's own work finishing is what clears it.
 
-    No `Retry-After`. It would have to be a guess — what frees a slot is a detector
-    finishing, and nothing here knows when that will be — and a fabricated number is worse
-    than none, because a client would trust it.
-
     Failures come out of the pipeline already shaped — `415` for a media type that is not
     accepted, `413` for an oversized body, `422` for bytes that are not usable video, `503`
     when storage or the media processor is down. None of them carries a stack trace, a
@@ -230,22 +259,44 @@ async def submit_analysis(
             max_active_analyses=MAX_ACTIVE_ANALYSES,
         )
     except ActiveAnalysisLimitReached as limit:
-        # The limit itself is worth telling the caller — it is their own outstanding work,
-        # and a client that cannot see the ceiling can only guess at it. The count behind
-        # it is not: it is the same number the caller can already get by polling their own
-        # analyses, and echoing it here would be one more field to keep true.
-        logger.info(
-            "API key %s is at its concurrent analysis limit (%s active).",
-            principal.id,
-            limit.active,
+        raise limit_reached(principal.id, limit) from None
+
+    return QueuedAnalysis(id=accepted.analysis.id, status=accepted.analysis.status)
+
+
+@router.post(
+    "/analyses/url", response_model=QueuedAnalysis, status_code=status.HTTP_202_ACCEPTED
+)
+async def submit_url_analysis(
+    submission: UrlSubmission,
+    principal: ApiKeyPrincipal = Depends(require_api_key),
+    session: Session = Depends(get_session),
+) -> QueuedAnalysis:
+    """Accept a customer's media URL, download it, and queue it owned by their key.
+
+    The same submission as the route above, with the media arriving by a different door.
+    `accept_url` downloads the URL and hands the file to the very pipeline an upload goes
+    through, so the size limit, the container validation, the forensic original, the queued
+    job, the ownership stamp and the concurrency limit are not restated here — they are the
+    same code, reached with the same two arguments.
+
+    Authentication is the router's, as it is for every route on this surface, so this
+    endpoint is behind an API key by construction rather than by this function remembering.
+
+    The request waits for the download. A URL that turns out to be a live stream, oversized
+    media, an address this server will not fetch or simply unavailable is refused with a
+    client error that says which of those it was, and nothing about the extractor, the
+    network or the address behind it — see `client_error` in `app.api.url_analyses`.
+    """
+    try:
+        accepted = await accept_url(
+            submission.url,
+            session,
+            api_key_id=principal.id,
+            max_active_analyses=MAX_ACTIVE_ANALYSES,
         )
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=(
-                f"At most {limit.limit} analyses may be in progress at once. "
-                "Wait for one to finish."
-            ),
-        ) from None
+    except ActiveAnalysisLimitReached as limit:
+        raise limit_reached(principal.id, limit) from None
 
     return QueuedAnalysis(id=accepted.analysis.id, status=accepted.analysis.status)
 

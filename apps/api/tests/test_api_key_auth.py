@@ -361,8 +361,22 @@ def test_the_api_key_gate_covers_the_public_routes_and_nothing_else():
     inspected = list(walk_routes(production_app.routes))
     paths = {route.path for route in inspected}
 
-    internal = {"/health", "/api/v1/analyses", "/api/v1/analyses/{analysis_id}"}
-    public = {"/api/public/v1/analyses", "/api/public/v1/analyses/{analysis_id}"}
+    internal = {
+        "/health",
+        "/api/v1/analyses",
+        # The URL submission (P10-T2). Mounted from its own module and still unauthenticated,
+        # like every other internal route: the dashboard has never carried a credential.
+        "/api/v1/analyses/url",
+        "/api/v1/analyses/{analysis_id}",
+    }
+    public = {
+        "/api/public/v1/analyses",
+        # A second submission route on the public surface, and one that makes this server
+        # fetch a URL. It is authenticated because it is on this router, not because the
+        # function remembered to say so — which is exactly what this test checks.
+        "/api/public/v1/analyses/url",
+        "/api/public/v1/analyses/{analysis_id}",
+    }
     assert internal | public <= paths
 
     guarded = {route.path for route in inspected if requires_api_key(route.dependant)}

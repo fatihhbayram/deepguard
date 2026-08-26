@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 FFPROBE_BINARY = "ffprobe"
 FFPROBE_TIMEOUT_SECONDS = 10
 
+# One ceiling for media entering DeepGuard, whatever door it comes through — a multipart
+# upload or a URL download. It lives here, beside the other facts about admitted media,
+# because both the upload route and the downloader need it and neither should have to
+# import the other to get it.
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+
 # Only the fields DeepGuard currently needs; full metadata dumps are both slower and a
 # larger parsing surface than this task requires.
 FFPROBE_ENTRIES = (

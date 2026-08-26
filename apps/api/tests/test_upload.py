@@ -12,7 +12,8 @@ from sqlalchemy.exc import OperationalError
 from minio.error import S3Error
 
 from app import detection, media, normalization, request_limits, storage
-from app.api.analyses import CHUNK_SIZE, MAX_UPLOAD_BYTES, TEMP_FILE_PREFIX
+from app.api.analyses import CHUNK_SIZE, TEMP_FILE_PREFIX
+from app.media import MAX_UPLOAD_BYTES
 from app.db.models import Analysis, AnalysisJob, MediaFile
 from app.db.session import get_session
 from app.main import app
