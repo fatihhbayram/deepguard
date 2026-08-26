@@ -17,17 +17,27 @@ had to be pulled out of for the inactive key.
 
 import hashlib
 import json
+import threading
 import uuid
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import media, storage
+from app.api.analyses import (
+    ActiveAnalysisLimitReached,
+    StoredUpload,
+    active_analyses,
+    persist_analysis,
+)
+from app.api.public_v1.analyses import MAX_ACTIVE_ANALYSES
 from app.auth import generate_api_key
 from app.db.models import (
     ANALYSIS_STATUS_COMPLETED,
+    ANALYSIS_STATUS_FAILED,
     ANALYSIS_STATUS_QUEUED,
     SIGNAL_STATUS_FAILED,
     SIGNAL_STATUS_SUCCESS,
@@ -47,6 +57,7 @@ from app.detection import (
     SYNTHETIC_VIDEO_SIGNAL,
 )
 from app.main import app
+from app.media import MediaMetadata
 
 SUBMIT_URL = "/api/public/v1/analyses"
 
@@ -101,13 +112,23 @@ def authorization(key: str) -> dict:
 class SubmissionSession:
     """A session that authenticates one key and records everything the route persists.
 
-    `execute` answers the API-key lookup — the only statement the submission path issues —
-    and the rest is the same recording session the internal upload tests use, so the rows
-    the pipeline builds can be inspected without PostgreSQL.
+    `execute` answers the two kinds of statement the submission path issues: the row
+    lookups — the API-key authentication and the `FOR UPDATE` on that same key — through
+    `scalar_one_or_none`, and the active-analysis count through `scalar_one`. The rest is
+    the same recording session the internal upload tests use, so the rows the pipeline
+    builds can be inspected without PostgreSQL.
+
+    `active` is what the count answers, and it is a dial on the fake rather than a fact
+    about a database. It is set to zero here and never moved: these tests are about what
+    the route does with an upload, and nothing about the limit is claimed from them. The
+    limit is a lock, it is proven against real PostgreSQL in the section at the bottom of
+    this file, and a fake that could be told to report five would let a test assert a `429`
+    while the enforcement was gone.
     """
 
     def __init__(self, api_key: ApiKey | None) -> None:
         self.api_key = api_key
+        self.active = 0
         self.added = []
         self.commits = 0
         self.rollbacks = 0
@@ -118,6 +139,9 @@ class SubmissionSession:
         class Result:
             def scalar_one_or_none(self):
                 return session.api_key
+
+            def scalar_one(self):
+                return session.active
 
         return Result()
 
@@ -781,3 +805,371 @@ def test_an_analysis_is_readable_end_to_end_by_the_key_that_submitted_it(
 
     # And the analysis really is owned in the database, not merely readable by luck.
     assert db.get(Analysis, uuid.UUID(analysis_id)).api_key_id == key.id
+
+
+# --- the concurrency limit ---------------------------------------------------------------
+#
+# Real PostgreSQL throughout, and for a stronger reason than the reads above: the limit is
+# a lock. Its whole purpose is what happens when two requests for one key arrive at the
+# same moment, and there is no such moment in a fake session — a single-threaded fake would
+# report the limit holding while proving nothing about the only case it exists for.
+
+
+def fill_active(session, key: ApiKey, count: int) -> list[Analysis]:
+    """Give a key `count` analyses that are outstanding, as a real submission leaves them."""
+    return [
+        store_analysis(session, owner=key, status=ANALYSIS_STATUS_QUEUED)
+        for _ in range(count)
+    ]
+
+
+def submit_media(client, plaintext: str, payload: bytes = b"limit-test-bytes"):
+    return client.post(
+        SUBMIT_URL,
+        files={"file": ("clip.mp4", payload, "video/mp4")},
+        headers=authorization(plaintext),
+    )
+
+
+@integration
+def test_a_key_below_the_limit_is_accepted(reader, session, fake_minio):
+    db, analyses, _ = session
+    plaintext, key = issue_key(session)
+    fill_active(session, key, MAX_ACTIVE_ANALYSES - 1)
+
+    response = submit_media(reader, plaintext)
+
+    assert response.status_code == 202
+    analyses.append(uuid.UUID(response.json()["id"]))
+    assert active_analyses(db, key.id) == MAX_ACTIVE_ANALYSES
+
+
+@integration
+def test_a_key_at_the_limit_is_throttled(reader, session, fake_minio):
+    db, _, _ = session
+    plaintext, key = issue_key(session)
+    fill_active(session, key, MAX_ACTIVE_ANALYSES)
+
+    response = submit_media(reader, plaintext)
+
+    assert response.status_code == 429
+    assert str(MAX_ACTIVE_ANALYSES) in response.json()["detail"]
+
+
+@integration
+def test_a_throttled_submission_persists_nothing(reader, session, fake_minio):
+    """The refusal must leave the database exactly as it found it.
+
+    A 429 that had already committed the analysis would be the worst of both answers: the
+    caller told to back off, and the queue filled anyway.
+    """
+    db, _, _ = session
+    plaintext, key = issue_key(session)
+    fill_active(session, key, MAX_ACTIVE_ANALYSES)
+
+    submit_media(reader, plaintext)
+
+    assert active_analyses(db, key.id) == MAX_ACTIVE_ANALYSES
+    assert (
+        db.query(Analysis).filter(Analysis.api_key_id == key.id).count()
+        == MAX_ACTIVE_ANALYSES
+    )
+
+
+@integration
+def test_a_throttled_submission_leaves_the_session_usable(reader, session, fake_minio):
+    """The refusal releases the key's lock instead of stranding the transaction.
+
+    The `FOR UPDATE` taken to count is held by an open transaction until something ends it.
+    If a 429 left it open, this key's next request — and every other request sharing the
+    connection — would block on it. That the very next call answers at all is the check.
+    """
+    db, _, _ = session
+    plaintext, key = issue_key(session)
+    fill_active(session, key, MAX_ACTIVE_ANALYSES)
+
+    assert submit_media(reader, plaintext).status_code == 429
+
+    # A read, then another submission: both would hang on a lock nobody released.
+    assert reader.get("/api/v1/analyses").status_code == 200
+    assert submit_media(reader, plaintext).status_code == 429
+
+
+@integration
+def test_the_limit_is_per_key(reader, session, fake_minio):
+    """One customer at its ceiling must not throttle another.
+
+    The lock is on the submitting key's own row precisely so that two keys never contend,
+    and this is the behavioural half of that claim.
+    """
+    db, analyses, _ = session
+    throttled_plaintext, throttled = issue_key(session, name="acme")
+    free_plaintext, free = issue_key(session, name="globex")
+    fill_active(session, throttled, MAX_ACTIVE_ANALYSES)
+
+    assert submit_media(reader, throttled_plaintext).status_code == 429
+
+    response = submit_media(reader, free_plaintext)
+
+    assert response.status_code == 202
+    analyses.append(uuid.UUID(response.json()["id"]))
+
+
+@integration
+def test_finished_analyses_do_not_count_towards_the_limit(reader, session, fake_minio):
+    """Only outstanding work is counted. A key that has run a hundred analyses and has
+    none in flight is as free as a key that has never run one.
+    """
+    db, analyses, _ = session
+    plaintext, key = issue_key(session)
+
+    for _ in range(MAX_ACTIVE_ANALYSES):
+        store_analysis(session, owner=key, status=ANALYSIS_STATUS_COMPLETED)
+    for _ in range(MAX_ACTIVE_ANALYSES):
+        store_analysis(session, owner=key, status=ANALYSIS_STATUS_FAILED)
+
+    assert active_analyses(db, key.id) == 0
+
+    response = submit_media(reader, plaintext)
+
+    assert response.status_code == 202
+    analyses.append(uuid.UUID(response.json()["id"]))
+
+
+@integration
+def test_a_finishing_analysis_frees_a_slot(reader, session, fake_minio):
+    """The count is derived from the analyses themselves, so nothing has to release a slot.
+
+    A worker that finishes a job — or one that dies and has its job failed — frees capacity
+    by the same act, and no counter can drift away from the truth.
+    """
+    db, analyses, _ = session
+    plaintext, key = issue_key(session)
+    active = fill_active(session, key, MAX_ACTIVE_ANALYSES)
+
+    assert submit_media(reader, plaintext).status_code == 429
+
+    active[0].status = ANALYSIS_STATUS_COMPLETED
+    db.commit()
+
+    response = submit_media(reader, plaintext)
+
+    assert response.status_code == 202
+    analyses.append(uuid.UUID(response.json()["id"]))
+
+
+@integration
+def test_the_dashboard_is_not_throttled(reader, session, fake_minio):
+    """The internal route passes no limit, and unowned analyses are counted for no key.
+
+    DeepGuard's own uploads are not a customer competing for the queue, and throttling them
+    would be this task reaching into a route it was not asked to change.
+    """
+    db, analyses, _ = session
+
+    for _ in range(MAX_ACTIVE_ANALYSES + 3):
+        response = reader.post(
+            "/api/v1/analyses",
+            files={"file": ("clip.mp4", b"dashboard-bytes", "video/mp4")},
+        )
+
+        assert response.status_code == 202
+        analyses.append(uuid.UUID(response.json()["id"]))
+
+
+# --- the race ------------------------------------------------------------------------------
+
+
+def submit_on_its_own_connection(db, key_id: uuid.UUID, results: dict) -> None:
+    """One throttled submission through the real persistence transaction.
+
+    `persist_analysis` is called directly rather than through the endpoint. It is the
+    function that owns the transaction the limit lives in, and the HTTP layer above it adds
+    a thread pool and an event loop between this test and the lock — which is exactly the
+    timing these tests need to control.
+    """
+    try:
+        analysis = persist_analysis(
+            db,
+            filename="race.mp4",
+            content_type="video/mp4",
+            stored=StoredUpload(
+                path=Path("/nonexistent"),
+                size_bytes=1024,
+                sha256=hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest(),
+            ),
+            storage_key="originals/race",
+            metadata=MediaMetadata(
+                format_name="mov,mp4,m4a,3gp,3g2,mj2",
+                major_brand="mp42",
+                codec_name="h264",
+                width=1920,
+                height=1080,
+                duration=12.34,
+                frame_rate=30.0,
+                pix_fmt="yuv420p",
+                constant_frame_rate=True,
+            ),
+            was_normalized=False,
+            derivative_storage_key="originals/race",
+            api_key_id=key_id,
+            max_active_analyses=MAX_ACTIVE_ANALYSES,
+        )
+        results["accepted"].append(analysis.id)
+    except ActiveAnalysisLimitReached:
+        results["refused"].append(1)
+    except BaseException as error:  # pragma: no cover — reported, never swallowed
+        results["errors"].append(error)
+
+
+def concurrent_submission(key_id: uuid.UUID, barrier: threading.Barrier, results: dict):
+    """A submission that waits at the barrier with its connection already open.
+
+    The connection is established *before* the barrier on purpose. `SessionLocal()` does
+    not connect until the first statement, so a thread that waits first and connects
+    afterwards spends its first milliseconds opening a socket to PostgreSQL — and six
+    threads doing that arrive at the count spread far enough apart to stop contending at
+    all. Warming it here is what makes the barrier release six threads into the same
+    moment rather than into six different ones.
+    """
+    with SessionLocal() as db:
+        db.execute(text("SELECT 1"))
+
+        barrier.wait(timeout=10)
+
+        submit_on_its_own_connection(db, key_id, results)
+
+
+@integration
+def test_a_submission_waits_for_the_keys_lock_before_counting(session):
+    """The deterministic half of the race, and the one that pins the mechanism down.
+
+    A timing test can only ever say "these six happened to come out right this run". This
+    one removes the timing: the key's row is locked here, by this test, and held. A
+    submission for that key must then *block* — that it is still running after a second
+    and a half is the assertion, and it is the assertion a count-then-insert cannot pass,
+    because nothing would stop it reading four and admitting immediately.
+
+    Then the last free slot is taken under that same lock and the lock released, so the
+    waiting submission wakes into a database that filled up while it was queued. It has to
+    count again and refuse. A `FOR UPDATE` that was taken and then not re-counted — the
+    other easy mistake — fails here too, by admitting a sixth analysis.
+    """
+    db, analyses, _ = session
+    _, key = issue_key(session)
+    fill_active(session, key, MAX_ACTIVE_ANALYSES - 1)
+
+    results = {"accepted": [], "refused": [], "errors": []}
+    holder = SessionLocal()
+    contender = SessionLocal()
+    contender.execute(text("SELECT 1"))
+    thread = threading.Thread(
+        target=submit_on_its_own_connection, args=(contender, key.id, results)
+    )
+
+    try:
+        # This test now holds what `persist_analysis` must wait for.
+        holder.execute(
+            select(ApiKey.id).where(ApiKey.id == key.id).with_for_update()
+        ).scalar_one()
+
+        thread.start()
+
+        thread.join(timeout=1.5)
+        assert thread.is_alive(), (
+            "the submission did not wait for the key's lock, so the count and the insert "
+            "are not serialized"
+        )
+        assert results == {"accepted": [], "refused": [], "errors": []}
+
+        # Fill the last slot from inside the locked transaction, then release it.
+        latecomer = Analysis(status=ANALYSIS_STATUS_QUEUED, api_key_id=key.id)
+        holder.add(latecomer)
+        holder.commit()
+        analyses.append(latecomer.id)
+    finally:
+        # Whatever happened above, the lock is dropped, the contender is let go and
+        # anything it managed to create is handed to the fixture to remove. A failed
+        # assertion must not leave a locked row or an undeletable key behind it.
+        holder.close()
+        thread.join(timeout=30)
+        contender.close()
+        analyses.extend(results["accepted"])
+
+    assert not thread.is_alive()
+    assert results["errors"] == []
+    # It woke up, counted a full database, and refused — rather than inserting the sixth.
+    assert results["accepted"] == []
+    assert len(results["refused"]) == 1
+
+    db.expire_all()
+    assert active_analyses(db, key.id) == MAX_ACTIVE_ANALYSES
+
+
+@integration
+def test_concurrent_submissions_cannot_exceed_the_limit(session):
+    """The property the whole design exists for: many at once, and still exactly the limit.
+
+    One free slot and six threads racing for it. A plain count-then-insert passes every
+    other test in this section and fails this one — all six would read four, all six would
+    admit, and the key would end with ten analyses in flight.
+
+    The threads are released together on a barrier so they contend for real, and each holds
+    its own connection, because two threads sharing a session would be serialized by the
+    session rather than by PostgreSQL and would prove nothing.
+    """
+    db, analyses, _ = session
+    _, key = issue_key(session)
+    fill_active(session, key, MAX_ACTIVE_ANALYSES - 1)
+
+    racers = 6
+    barrier = threading.Barrier(racers)
+    results = {"accepted": [], "refused": [], "errors": []}
+
+    threads = [
+        threading.Thread(target=concurrent_submission, args=(key.id, barrier, results))
+        for _ in range(racers)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    analyses.extend(results["accepted"])
+
+    assert results["errors"] == []
+    assert len(results["accepted"]) == 1
+    assert len(results["refused"]) == racers - 1
+
+    db.expire_all()
+    assert active_analyses(db, key.id) == MAX_ACTIVE_ANALYSES
+
+
+@integration
+def test_concurrent_submissions_from_different_keys_all_succeed(session):
+    """Serializing one key must not serialize the service.
+
+    The same race, but every thread carries its own key. All of them must be admitted: a
+    lock taken on something shared — a table, an advisory lock on a constant — would still
+    pass the test above and would quietly turn every customer's uploads into one queue.
+    """
+    db, analyses, _ = session
+    keys = [issue_key(session, name=f"customer-{index}")[1] for index in range(6)]
+
+    barrier = threading.Barrier(len(keys))
+    results = {"accepted": [], "refused": [], "errors": []}
+
+    threads = [
+        threading.Thread(target=concurrent_submission, args=(key.id, barrier, results))
+        for key in keys
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    analyses.extend(results["accepted"])
+
+    assert results["errors"] == []
+    assert len(results["accepted"]) == len(keys)
+    assert results["refused"] == []

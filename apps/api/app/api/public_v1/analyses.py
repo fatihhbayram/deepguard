@@ -13,6 +13,11 @@ that another customer's analysis id is real.
 Nothing here recomputes anything. The status, the risk decision and the signals are read
 off the rows the worker committed; a read path that evaluated a rule of its own could
 answer differently from the record it is supposed to be reporting.
+
+Submission is capped per key (P9-T3): one customer may have `MAX_ACTIVE_ANALYSES` analyses
+in flight at a time, so no single integration can fill a queue that everyone shares. The
+cap is enforced in PostgreSQL, inside the transaction that creates the analysis, and only
+on submission — reads are not throttled.
 """
 
 import logging
@@ -25,6 +30,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.analyses import (
+    ActiveAnalysisLimitReached,
     AnalysisSummary,
     accept_upload,
     analysis_evidence_select,
@@ -44,6 +50,17 @@ router = APIRouter(
     # one forgotten line away.
     dependencies=[Depends(require_api_key)],
 )
+
+# How much work one API key may have in flight at once. A concurrency limit, not a quota:
+# it bounds how many analyses a customer can have outstanding at any moment, and says
+# nothing about how many they may run in a day. Finished analyses leave the count on their
+# own, so a key that submits five and waits is never worse off than one that submits five
+# and polls.
+#
+# Five because the queue is served by one worker against real detector calls, and a single
+# customer filling it would starve every other one. It is deliberately a plain constant:
+# per-key limits are a tier model, and DeepGuard has no tiers, no plans and no billing.
+MAX_ACTIVE_ANALYSES = 5
 
 
 class QueuedAnalysis(BaseModel):
@@ -190,12 +207,45 @@ async def submit_analysis(
     guards the route; this one is how the handler gets the principal, and FastAPI resolves
     the shared dependency once per request rather than authenticating twice.
 
+    A key may have `MAX_ACTIVE_ANALYSES` analyses outstanding at once, and the sixth is
+    refused with `429`. The limit is enforced inside the transaction that writes the
+    analysis, under a lock on the key's own row, so concurrent submissions from one key
+    cannot slip past it together — see `persist_analysis`. It is a temporary condition and
+    says so: the caller's own work finishing is what clears it.
+
+    No `Retry-After`. It would have to be a guess — what frees a slot is a detector
+    finishing, and nothing here knows when that will be — and a fabricated number is worse
+    than none, because a client would trust it.
+
     Failures come out of the pipeline already shaped — `415` for a media type that is not
     accepted, `413` for an oversized body, `422` for bytes that are not usable video, `503`
     when storage or the media processor is down. None of them carries a stack trace, a
     storage key or a statement; those stay in the server log.
     """
-    accepted = await accept_upload(file, session, api_key_id=principal.id)
+    try:
+        accepted = await accept_upload(
+            file,
+            session,
+            api_key_id=principal.id,
+            max_active_analyses=MAX_ACTIVE_ANALYSES,
+        )
+    except ActiveAnalysisLimitReached as limit:
+        # The limit itself is worth telling the caller — it is their own outstanding work,
+        # and a client that cannot see the ceiling can only guess at it. The count behind
+        # it is not: it is the same number the caller can already get by polling their own
+        # analyses, and echoing it here would be one more field to keep true.
+        logger.info(
+            "API key %s is at its concurrent analysis limit (%s active).",
+            principal.id,
+            limit.active,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"At most {limit.limit} analyses may be in progress at once. "
+                "Wait for one to finish."
+            ),
+        ) from None
 
     return QueuedAnalysis(id=accepted.analysis.id, status=accepted.analysis.status)
 

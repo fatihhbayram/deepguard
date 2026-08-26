@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased
 
@@ -21,6 +21,7 @@ from app.db.models import (
     AnalysisJob,
     AnalysisSegment,
     AnalysisSignal,
+    ApiKey,
     MediaFile,
 )
 from app.db.session import get_session
@@ -429,6 +430,43 @@ async def store_upload(file: UploadFile) -> StoredUpload:
     )
 
 
+class ActiveAnalysisLimitReached(Exception):
+    """One API key already has as much work outstanding as it is allowed.
+
+    Not an `HTTPException`. This is raised from inside the persistence transaction, which
+    has no business deciding a status code — the public route it belongs to maps it to a
+    `429`, and the internal route can never see it because it passes no limit.
+    """
+
+    def __init__(self, active: int, limit: int) -> None:
+        super().__init__(f"{active} active analyses, limit {limit}")
+        self.active = active
+        self.limit = limit
+
+
+def active_analyses(session: Session, api_key_id: uuid.UUID) -> int:
+    """How much work this key still has outstanding.
+
+    Outstanding is `queued`, and that single status covers both waiting and running: the
+    worker moves a job to `processing` but leaves its analysis `queued` until it finishes,
+    so an analysis is `queued` from the moment it is accepted to the moment it is
+    `completed` or `failed`. Counting that one status is therefore exactly the concurrent
+    work in flight, and finished analyses drop out of it on their own — nothing has to
+    decrement a counter, and a worker that dies mid-job cannot strand one.
+
+    Counted in the database rather than by loading rows: this runs on the upload path, and
+    what is wanted is the number, not the analyses.
+    """
+    return session.execute(
+        select(func.count())
+        .select_from(Analysis)
+        .where(
+            Analysis.api_key_id == api_key_id,
+            Analysis.status == ANALYSIS_STATUS_QUEUED,
+        )
+    ).scalar_one()
+
+
 def persist_analysis(
     session: Session,
     *,
@@ -440,6 +478,7 @@ def persist_analysis(
     was_normalized: bool,
     derivative_storage_key: str | None,
     api_key_id: uuid.UUID | None = None,
+    max_active_analyses: int | None = None,
 ) -> Analysis:
     """Write the queued analysis, its media and the job it is owed in one transaction.
 
@@ -448,6 +487,26 @@ def persist_analysis(
     updated onto it afterwards: ownership is what the public API's isolation rests on, and
     a row that existed for even one commit without its owner would be a row no public read
     could reach and no owner could be inferred for.
+
+    `max_active_analyses` caps how much work one key may have outstanding, and only the
+    public route passes it; the dashboard is not throttled. It is enforced *here* rather
+    than at the top of the route because the check and the insert have to be one atomic
+    step. A count taken before the upload and acted on after it is not a limit at all: two
+    requests from the same key would both read four, both admit, and both insert. So the
+    key's own row is locked `FOR UPDATE` first, the count is taken under that lock, and the
+    lock is only released by the commit that writes the analysis — which means a second
+    request for the same key waits at the lock and then counts a database that already
+    contains the first one's row.
+
+    The lock is taken *late*, once the bytes are stored and probed, and is held for three
+    inserts. Locking at the start of the request instead would be simpler and much worse:
+    it would hold the key's row across the read, the upload to MinIO and ffprobe, turning a
+    concurrency limit into a mutex that lets one customer run exactly one upload at a time.
+
+    Locking the `api_keys` row rather than the analyses is what makes this correct. There is
+    no row to lock for an analysis that does not exist yet, so the thing every competing
+    request for one key has in common — the key itself — is the serialization point.
+    Different keys lock different rows and never wait on each other.
 
     Called once the original is stored and probed, which is everything the worker needs to
     start: it can fetch those bytes, read their provenance, transcode them if they need it
@@ -466,6 +525,18 @@ def persist_analysis(
     On failure the session is rolled back and the stored objects are reported rather than
     deleted, since they are content-addressed and may be shared.
     """
+    if max_active_analyses is not None:
+        # The serialization point. Everything from here to the commit below is one
+        # transaction holding this key's row, so the count cannot be stale by the time the
+        # insert lands.
+        session.execute(
+            select(ApiKey.id).where(ApiKey.id == api_key_id).with_for_update()
+        ).scalar_one_or_none()
+
+        active = active_analyses(session, api_key_id)
+        if active >= max_active_analyses:
+            raise ActiveAnalysisLimitReached(active, max_active_analyses)
+
     analysis = Analysis(status=ANALYSIS_STATUS_QUEUED, api_key_id=api_key_id)
     session.add(analysis)
     # Assigns the analysis id the media row needs, still inside the same transaction.
@@ -525,6 +596,7 @@ async def accept_upload(
     session: Session,
     *,
     api_key_id: uuid.UUID | None = None,
+    max_active_analyses: int | None = None,
 ) -> AcceptedUpload:
     """Admit an upload, prove it is real media, stage it, and queue it for detection.
 
@@ -562,6 +634,12 @@ async def accept_upload(
     set, the orphan reporting and the failure mapping to drift apart. The route it came
     from now only shapes a response; every `HTTPException` a caller can raise is raised
     here, so both endpoints refuse the same upload for the same reason with the same status.
+
+    `max_active_analyses` is the one thing the two callers genuinely differ on, and it is
+    passed straight through to `persist_analysis`, which is where it has to be enforced.
+    Set, it can end this call in `ActiveAnalysisLimitReached` — the only failure here that
+    is not already an `HTTPException`, because the status it deserves is the public route's
+    to choose.
     """
     content_type = (file.content_type or "").strip().lower()
     if content_type not in ALLOWED_CONTENT_TYPES:
@@ -628,7 +706,19 @@ async def accept_upload(
             was_normalized=was_normalized,
             derivative_storage_key=canonical_key,
             api_key_id=api_key_id,
+            max_active_analyses=max_active_analyses,
         )
+    except ActiveAnalysisLimitReached:
+        # Rolled back explicitly rather than left to the session teardown: the transaction
+        # is holding this key's row `FOR UPDATE`, and every other request from the same key
+        # is queued behind it. Releasing it here is what keeps a refusal from delaying the
+        # requests that are about to be refused too.
+        session.rollback()
+        # The bytes reached MinIO before the limit was consulted, and no analysis now
+        # references them. They are content-addressed and may be shared with an earlier
+        # analysis, so they are reported rather than deleted, as everywhere else here.
+        report_possible_orphan(storage_key)
+        raise
     except SQLAlchemyError:
         try:
             session.rollback()
