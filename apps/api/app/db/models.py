@@ -215,6 +215,21 @@ class AnalysisJob(Base):
 
     status: Mapped[str] = mapped_column(String(16), nullable=False)
 
+    # When the claim on this job stops being believed, and therefore the one thing that
+    # tells a crashed worker apart from a slow one. The worker that claims a job sets this
+    # ahead of the database clock and pushes it forward again while it works; a worker that
+    # died stops pushing, the timestamp falls into the past, and the job becomes
+    # recoverable. Null on every job nobody is running — `queued` never had a lease, and a
+    # terminal job's is cleared when it ends.
+    #
+    # `updated_at` cannot do this job. It moves for any write and stands still through the
+    # long middle of a real analysis, so age alone would fail a live worker on a four-minute
+    # video and spare a dead one that crashed just after a write. This column is a promise
+    # about the future, which is what makes its expiry mean something.
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Why the job failed, for an operator reading the table. Null for every job that has
     # not failed — an empty string would read as a failure with nothing to say. This is
     # diagnostic text of unbounded length, not a code to branch on.

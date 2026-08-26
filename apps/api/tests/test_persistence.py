@@ -130,10 +130,14 @@ def test_migration_created_the_analysis_schema(database):
         "derivative_storage_key",
         "derivative_sha256",
     }
+    # `lease_expires_at` (P9-F1) is how a crashed worker is told from a slow one: the worker
+    # holding a job pushes it forward while it runs, and a deadline that falls into the past
+    # is what makes the job recoverable.
     assert {column["name"] for column in inspector.get_columns("analysis_jobs")} == {
         "id",
         "analysis_id",
         "status",
+        "lease_expires_at",
         "error_message",
         "created_at",
         "updated_at",

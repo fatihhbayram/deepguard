@@ -11,12 +11,13 @@ for work again, not what it finds.
 
 import hashlib
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import (
@@ -35,11 +36,14 @@ from app.audio_detector import (
     WindowEvidence,
 )
 from app.c2pa_extractor import C2paEvidence
+from app.api.analyses import active_analyses
+from app.auth import generate_api_key
 from app.db.models import (
     Analysis,
     AnalysisJob,
     AnalysisSegment,
     AnalysisSignal,
+    ApiKey,
     MediaFile,
 )
 from app.db.session import SessionLocal, engine
@@ -463,17 +467,19 @@ def fake_c2pa(monkeypatch):
 def release(claimed) -> None:
     """Put a job this test did not create back the way it found it.
 
-    These tests share a development database with real uploads, and `claim_job` takes
-    whatever is queued. Test jobs are backdated so they are always claimed first, but a
-    claim that reaches past them has taken someone else's work — and leaving it
-    `processing` would strand it, because nothing in P3 recovers a stalled job.
+    `claim_job` takes whatever is queued. Test jobs are backdated so they are always
+    claimed first, but a claim that reaches past them has taken work this test does not
+    own, and putting it straight back is cheaper than waiting for its lease to run out.
+
+    The lease goes back with the status. A `queued` job carrying a deadline would be a row
+    no worker holds and recovery would step over, since it only ever looks at `processing`.
     """
     if claimed is None:
         return
 
     with SessionLocal() as session:
         session.query(AnalysisJob).filter(AnalysisJob.id == claimed.job_id).update(
-            {"status": "queued"}
+            {"status": "queued", "lease_expires_at": None}
         )
         session.commit()
 
@@ -1879,3 +1885,462 @@ def test_a_classification_that_breaks_fails_the_job_but_keeps_the_evidence(
     }
     assert signals["synthetic_video"].score == NVIDIA_PROBABILITY
     assert len(read_segments(signals["synthetic_video"].id)) == 2
+
+
+# --- stale job recovery (P9-F1) -----------------------------------------------------------
+#
+# A worker that dies mid-job used to leave it `processing` forever. Nothing went back for it,
+# the analysis stayed `queued`, and after P9 that permanently consumed one of an API key's
+# five concurrency slots — five crashes and a customer was locked out of the public API with
+# no way to clear it.
+#
+# The fix is a lease, and the tests below are in two halves for a reason. Recovery is easy to
+# write and easy to get subtly wrong in two ways: failing a job whose worker is alive and
+# merely slow, and letting that worker come back and undo the recovery. Both halves are here.
+
+
+@pytest.fixture
+def api_key(database):
+    """One real API key, so a recovered slot can be counted rather than asserted about.
+
+    Deliberately not part of `queue`: it is torn down after it, because `analyses.api_key_id`
+    is `ON DELETE RESTRICT` and a key removed while an analysis still pointed at it would
+    fail. A test that wants both asks for this one first, and pytest unwinds in reverse.
+    """
+    generated = generate_api_key()
+    with SessionLocal() as session:
+        key = ApiKey(name="stale-recovery", key_hash=generated.key_hash)
+        session.add(key)
+        session.commit()
+        key_id = key.id
+
+    yield key_id
+
+    with SessionLocal() as session:
+        session.query(ApiKey).filter(ApiKey.id == key_id).delete()
+        session.commit()
+
+
+def own(analysis_id, key_id) -> None:
+    """Attribute an analysis to an API key, as a public submission would."""
+    with SessionLocal() as session:
+        session.query(Analysis).filter(Analysis.id == analysis_id).update(
+            {"api_key_id": key_id}
+        )
+        session.commit()
+
+
+def expire_lease(job_id, seconds_ago=1) -> None:
+    """Put a claimed job's deadline in the past, as a dead worker's would drift.
+
+    Written relative to `now()` in the database rather than to a Python timestamp, for the
+    same reason the worker writes it that way: this is the clock the comparison uses.
+    """
+    with SessionLocal() as session:
+        session.execute(
+            AnalysisJob.__table__.update()
+            .where(AnalysisJob.id == job_id)
+            .values(lease_expires_at=func.now() - timedelta(seconds=seconds_ago))
+        )
+        session.commit()
+
+
+def recover() -> int:
+    with SessionLocal() as session:
+        return worker.recover_stale_jobs(session)
+
+
+def claim_one():
+    """Claim whatever this test just queued, on a session that is then let go."""
+    with SessionLocal() as session:
+        return worker.claim_job(session)
+
+
+@pytest.mark.integration
+def test_claiming_a_job_starts_its_lease(queue):
+    """A claim without a deadline is the bug this whole mechanism exists to close.
+
+    `NULL < now()` is null, so a `processing` row with no lease is one recovery can never
+    reach — exactly the job that most needs reaching.
+    """
+    _, job_id = queue()
+
+    claimed = claim_one()
+
+    assert claimed.job_id == job_id
+    job = read_job(job_id)
+    assert job.status == "processing"
+    assert job.lease_expires_at is not None
+    # Ahead of the clock, which is what "leased" means. Compared against the database's own
+    # `now()`, not this process's.
+    assert job.lease_expires_at > datetime.now(timezone.utc)
+
+
+@pytest.mark.integration
+def test_a_queued_job_carries_no_lease(queue):
+    """Only a claimed job is anybody's. A deadline on an unclaimed row would say otherwise."""
+    _, job_id = queue()
+
+    assert read_job(job_id).lease_expires_at is None
+
+
+@pytest.mark.integration
+def test_an_expired_lease_fails_the_job_and_its_analysis(queue):
+    analysis_id, job_id = queue()
+    claim_one()
+    expire_lease(job_id)
+
+    assert recover() >= 1
+
+    job = read_job(job_id)
+    analysis = read_analysis(analysis_id)
+    assert job.status == "failed"
+    assert job.error_message == worker.STALE_LEASE_ERROR
+    # The parent analysis moves with it. Left `queued`, it would look like work still
+    # coming and would go on holding its API key's slot — the whole point of this task.
+    assert analysis.status == "failed"
+
+
+@pytest.mark.integration
+def test_a_recovered_analysis_records_no_classification(queue):
+    """Nothing classified this analysis, and null says so.
+
+    `UNKNOWN` would be a conclusion an explicit rule reached. A worker that vanished reached
+    no conclusion at all, and inventing a risk level for it would put a fabricated verdict
+    in a forensic record.
+    """
+    analysis_id, job_id = queue()
+    claim_one()
+    expire_lease(job_id)
+
+    recover()
+
+    analysis = read_analysis(analysis_id)
+    assert analysis.risk_level is None
+    assert analysis.risk_rules_version is None
+    assert analysis.risk_rule_id is None
+    assert analysis.risk_calibration_id is None
+
+
+@pytest.mark.integration
+def test_a_recovered_job_keeps_no_lease(queue):
+    """A terminal row carrying a deadline would claim a worker is still running it."""
+    _, job_id = queue()
+    claim_one()
+    expire_lease(job_id)
+
+    recover()
+
+    assert read_job(job_id).lease_expires_at is None
+
+
+@pytest.mark.integration
+def test_recovery_releases_the_api_key_concurrency_slot(api_key, queue):
+    """The objective, stated as the public API sees it.
+
+    A crashed worker's analysis stays `queued`, and `active_analyses` counts exactly the
+    `queued` ones — so before recovery this key has a slot consumed by work nobody is doing,
+    and after it the key is free again. This is the check that would have caught P9's
+    reported limitation.
+    """
+    analysis_id, job_id = queue()
+    own(analysis_id, api_key)
+    claim_one()
+    expire_lease(job_id)
+
+    with SessionLocal() as reader:
+        assert active_analyses(reader, api_key) == 1
+
+    recover()
+
+    with SessionLocal() as reader:
+        assert active_analyses(reader, api_key) == 0
+
+
+@pytest.mark.integration
+def test_a_live_lease_is_left_alone(queue):
+    """The failure mode that would be worse than the bug.
+
+    A four-minute video is not a crashed worker. If recovery could not tell them apart it
+    would fail real analyses in flight, and a customer would rather have a slot held than a
+    result thrown away.
+    """
+    analysis_id, job_id = queue()
+    claim_one()
+
+    recover()
+
+    assert read_job(job_id).status == "processing"
+    assert read_analysis(analysis_id).status == "queued"
+
+
+@pytest.mark.integration
+def test_staleness_is_not_read_off_updated_at(queue):
+    """The explicit constraint, as a test.
+
+    `updated_at` is ancient here and the lease is live — which is exactly the shape of a
+    real long job, because the middle of an analysis writes nothing for minutes at a time.
+    An age-based rule would fail this job. The lease does not, because it is a promise about
+    the future rather than a record of the past.
+    """
+    _, job_id = queue()
+    claim_one()
+
+    with SessionLocal() as session:
+        # Straight past the ORM's `onupdate`, which would otherwise refresh the very column
+        # being backdated.
+        session.execute(
+            text("UPDATE analysis_jobs SET updated_at = now() - interval '1 day' WHERE id = :id"),
+            {"id": job_id},
+        )
+        session.commit()
+
+    job = read_job(job_id)
+    assert job.updated_at < datetime.now(timezone.utc) - timedelta(hours=1)
+
+    recover()
+
+    assert read_job(job_id).status == "processing"
+
+
+@pytest.mark.integration
+def test_a_queued_job_is_never_recovered(queue):
+    """Recovery only ever looks at `processing`. A queued job is waiting, not abandoned."""
+    analysis_id, job_id = queue()
+
+    recover()
+
+    assert read_job(job_id).status == "queued"
+    assert read_analysis(analysis_id).status == "queued"
+
+
+@pytest.mark.integration
+def test_a_finished_job_is_never_recovered(queue, fake_storage):
+    """A completed job has no lease to expire, and recovery must not reopen it."""
+    analysis_id, job_id = queue()
+    with SessionLocal() as session:
+        assert worker.process_one(session) is True
+
+    assert read_job(job_id).status == "completed"
+    # The lease ends with the job, so there is nothing left for recovery to match on.
+    assert read_job(job_id).lease_expires_at is None
+
+    recover()
+
+    assert read_job(job_id).status == "completed"
+    assert read_analysis(analysis_id).status == "completed"
+
+
+@pytest.mark.integration
+def test_the_heartbeat_pushes_the_deadline_forward(queue):
+    """What keeps a legitimately long analysis alive."""
+    _, job_id = queue()
+    claim_one()
+    expire_lease(job_id)
+
+    with SessionLocal() as session:
+        assert worker.renew_lease(session, job_id) is True
+
+    assert read_job(job_id).lease_expires_at > datetime.now(timezone.utc)
+    # And a renewed job is no longer stale, which is the point of renewing it.
+    recover()
+    assert read_job(job_id).status == "processing"
+
+
+@pytest.mark.integration
+def test_the_heartbeat_cannot_revive_a_recovered_job(queue):
+    """A worker that comes back must not take its job off the recovery list.
+
+    If renewal were unconditional, a paused container waking up would push the deadline
+    forward on a job already failed and start heartbeating a corpse — leaving a `failed`
+    row that looks leased and, worse, telling the worker it still owned the job.
+    """
+    _, job_id = queue()
+    claim_one()
+    expire_lease(job_id)
+    recover()
+
+    with SessionLocal() as session:
+        assert worker.renew_lease(session, job_id) is False
+
+    job = read_job(job_id)
+    assert job.status == "failed"
+    assert job.lease_expires_at is None
+
+
+@pytest.mark.integration
+def test_a_recovered_job_cannot_be_completed_by_its_old_worker(queue, fake_storage):
+    """The resurrection case, and the one that makes recovery mean anything.
+
+    The worker did all the work and is about to publish a verdict when it discovers it was
+    declared dead. It must not overwrite `failed` with `completed`: the analysis has already
+    been reported failed and its concurrency slot already handed back, and taking either of
+    those back after the fact would make every recovery provisional.
+    """
+    analysis_id, job_id = queue()
+    claimed = claim_one()
+    expire_lease(job_id)
+    recover()
+
+    with SessionLocal() as session:
+        # Exactly what the old worker would do next, on evidence it really produced.
+        with worker.fetched_artifact(claimed.original_storage_key) as original:
+            provenance = detection.extract_provenance(original)
+            evidence = worker.analyse(claimed, original)
+        decision = worker.complete_job(session, claimed, evidence, provenance)
+
+    # It is told it lost, rather than silently succeeding.
+    assert decision is None
+
+    job = read_job(job_id)
+    analysis = read_analysis(analysis_id)
+    assert job.status == "failed"
+    assert job.error_message == worker.STALE_LEASE_ERROR
+    assert analysis.status == "failed"
+    # No verdict was published on an analysis this worker no longer owned.
+    assert analysis.risk_level is None
+
+
+@pytest.mark.integration
+def test_a_recovered_job_keeps_the_evidence_its_old_worker_committed(queue, fake_storage):
+    """Losing the job costs the verdict, not the forensic record.
+
+    The signals are independent evidence of what was genuinely observed about the media
+    (AGENTS.md rule 11). Deleting real findings because a scheduling event overtook the
+    worker that produced them would destroy evidence to tidy up.
+    """
+    analysis_id, job_id = queue()
+    claimed = claim_one()
+    expire_lease(job_id)
+    recover()
+
+    with SessionLocal() as session:
+        with worker.fetched_artifact(claimed.original_storage_key) as original:
+            provenance = detection.extract_provenance(original)
+            evidence = worker.analyse(claimed, original)
+        worker.complete_job(session, claimed, evidence, provenance)
+
+    assert "synthetic_video" in read_signals(analysis_id)
+
+
+@pytest.mark.integration
+def test_a_recovered_job_is_not_relabelled_by_its_old_worker(queue):
+    """A worker that crashes *after* being recovered must not rewrite the reason.
+
+    Both outcomes are `failed`, so nothing is at stake but the explanation — and
+    `StaleWorkerLease` is what actually happened, while whatever the dying worker tripped
+    over on its way out is a symptom of it.
+    """
+    _, job_id = queue()
+    claimed = claim_one()
+    expire_lease(job_id)
+    recover()
+
+    with SessionLocal() as session:
+        worker.fail_job(session, claimed, RuntimeError("storage went away"))
+
+    assert read_job(job_id).error_message == worker.STALE_LEASE_ERROR
+
+
+@pytest.mark.integration
+def test_racing_workers_recover_a_job_exactly_once(queue):
+    """Several workers, one stale job, all reaching for it together.
+
+    Recovery has no `SKIP LOCKED`: the second worker blocks on the first's row lock and then
+    re-checks the `WHERE` clause against the committed row, where the status is no longer
+    `processing`. Exactly one of them may report having recovered it — two would mean two
+    workers each believing they had freed a slot, and a count that could be double-released.
+    """
+    # Clear anything an earlier test left stale, so the counts below are about this job.
+    recover()
+
+    _, job_id = queue()
+    claim_one()
+    expire_lease(job_id)
+
+    start = threading.Barrier(4)
+    counts = []
+    guard = threading.Lock()
+
+    def work():
+        start.wait(timeout=10)
+        with SessionLocal() as session:
+            recovered = worker.recover_stale_jobs(session)
+        with guard:
+            counts.append(recovered)
+
+    threads = [threading.Thread(target=work) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert sum(counts) == 1
+    assert sorted(counts) == [0, 0, 0, 1]
+    assert read_job(job_id).status == "failed"
+
+
+@pytest.mark.integration
+def test_the_loop_recovers_stale_work_before_claiming_new_work(queue, fake_storage):
+    """Recovery rides the existing poll, and runs first.
+
+    Running it first is what lets one pass both release a slot and use it. It also means no
+    scheduler, no cron and no second process — the loop was already going to ask the
+    database for work.
+    """
+    stale_analysis, stale_job = queue(age=0)
+    claim_one()
+    expire_lease(stale_job)
+
+    fresh_analysis, fresh_job = queue(age=1)
+
+    with SessionLocal() as session:
+        assert worker.process_one(session) is True
+
+    # The abandoned job was failed on the way past...
+    assert read_job(stale_job).status == "failed"
+    assert read_analysis(stale_analysis).status == "failed"
+    # ...and the same pass went on to do real work.
+    assert read_job(fresh_job).status == "completed"
+    assert read_analysis(fresh_analysis).status == "completed"
+
+
+@pytest.mark.integration
+def test_a_job_outliving_its_lease_is_kept_alive_by_its_heartbeat(queue, fake_storage, monkeypatch):
+    """End to end: an analysis longer than the lease still completes.
+
+    The lease is shortened to a second and the heartbeat to well under it, then the work is
+    made to take several times the lease. Without renewal the job would be recovered out
+    from under itself and finish `failed`; with it, the deadline is pushed forward
+    throughout and the job completes normally.
+    """
+    monkeypatch.setattr(worker, "LEASE_SECONDS", 1)
+    monkeypatch.setattr(worker, "HEARTBEAT_SECONDS", 0.2)
+
+    analysis_id, job_id = queue()
+    deadlines = []
+    real_analyse = worker.analyse
+
+    def slow_analyse(claimed, original):
+        # Long enough to outlive several leases, and sampled while it runs so the renewal
+        # is observed rather than inferred from the outcome.
+        for _ in range(15):
+            time.sleep(0.1)
+            deadlines.append(read_job(job_id).lease_expires_at)
+        # Recovery is running on this job's own poll interval in production; here it is
+        # invoked directly, mid-job, which is the harshest version of the same question.
+        recover()
+        return real_analyse(claimed, original)
+
+    monkeypatch.setattr(worker, "analyse", slow_analyse)
+
+    with SessionLocal() as session:
+        assert worker.process_one(session) is True
+
+    # The work took far longer than one lease...
+    assert len(deadlines) == 15
+    # ...the deadline moved while it ran...
+    assert max(deadlines) > min(deadlines)
+    # ...and a recovery pass that ran mid-job left it alone.
+    assert read_job(job_id).status == "completed"
+    assert read_analysis(analysis_id).status == "completed"

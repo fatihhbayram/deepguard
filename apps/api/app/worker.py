@@ -26,6 +26,15 @@ connection and a row lock for the whole wait. Claiming is therefore deliberately
 from finishing, and the row a worker holds between them is marked `processing` rather than
 locked.
 
+A claim is a lease, not a permanent title (P9-F1). Between step 1 and step 4 the job says
+`processing` and nothing else can take it, so a worker that dies in the middle used to leave
+it there forever — and since P9 that permanently consumed one of an API key's concurrency
+slots. The claim therefore also writes a deadline, a background thread pushes that deadline
+forward while the work runs, and every poll of this loop fails any job whose deadline has
+passed. The two halves are what make it safe: the heartbeat is how a slow analysis is told
+apart from a dead worker, and the conditional writes in `_set_status` are how a worker that
+comes back from the dead is stopped from undoing its own recovery.
+
 Normalization moved here in P4-F2 (D020). It used to run on the upload request under a
 deadline that was really about how long a client would wait, which rejected a perfectly
 good 4K HEVC upload before anything had been analysed.
@@ -38,14 +47,16 @@ import logging
 import os
 import signal
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import (
@@ -94,6 +105,28 @@ TEMP_FILE_PREFIX = "deepguard-job-"
 # the worker log.
 MAX_ERROR_MESSAGE = 200
 
+# How long a claim is believed for without being renewed (P9-F1). The window a worker has
+# to prove it is still alive in, and therefore how long a crashed worker's job sits before
+# anything reclaims the capacity it was holding.
+#
+# Three minutes is a deliberate overshoot on the heartbeat below. What it has to survive is
+# not the analysis — that is renewed through, however long it takes — but a worker that is
+# briefly unable to renew: a database failover, a paused container, a garbage-collection
+# pause. Six missed heartbeats is a machine that is genuinely gone, not one having a bad
+# second.
+LEASE_SECONDS = 180
+
+# How often a worker pushes the lease on the job it is running forward. Short enough that
+# the lease is renewed many times over before it could expire, long enough that a job taking
+# minutes costs a handful of tiny updates rather than a stream of them.
+HEARTBEAT_SECONDS = 30
+
+# What a recovered job records as its failure. A class name like every other failure here
+# (`fail_job`), and for the same reason: it says what happened without quoting anything.
+# Nobody caught an exception to produce it — the worker that would have is gone — so it is
+# written literally.
+STALE_LEASE_ERROR = "StaleWorkerLease"
+
 
 @dataclass(frozen=True)
 class ClaimedJob:
@@ -137,6 +170,163 @@ class AnalysisArtifact:
     sha256: str | None = None
 
 
+def lease_deadline():
+    """How far ahead of *the database's* clock a fresh lease reaches.
+
+    `now()` rather than a Python timestamp, and the arithmetic done in PostgreSQL, because
+    the comparison that decides staleness happens there too. Two workers on machines whose
+    clocks disagree would otherwise write deadlines on one timeline and have them judged on
+    another — and a worker running a few minutes fast would have its live jobs recovered out
+    from under it.
+    """
+    return func.now() + timedelta(seconds=LEASE_SECONDS)
+
+
+def recover_stale_jobs(session: Session) -> int:
+    """Fail every `processing` job whose worker stopped saying it was alive.
+
+    A job is stale when its lease has run out: the worker that claimed it promised to push
+    the deadline forward every `HEARTBEAT_SECONDS` and has not. That is the whole test, and
+    it is deliberately not "this row has not changed in a while" — a real analysis writes
+    nothing for the minutes it spends in ffmpeg and inference, so age would fail live work
+    and spare a worker that crashed immediately after a write.
+
+    Recovery is terminal. The job is failed rather than returned to `queued`, because
+    nothing here knows why the worker died: a video that reliably kills the process would be
+    handed straight back to the next worker and take that one down too, until the queue held
+    nothing else. A failed analysis is visible, attributable and cheap for a customer to
+    resubmit; a poison job that recirculates is none of those.
+
+    The parent analysis fails in the same transaction, which is the point of the task. An
+    analysis left `queued` behind a job nobody will ever run again looks like work still
+    coming, and — since P9 — permanently consumes one of its API key's concurrency slots.
+
+    Safe against several workers running it at once without `SKIP LOCKED`. Two of them
+    matching the same row means the second blocks on the first's row lock, and PostgreSQL
+    re-checks the `WHERE` clause against the committed row when it is released: the status
+    is no longer `processing`, the row drops out, and only the worker that actually changed
+    it gets it back from `RETURNING`. Each stale job is therefore recovered once and reported
+    once, however many workers are looking.
+    """
+    recovered = session.execute(
+        AnalysisJob.__table__.update()
+        .where(
+            AnalysisJob.status == JOB_STATUS_PROCESSING,
+            # Never null for a claimed job, but stated rather than assumed: `NULL < now()`
+            # is null, so a row that somehow had no lease would silently never be reached.
+            AnalysisJob.lease_expires_at.is_not(None),
+            AnalysisJob.lease_expires_at < func.now(),
+        )
+        .values(
+            status=JOB_STATUS_FAILED,
+            error_message=STALE_LEASE_ERROR,
+            # A lease only means something while a job is running. Clearing it keeps a
+            # terminal row from carrying a deadline nobody is keeping.
+            lease_expires_at=None,
+        )
+        .returning(AnalysisJob.analysis_id)
+    ).scalars().all()
+
+    if not recovered:
+        session.rollback()
+        return 0
+
+    session.execute(
+        Analysis.__table__.update()
+        .where(Analysis.id.in_(recovered))
+        # No risk columns. Nothing classified these analyses, and null is the absence of a
+        # conclusion rather than `UNKNOWN`, which is a conclusion a rule reached.
+        .values(status=ANALYSIS_STATUS_FAILED)
+    )
+    session.commit()
+
+    logger.warning(
+        "Recovered %s stale job(s) whose worker stopped renewing its lease: %s.",
+        len(recovered),
+        ", ".join(str(analysis_id) for analysis_id in recovered),
+    )
+
+    return len(recovered)
+
+
+def renew_lease(session: Session, job_id: uuid.UUID) -> bool:
+    """Push one job's deadline forward. Returns whether the job was still this worker's.
+
+    Conditional on the job still being `processing`, which is what stops a worker that was
+    already recovered from quietly taking its job back. A recovered job is `failed`, the
+    update matches nothing, and the caller learns to stop.
+    """
+    updated = session.execute(
+        AnalysisJob.__table__.update()
+        .where(
+            AnalysisJob.id == job_id,
+            AnalysisJob.status == JOB_STATUS_PROCESSING,
+        )
+        .values(lease_expires_at=lease_deadline())
+    )
+    session.commit()
+
+    return updated.rowcount == 1
+
+
+def _renew_until_stopped(job_id: uuid.UUID, stopped: threading.Event) -> None:
+    """Renew one job's lease on its own connection until told to stop.
+
+    Its own session, not the one running the job: a `Session` is not safe to use from two
+    threads, and the thread that is working spends most of the job with no session open at
+    all. Its own connection is also the only way this keeps working while the main thread is
+    blocked in ffmpeg or waiting on NVIDIA — which is precisely when the lease needs
+    renewing.
+
+    A renewal that fails is logged and retried rather than escalated. The heartbeat cannot
+    stop the analysis, and one missed update is survivable by design: the lease is six
+    heartbeats long. Losing the *job* — the conditional update matching nothing — is
+    different and does end the loop, because there is no longer anything to keep alive.
+    """
+    while not stopped.wait(HEARTBEAT_SECONDS):
+        try:
+            with SessionLocal() as session:
+                if not renew_lease(session, job_id):
+                    logger.warning(
+                        "Job %s is no longer this worker's to renew; it was recovered as "
+                        "stale. Its result will be discarded.",
+                        job_id,
+                    )
+                    return
+        except Exception:
+            # The lease outlives several of these, so a database that comes back within a
+            # couple of minutes costs nothing. One that does not will expire the lease, and
+            # a worker that cannot reach PostgreSQL cannot finish the job either.
+            logger.exception("Renewing the lease on job %s failed; will retry.", job_id)
+
+
+@contextmanager
+def leased(job_id: uuid.UUID) -> Iterator[None]:
+    """Keep a claimed job's lease alive for the length of the block.
+
+    A daemon thread, so a worker killed with the block still open cannot be held open by it
+    — the whole mechanism is built for the case where this process dies without unwinding,
+    and a non-daemon thread would make that shutdown hang.
+
+    The thread is stopped and joined on the way out, including on the exception paths, so a
+    finished job stops being renewed at once rather than holding capacity for another lease.
+    """
+    stopped = threading.Event()
+    heartbeat = threading.Thread(
+        target=_renew_until_stopped,
+        args=(job_id, stopped),
+        name=f"lease-{job_id}",
+        daemon=True,
+    )
+    heartbeat.start()
+
+    try:
+        yield
+    finally:
+        stopped.set()
+        heartbeat.join(timeout=HEARTBEAT_SECONDS)
+
+
 def claim_job(session: Session) -> ClaimedJob | None:
     """Take exclusive ownership of one queued job, or return nothing if there is none.
 
@@ -152,6 +342,11 @@ def claim_job(session: Session) -> ClaimedJob | None:
     unrelated analyses of identical bytes.
 
     Oldest first, so a queue under load stays a queue rather than a stack.
+
+    The claim also starts the lease (P9-F1), in this same transaction. A row that was
+    `processing` for even one commit without a deadline would be a job no recovery could
+    ever reach — `NULL < now()` is null — so the status and the promise to keep renewing it
+    are made together or not at all.
     """
     row = session.execute(
         select(
@@ -173,6 +368,7 @@ def claim_job(session: Session) -> ClaimedJob | None:
 
     job, original_storage_key, normalization_required, frame_rate = row
     job.status = JOB_STATUS_PROCESSING
+    job.lease_expires_at = lease_deadline()
     claimed = ClaimedJob(
         job_id=job.id,
         analysis_id=job.analysis_id,
@@ -364,14 +560,19 @@ def complete_job(
     claimed: ClaimedJob,
     evidence: Evidence,
     provenance_signal: AnalysisSignal,
-) -> RiskDecision:
+) -> RiskDecision | None:
     """Persist everything this job produced, classify it, and close it out.
 
     Two transactions, in this order and never merged: the forensic evidence is committed
     first, and only then is it read back and classified. `persist_evidence` and
     `conclude_job` each say why.
 
-    Returns the decision that was recorded, for the caller's log.
+    Returns the decision that was recorded, for the caller's log, or nothing if the job was
+    recovered as stale while it ran. In that case the evidence stays: it is what this worker
+    genuinely observed about the media, the signals are independent records in their own
+    right (rule 11), and discarding real forensic findings to tidy up after a failed *worker*
+    would destroy evidence over a scheduling event. What it may not do is publish a verdict,
+    and that is exactly what `conclude_job` refuses.
     """
     persist_evidence(session, claimed, evidence, provenance_signal)
 
@@ -486,8 +687,10 @@ def persisted_svd_evidence(session: Session, analysis_id: uuid.UUID) -> SvdEvide
     )
 
 
-def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision:
+def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision | None:
     """Classify the analysis from its committed evidence and close the job out.
+
+    Returns nothing when the job stopped being this worker's — see `_set_status`.
 
     The final analysis step, and it runs after persistence rather than before it for the
     reason `persisted_svd_evidence` gives. The decision and the statuses that publish it go
@@ -511,13 +714,20 @@ def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision:
     """
     decision = evaluate(persisted_svd_evidence(session, claimed.analysis_id))
 
-    _set_status(
+    if not _set_status(
         session,
         claimed,
         JOB_STATUS_COMPLETED,
         ANALYSIS_STATUS_COMPLETED,
         decision=decision,
-    )
+    ):
+        # This job was recovered as stale while it ran, so the analysis is already `failed`
+        # and this worker is no longer entitled to publish a verdict on it. Rolled back and
+        # reported rather than forced: a recovery that a slow worker could undo would not be
+        # a recovery, and the concurrency slot it released would silently be taken back.
+        session.rollback()
+        return None
+
     session.commit()
 
     return decision
@@ -550,9 +760,14 @@ def fail_job(session: Session, claimed: ClaimedJob, error: BaseException) -> Non
     The parent analysis fails with the job. An analysis left `queued` behind a job that
     already gave up would look like work still coming, and nothing in this task will ever
     pick it up again.
+
+    A job already recovered as stale is left exactly as recovery wrote it. Both outcomes are
+    `failed`, so nothing is at stake but the reason, and overwriting `StaleWorkerLease` with
+    whatever this worker tripped over on its way out would replace what actually happened —
+    the worker was declared gone — with a symptom of it.
     """
     session.rollback()
-    _set_status(
+    if not _set_status(
         session,
         claimed,
         JOB_STATUS_FAILED,
@@ -560,7 +775,15 @@ def fail_job(session: Session, claimed: ClaimedJob, error: BaseException) -> Non
         # The class name, not the message: exception text can quote credentials, storage
         # endpoints or SQL. The traceback is already in the log above.
         error_message=type(error).__name__[:MAX_ERROR_MESSAGE],
-    )
+    ):
+        session.rollback()
+        logger.warning(
+            "Job %s failed after it had already been recovered as stale; the recorded "
+            "failure is left as it was.",
+            claimed.job_id,
+        )
+        return
+
     session.commit()
 
 
@@ -571,19 +794,37 @@ def _set_status(
     analysis_status: str,
     error_message: str | None = None,
     decision: RiskDecision | None = None,
-) -> None:
+) -> bool:
     """Move a job and the analysis it belongs to into their end states together.
+
+    Returns whether the job was still this worker's to finish. **Conditional on the row
+    still being `processing`**, and that condition is what keeps stale recovery honest: a
+    worker that lost its lease, was recovered, and then came back to life must not be able
+    to overwrite `failed` with `completed`. Recovery is terminal, so a recovered job is no
+    longer `processing`, this update matches nothing, and the caller is told it lost.
+
+    Nothing is written when the condition fails — not the job row, not the analysis. The
+    analysis update is inside the same guard rather than after it, or a resurrected worker
+    would leave a `failed` job under a `completed` analysis.
 
     `decision` is the risk classification and its trace, written onto the analysis in the
     same statement that publishes its status. A job that failed passes none: the analysis
     was never classified, and its risk columns stay null — which is not `UNKNOWN`, a
     conclusion an explicit rule reached, but the absence of any conclusion at all.
     """
-    session.execute(
+    updated = session.execute(
         AnalysisJob.__table__.update()
-        .where(AnalysisJob.id == claimed.job_id)
-        .values(status=job_status, error_message=error_message)
+        .where(
+            AnalysisJob.id == claimed.job_id,
+            AnalysisJob.status == JOB_STATUS_PROCESSING,
+        )
+        # The lease ends with the job. Leaving a deadline on a terminal row would say a
+        # worker was still running something that has already finished.
+        .values(status=job_status, error_message=error_message, lease_expires_at=None)
     )
+
+    if updated.rowcount == 0:
+        return False
 
     analysis_values: dict[str, str] = {"status": analysis_status}
     if decision is not None:
@@ -600,47 +841,74 @@ def _set_status(
         .values(**analysis_values)
     )
 
+    return True
+
 
 def process_one(session: Session) -> bool:
     """Claim and run a single job. Returns whether there was one to run.
 
+    Recovery runs first, on the same poll that looks for work (P9-F1). It lives here rather
+    than behind a scheduler because this loop is already the thing that runs on a timer, in
+    the process that has a reason to care: capacity a crashed worker is holding is capacity
+    this worker could be using. It costs one statement that normally matches no rows, on a
+    loop that was going to query for a job anyway.
+
+    Running it before the claim, not after, so a stale job's slot is released in time for the
+    same pass to pick up whatever that release admits.
+
     Everything after the claim is guarded: a job this worker took and then failed to
     finish must not be left `processing` forever, because nothing in P3 goes back for it.
     """
+    recover_stale_jobs(session)
+
     claimed = claim_job(session)
     if claimed is None:
         return False
 
     logger.info("Claimed job %s for analysis %s.", claimed.job_id, claimed.analysis_id)
 
-    try:
-        # One download serves both evidence sources. Provenance is read from these bytes
-        # because they are the forensic original — normalization would strip the manifest
-        # — and detection reads either these bytes or the derivative transcoded from them,
-        # which is why the original is fetched first and kept for the whole job.
-        with fetched_artifact(claimed.original_storage_key) as original:
-            # Reading credentials never raises here: `extract_provenance` returns a failed
-            # signal instead. Nor does media that cannot be transcoded, nor anything the
-            # active-speaker chain can fail with — `analyse` turns all of those into failed
-            # signals. What can still reach the handler below is the object store, a broken
-            # image, or a bug.
-            provenance_signal = extract_provenance(original)
-            evidence = analyse(claimed, original)
-    except Exception as error:
-        # Not a detector saying no and not media that could not be prepared — a failure on
-        # our own side. It is recorded against the job and the loop carries on.
-        logger.exception("Job %s failed.", claimed.job_id)
-        fail_job(session, claimed, error)
-        return True
+    # From here to the end of the job, a background thread keeps saying this worker is
+    # alive. Without it the lease would run out during any analysis longer than
+    # `LEASE_SECONDS` and another worker would recover a job that was going perfectly well.
+    with leased(claimed.job_id):
+        try:
+            # One download serves both evidence sources. Provenance is read from these bytes
+            # because they are the forensic original — normalization would strip the manifest
+            # — and detection reads either these bytes or the derivative transcoded from them,
+            # which is why the original is fetched first and kept for the whole job.
+            with fetched_artifact(claimed.original_storage_key) as original:
+                # Reading credentials never raises here: `extract_provenance` returns a failed
+                # signal instead. Nor does media that cannot be transcoded, nor anything the
+                # active-speaker chain can fail with — `analyse` turns all of those into failed
+                # signals. What can still reach the handler below is the object store, a broken
+                # image, or a bug.
+                provenance_signal = extract_provenance(original)
+                evidence = analyse(claimed, original)
+        except Exception as error:
+            # Not a detector saying no and not media that could not be prepared — a failure on
+            # our own side. It is recorded against the job and the loop carries on.
+            logger.exception("Job %s failed.", claimed.job_id)
+            fail_job(session, claimed, error)
+            return True
 
-    try:
-        # Persisting the evidence and classifying it are two commits inside here. A failure
-        # in the second leaves the first standing: the job fails with its forensic record
-        # intact rather than losing evidence to a classification that could not be made.
-        decision = complete_job(session, claimed, evidence, provenance_signal)
-    except Exception as error:
-        logger.exception("Job %s could not be completed.", claimed.job_id)
-        fail_job(session, claimed, error)
+        try:
+            # Persisting the evidence and classifying it are two commits inside here. A failure
+            # in the second leaves the first standing: the job fails with its forensic record
+            # intact rather than losing evidence to a classification that could not be made.
+            decision = complete_job(session, claimed, evidence, provenance_signal)
+        except Exception as error:
+            logger.exception("Job %s could not be completed.", claimed.job_id)
+            fail_job(session, claimed, error)
+            return True
+
+    if decision is None:
+        # Recovered as stale while this ran. The analysis is already `failed` and its slot
+        # already released; saying so is all that is left to do. The evidence this job
+        # produced is committed and stays — see `complete_job`.
+        logger.warning(
+            "Job %s was recovered as stale while it ran; its verdict is discarded.",
+            claimed.job_id,
+        )
         return True
 
     logger.info(
