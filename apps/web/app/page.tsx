@@ -543,7 +543,7 @@ function Risk({ analysis }: { analysis: AnalysisSummary }) {
         <span className="text-muted">RISK — </span>
         <span
           className={`px-1.5 py-0.5 ${RISK_UNSUPPORTED_STYLE}`}
-          title={`Stored risk state ${level} is not a supported DeepGuard risk classification${
+          title={`Stored risk state ${level} is not a supported InspectRoot risk classification${
             analysis.risk_rules_version ? ` (ruleset ${analysis.risk_rules_version})` : ""
           }.`}
         >
@@ -972,7 +972,7 @@ function Methodology() {
           sitting above a block of dead space as tall as the Risk note beside it. */}
       <dl className="border-t border-hair px-4 pt-6 pb-0 sm:columns-2 sm:gap-12">
         <Note term="RISK">
-          Risk is a deterministic DeepGuard classification based on calibrated forensic
+          Risk is a deterministic InspectRoot classification based on calibrated forensic
           evidence. It is not a Fake/Real determination.{" "}
           <span className="font-mono">{RISK_LABELS.MEDIUM}</span> is the indeterminate band
           — evidence that settles nothing either way — and the absence of{" "}
@@ -985,7 +985,7 @@ function Methodology() {
           produced it, since the same word means something different under a different one.{" "}
           <span className="font-mono">{UNSUPPORTED}</span> means the stored state is not one
           this build classifies under, so it is reported as unsupported rather than shown as
-          a risk class DeepGuard has no calibrated meaning for.
+          a risk class InspectRoot has no calibrated meaning for.
         </Note>
 
         <Note term="SYNTHETIC PROBABILITY">
@@ -1023,7 +1023,7 @@ function Methodology() {
         <Note term="AUDIO">
           Audio is the two raw logits a local anti-spoofing checkpoint emitted for each
           window of audio it was given, shown as emitted. The times are the bounds of those
-          windows — DeepGuard cut the audio into fixed 4.04s pieces because that is all the
+          windows — InspectRoot cut the audio into fixed 4.04s pieces because that is all the
           model accepts — and not stretches the model found anything in. The model publishes
           no threshold and no calibration, so neither figure is a probability, a confidence
           or a verdict, and consecutive windows of genuine speech routinely disagree.{" "}
@@ -1079,7 +1079,7 @@ export default async function Home({
         <div className="mx-auto flex h-14 w-full max-w-[1280px] items-center justify-between gap-4 px-4 sm:px-10">
           <div className="flex items-center gap-3">
             <span aria-hidden className="size-1.5 bg-accent" />
-            <h1 className="font-mono text-[13px] tracking-[0.24em] text-bone">DEEPGUARD</h1>
+            <h1 className="font-mono text-[13px] tracking-[0.24em] text-bone">INSPECTROOT</h1>
           </div>
 
           <HealthControl result={result} apiOk={apiOk} dbOk={dbOk} systemOk={systemOk} />

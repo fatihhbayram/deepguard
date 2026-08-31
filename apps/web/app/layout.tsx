@@ -10,7 +10,7 @@ const sans = Geist({ subsets: ["latin"], variable: "--font-geist-sans" });
 const mono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
 
 export const metadata: Metadata = {
-  title: "DeepGuard",
+  title: "InspectRoot",
   description: "Media forensics dashboard",
 };
 

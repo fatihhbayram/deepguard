@@ -175,7 +175,7 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
     <section
       className={`mt-6 break-inside-avoid rounded border-2 p-4 ${riskAccent(level)}`}
     >
-      <h2 className="text-base font-semibold">DeepGuard risk classification</h2>
+      <h2 className="text-base font-semibold">InspectRoot risk classification</h2>
 
       <p className="mt-2 text-2xl font-semibold">{riskLabel(level)}</p>
 
@@ -190,8 +190,8 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
         <p className="mt-1 text-xs opacity-70">
           The stored risk state{" "}
           <span className="font-mono">{level}</span> is not a risk class this build
-          classifies under, so it is reported as unsupported rather than presented as a
-          DeepGuard classification.
+          classifies under, so it is reported as unsupported rather than presented as an
+          InspectRoot classification.
         </p>
       ) : level === "UNKNOWN" ? (
         <p className="mt-1 text-xs opacity-70">
@@ -207,7 +207,7 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
       </dl>
 
       <p className="mt-4 text-xs opacity-80">
-        Risk is a deterministic DeepGuard classification based on calibrated forensic
+        Risk is a deterministic InspectRoot classification based on calibrated forensic
         evidence. It is not a Fake/Real determination. This classification was recorded when
         the analysis ran and is reproduced here unchanged; it is not recalculated by this
         report.
@@ -234,7 +234,7 @@ function ScopeDisclosure() {
         detection. Absence of HIGH risk does not rule out face manipulation.
       </p>
       <p className="mt-2 text-xs opacity-80">
-        Risk is a deterministic DeepGuard classification based on calibrated forensic
+        Risk is a deterministic InspectRoot classification based on calibrated forensic
         evidence. It is not a Fake/Real determination.
       </p>
     </section>
@@ -272,7 +272,7 @@ function SyntheticVideoSection({ signal }: { signal: SyntheticVideoSignal | null
 
           <p className="mt-3 text-xs opacity-70">
             The probability is the provider&apos;s score for its own detector, shown as
-            returned. It is NVIDIA evidence, not a DeepGuard confidence, and it is not the
+            returned. It is NVIDIA evidence, not an InspectRoot confidence, and it is not the
             risk classification above.
           </p>
 
@@ -519,7 +519,7 @@ function AudioSection({ signal }: { signal: AudioAuthenticitySignal | null }) {
             classification is derived from them and none should be read into them.
           </p>
           <p className="mt-2 text-xs opacity-80">
-            The time bounds are <strong>DeepGuard preprocessing windows</strong> — where the
+            The time bounds are <strong>InspectRoot preprocessing windows</strong> — where the
             audio was cut before being given to the model. They are not model-detected
             manipulation timestamps, and the model reports no timeline of its own.
           </p>
@@ -575,7 +575,7 @@ export default async function Report({ params }: { params: Promise<{ id: string 
 
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-sm font-semibold tracking-wide">DeepGuard</p>
+          <p className="text-sm font-semibold tracking-wide">InspectRoot</p>
           <h1 className="text-xl font-semibold">Forensic Evidence Report</h1>
         </div>
         {/* Screen-only controls. Hidden in print so the document carries no dead UI. */}
@@ -620,7 +620,7 @@ export default async function Report({ params }: { params: Promise<{ id: string 
 
       <footer className="mt-8 break-inside-avoid border-t border-black/15 pt-4 text-xs opacity-70 dark:border-white/20">
         <p>
-          This report is a rendering of forensic evidence persisted by DeepGuard for the
+          This report is a rendering of forensic evidence persisted by InspectRoot for the
           analysis named above. It is not cryptographically signed, and reproducing it does
           not establish that its contents are unaltered. The SHA-256 shown is the hash of the
           analysed media, not of this report.
