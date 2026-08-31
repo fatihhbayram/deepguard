@@ -9,6 +9,12 @@ Alongside them is `api_keys` — the credentials the public API authenticates B2
 with (P9-T1). Since P9-T2 an analysis may name the key that submitted it, which is what
 keeps one customer's analyses out of another's reads.
 
+Since R1-T1 there is a second kind of caller: `users`, the accounts a person signs into the
+web application as, and `auth_sessions`, the opaque cookie sessions those sign-ins create.
+The two credential families stay apart on purpose — an analysis may name a user or an API
+key, never both — and the database enforces that rather than trusting the two code paths
+that write the column.
+
 Media identity is not analysis identity. Storage keys and hashes are content-addressed,
 so the same bytes can legitimately be uploaded and analysed more than once; none of
 those columns is unique.
@@ -21,6 +27,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -61,6 +68,18 @@ SIGNAL_STATUS_TIMEOUT = "TIMEOUT"
 
 SHA256_HEX_LENGTH = 64
 
+# What a person may be when they sign in. Two roles and no permission table: the only
+# distinction R1-T1 has a use for is "may reach an administrative action at all", and a
+# grant model with nothing to grant would be a schema built for a requirement that does not
+# exist yet.
+USER_ROLE_USER = "USER"
+USER_ROLE_ADMIN = "ADMIN"
+
+# The one rule keeping the two credential families apart: an analysis is owned by a signed-in
+# user, or by an API key, or by nobody. Never by both. Named here because the migration, the
+# model and the test that proves the constraint bites all have to mean the same constraint.
+SINGLE_OWNER_CONSTRAINT = "ck_analyses_single_owner"
+
 
 class Base(DeclarativeBase):
     pass
@@ -80,6 +99,23 @@ class Analysis(Base):
     """
 
     __tablename__ = "analyses"
+
+    # Both ownership columns may be null, and exactly one of them may be set — never two.
+    # Written as `NOT (both are present)` rather than as an exclusive-or so that the
+    # unowned row stays legal: analyses submitted through the dashboard before there were
+    # accounts belong to nobody, and always will.
+    #
+    # In the database rather than in the two functions that write these columns, because
+    # this is the invariant the public API's isolation rests on. A row owned by a user *and*
+    # an API key would be reachable through the public API by a customer who never submitted
+    # it, and a check that lives only in application code is one code path away from not
+    # running.
+    __table_args__ = (
+        CheckConstraint(
+            "NOT (owner_id IS NOT NULL AND api_key_id IS NOT NULL)",
+            name=SINGLE_OWNER_CONSTRAINT,
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -119,6 +155,25 @@ class Analysis(Base):
     api_key_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("api_keys.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+
+    # Which signed-in user submitted this analysis, when one did (R1-T1). The web
+    # counterpart of `api_key_id` above, and mutually exclusive with it — see the check
+    # constraint at the top of this class.
+    #
+    # Nothing writes this column yet. R1-T1 establishes the identity foundation and
+    # explicitly stops short of enforcing dashboard ownership, so every row is null today
+    # and the dashboard keeps reading everything exactly as it did. The column is added now
+    # because it is the schema half of the same one logical change, and adding it nullable
+    # is a metadata-only alteration of a populated table.
+    #
+    # `RESTRICT` for the same reason the API key uses it: deleting an account must never
+    # take the forensic records it created with it.
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=True,
         index=True,
     )
@@ -354,6 +409,120 @@ class ApiKey(Base):
     # hot path of every authenticated request, and that trade belongs to the task that
     # actually needs the figure rather than to the one that adds the column.
     last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class User(Base):
+    """A person who can sign into the web application.
+
+    The account, and nothing beyond it: no profile, no preferences, no organization. R1-T1
+    needs to know who is signing in and whether they may reach an administrative action, and
+    a wider table would be schema written for requirements that do not exist.
+
+    `email` is stored already normalized — lowercased and stripped — and is unique on that
+    normalized form. Uniqueness has to be over the same value the login lookup uses, or
+    `Alice@example.com` and `alice@example.com` would be two accounts that both answer to
+    one sign-in. `app.web_auth.normalize_email` is the single place that normalization
+    happens, and creation and login both go through it.
+
+    `password_hash` is an Argon2id hash, complete with its own parameters and salt in the
+    standard encoded form — which is why the column is wide and why nothing else here
+    records a salt. Unlike `ApiKey.key_hash` this is deliberately a slow hash: a password is
+    human-chosen and therefore guessable, so the cost that would be waste on a 256-bit random
+    key is exactly the point here.
+
+    Deactivation is `is_active`, matching `ApiKey`: an account that submitted analyses stays
+    on file so those records remain attributable after the person stops being able to sign in.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+
+    # 320 characters is the longest an address can be under RFC 3696's 64-character local
+    # part and 255-character domain.
+    email: Mapped[str] = mapped_column(
+        String(320), nullable=False, unique=True, index=True
+    )
+
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # `USER` or `ADMIN`. Defaulted in the database as well as the model so an account
+    # inserted by hand from psql is an ordinary user rather than accidentally privileged —
+    # the safe direction for a column whose other value grants administrative access.
+    role: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=USER_ROLE_USER
+    )
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_true()
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AuthSession(Base):
+    """One signed-in web session, identified by the digest of an opaque token.
+
+    The token itself is 256 bits from the system CSPRNG and exists in exactly two places:
+    the `Set-Cookie` header that hands it to the browser, and the browser. It is never
+    written to this table, never logged, and cannot be recovered from what is stored — the
+    same discipline `ApiKey` follows, and for the same reason.
+
+    SHA-256 rather than Argon2, and that is not an inconsistency with `User.password_hash`
+    above. The password is human-chosen and needs a slow hash to make guessing expensive;
+    this token is 256 random bits, so there is nothing to guess and the cost of a slow hash
+    would be paid on every authenticated request for no security gained.
+
+    A session ends in one of two ways and the table records which. `expires_at` is the
+    deadline set when it was created; `revoked_at` is a deliberate end — a sign-out, or the
+    previous session being displaced by a new sign-in. Revocation is a timestamp rather than
+    a deletion so that a row remains to say a session existed and when it stopped.
+
+    Rows are not the authority on *whether* a session is usable; the query in
+    `app.web_auth.session_user` is, and it asks for all three conditions at once — not
+    revoked, not expired, and the account still active.
+    """
+
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # `CASCADE` here, unlike the `RESTRICT` on the ownership columns: a session is a
+    # transient credential, not a forensic record, and there is nothing to preserve about
+    # the sessions of an account that no longer exists.
+
+    # Unique because authentication looks a row up by it — one indexed lookup on the digest
+    # of the presented cookie, with no plaintext anywhere in the query.
+    token_hash: Mapped[str] = mapped_column(
+        String(SHA256_HEX_LENGTH), nullable=False, unique=True, index=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    # Null on every session that is still live, and a timestamp on every one deliberately
+    # ended. Never "0" or an epoch date — a session that was never revoked has no revocation
+    # time, and null is how that is said.
+    revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

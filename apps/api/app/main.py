@@ -5,6 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.analyses import router as analyses_router
+from app.api.auth import router as auth_router
 from app.api.public_v1.analyses import router as public_analyses_router
 from app.api.url_analyses import router as url_analyses_router
 from app.db.session import get_session
@@ -20,6 +21,11 @@ app.include_router(analyses_router)
 # own module because `app.downloader` imports the upload ceiling from `app.api.analyses`,
 # so the route that drives the downloader cannot live there without closing an import cycle.
 app.include_router(url_analyses_router)
+# Web sign-in, under the same internal `/api/v1` prefix. It authenticates browsers by
+# cookie and has nothing to do with the API-key surface below: R1-T1 adds accounts without
+# putting a credential in front of any route that did not have one, so the analyses routes
+# above stay exactly as open as they were.
+app.include_router(auth_router)
 # The external B2B surface. Mounted under its own prefix and carrying its own API-key
 # dependency, so the internal routes above stay exactly as unauthenticated as they were.
 app.include_router(public_analyses_router)

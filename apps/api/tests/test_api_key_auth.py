@@ -368,6 +368,12 @@ def test_the_api_key_gate_covers_the_public_routes_and_nothing_else():
         # like every other internal route: the dashboard has never carried a credential.
         "/api/v1/analyses/url",
         "/api/v1/analyses/{analysis_id}",
+        # Web sign-in (R1-T1). Internal, and named here so that the set equality below has
+        # to keep excluding them: these routes authenticate browsers by cookie, and an API
+        # key must never be what gets a caller through them.
+        "/api/v1/auth/login",
+        "/api/v1/auth/logout",
+        "/api/v1/auth/me",
     }
     public = {
         "/api/public/v1/analyses",

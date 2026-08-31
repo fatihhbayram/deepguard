@@ -51,6 +51,18 @@ services:
       # credentials above reach it — same server, different database — so no second set of
       # secrets is introduced to support tests.
       TEST_POSTGRES_DB: ${TEST_POSTGRES_DB:-deepguard_test}
+      # Which deployment this is, and the only thing that decides whether the web session
+      # cookie is marked `Secure` (R1-T1). Passed through from the host with no default: if
+      # the variable is not set where `docker compose` runs, it is not set in the container
+      # either, and the application's fail-secure default applies.
+      #
+      # Deliberately not `${DEEPGUARD_ENV:-development}`. A default here would substitute an
+      # explicit `development` for a variable nobody set, which is the one value that turns
+      # the `Secure` flag off — so Compose would quietly undo the application's fail-secure
+      # behaviour on any host that had not been configured. Plain-HTTP development is the
+      # case that has to ask: run with `DEEPGUARD_ENV=development docker compose up`, or set
+      # it in a local `.env`.
+      DEEPGUARD_ENV:
       # Object storage is reached over the Docker network, never the published host port.
       MINIO_ENDPOINT: minio:9000
       MINIO_SECURE: "false"

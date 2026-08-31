@@ -6,6 +6,12 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 alembic==1.19.1
+# Hashes account passwords with Argon2id (R1-T1). Named here as a direct dependency rather
+# than relied on as somebody else's transitive one: this is now load-bearing security code,
+# and a pin is what keeps an upgrade of an unrelated package from changing how passwords
+# are hashed. The library's default parameters track RFC 9106 and are used as they come —
+# see `app/web_auth.py`.
+argon2-cffi==25.1.0
 c2pa-python==0.37.7
 fastapi==0.141.1
 grpcio==1.76.0
