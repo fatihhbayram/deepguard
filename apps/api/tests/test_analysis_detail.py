@@ -20,6 +20,7 @@ from tests.test_analysis_listing import (  # noqa: F401 — fixtures used by nam
     RULE_INDETERMINATE_BAND,
     RULE_UNVALIDATED_PROVIDER,
     RULES_VERSION,
+    admin,
     client,
     compiled,
     fake_session,

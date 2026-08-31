@@ -14,10 +14,12 @@ from minio.error import S3Error
 from app import detection, media, normalization, request_limits, storage
 from app.api.analyses import CHUNK_SIZE, TEMP_FILE_PREFIX
 from app.media import MAX_UPLOAD_BYTES
-from app.db.models import Analysis, AnalysisJob, MediaFile
+from app.db.models import USER_ROLE_USER, Analysis, AnalysisJob, MediaFile, User
 from app.db.session import get_session
 from app.main import app
 from app.normalization import DERIVATIVE_TEMP_PREFIX
+from app.web_auth import require_user
+from tests.conftest import DASHBOARD_ORIGIN
 
 
 class FakeMinio:
@@ -236,7 +238,34 @@ def fake_session():
 
 
 @pytest.fixture
-def client(fake_session):
+def dashboard_user():
+    """The signed-in account these uploads are submitted by.
+
+    Never persisted: the route reads the id off it and writes that id onto the analysis, and
+    the session here is a fake that records what it was given rather than a database that
+    would hold it to a foreign key. `tests/test_dashboard_authorization.py` does the same
+    thing against real rows.
+    """
+    return User(
+        id=uuid.uuid4(),
+        email="operator@example.com",
+        password_hash="unused",
+        role=USER_ROLE_USER,
+        is_active=True,
+    )
+
+
+@pytest.fixture
+def client(fake_session, dashboard_user):
+    app.dependency_overrides[require_user] = lambda: dashboard_user
+
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def anonymous_client(fake_session):
+    """A client carrying no session, for the tests about the upload being refused one."""
     with TestClient(app) as test_client:
         yield test_client
 
@@ -277,10 +306,75 @@ def _s3_error(code: str) -> S3Error:
 
 
 def post_upload(client: TestClient, filename: str, payload, content_type: str):
+    """One dashboard upload, as the web application makes it.
+
+    The `Origin` is part of that: since R1-T2 the route refuses a submission that did not
+    come from the deployment's own dashboard, and a browser sends the header on every POST.
+    Leaving it out here would test a request no browser makes — which is what the CSRF tests
+    below deliberately do, and what every other test in this file should not have to.
+    """
     return client.post(
         "/api/v1/analyses",
         files={"file": (filename, payload, content_type)},
+        headers={"Origin": DASHBOARD_ORIGIN},
     )
+
+
+def test_an_unauthenticated_upload_is_refused_before_anything_is_read(
+    anonymous_client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    """No session, no upload — and nothing stored, staged or probed on the way to the 401.
+
+    The refusal comes from a dependency, so the route body never runs: nothing reaches object
+    storage and nothing is staged in one of DeepGuard's own temp files. An upload route that
+    stored 100 MiB and then decided the caller was not signed in would be a way to spend this
+    server's disk and object storage without an account.
+    """
+    response = post_upload(anonymous_client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Not authenticated"}
+    assert fake_session.added == []
+    assert fake_minio.uploads == []
+    assert new_temp_uploads() == []
+
+
+def test_the_upload_is_owned_by_the_signed_in_account(
+    client, fake_session, dashboard_user, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    """The analysis names the account the session resolved to, and no API key.
+
+    Both halves are the point. The owner is written because the dashboard's isolation rests
+    on it, and `api_key_id` stays null because the database refuses a row that carries both
+    — an analysis owned by a user *and* a key would be reachable through the public API by a
+    customer who never submitted it.
+    """
+    post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    persisted = next(row for row in fake_session.added if isinstance(row, Analysis))
+    assert persisted.owner_id == dashboard_user.id
+    assert persisted.api_key_id is None
+
+
+def test_the_upload_carries_no_owner_field_a_caller_could_set(
+    client, fake_session, dashboard_user, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    """An `owner_id` in the form is ignored, because the route has nowhere to read one.
+
+    Asserted rather than assumed: this is the shape of the mistake that would let any
+    signed-in person file an analysis under somebody else's account, and it costs one test
+    to keep a later "just accept the field" from passing silently.
+    """
+    response = client.post(
+        "/api/v1/analyses",
+        files={"file": ("clip.mp4", b"payload", "video/mp4")},
+        data={"owner_id": str(uuid.uuid4())},
+        headers={"Origin": DASHBOARD_ORIGIN},
+    )
+
+    assert response.status_code == 202
+    persisted = next(row for row in fake_session.added if isinstance(row, Analysis))
+    assert persisted.owner_id == dashboard_user.id
 
 
 def test_declared_mp4_is_accepted(client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe):

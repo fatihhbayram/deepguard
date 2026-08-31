@@ -142,6 +142,35 @@ def migrate_test_database(url: URL) -> None:
         )
 
 
+# The browser origin the suite's dashboard mutations claim to come from (R1-T2).
+#
+# A name no deployment uses, so a test that forgets to send the header cannot pass by
+# accidentally matching something real, and nothing here has to agree with whatever
+# `DEEPGUARD_WEB_ORIGIN` happens to be set to in the environment the suite is run in.
+DASHBOARD_ORIGIN = "http://dashboard.test"
+
+
+@pytest.fixture(autouse=True)
+def configured_web_origin(monkeypatch):
+    """Declare the accepted web origin for every test in the suite.
+
+    The API refuses a session-authenticated mutation whose `Origin` is not on this list, and
+    refuses everything when the list is empty — which is the fail-secure default and would
+    otherwise turn every submission test in the suite into a 403 about configuration rather
+    than about the thing under test.
+
+    So the environment is stated here, once, and the tests that are *about* the check
+    override it with their own `monkeypatch` call, which runs after this fixture and wins.
+
+    Imported inside the function rather than at module scope: this file binds `DATABASE_URL`
+    at import time and must finish doing so before anything pulls in `app.db.session`, which
+    builds its engine on import.
+    """
+    from app.web_auth import WEB_ORIGIN_VARIABLE
+
+    monkeypatch.setenv(WEB_ORIGIN_VARIABLE, DASHBOARD_ORIGIN)
+
+
 @pytest.fixture(scope="session")
 def suite_database_url() -> URL:
     """The database this suite owns, for the tests that assert the separation itself."""

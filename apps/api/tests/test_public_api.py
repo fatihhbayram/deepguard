@@ -41,11 +41,14 @@ from app.db.models import (
     ANALYSIS_STATUS_QUEUED,
     SIGNAL_STATUS_FAILED,
     SIGNAL_STATUS_SUCCESS,
+    USER_ROLE_ADMIN,
+    USER_ROLE_USER,
     Analysis,
     AnalysisJob,
     AnalysisSignal,
     ApiKey,
     MediaFile,
+    User,
 )
 from app.db.session import SessionLocal, engine, get_session
 from app.detection import (
@@ -58,6 +61,8 @@ from app.detection import (
 )
 from app.main import app
 from app.media import MediaMetadata
+from app.web_auth import hash_password, require_user
+from tests.conftest import DASHBOARD_ORIGIN
 
 SUBMIT_URL = "/api/public/v1/analyses"
 
@@ -375,21 +380,34 @@ def test_the_public_route_validates_media_the_same_way(
     assert session.added == []
 
 
-def test_a_dashboard_submission_stays_unowned(submission, fake_minio):
-    """The internal route authenticates nobody and must keep owning nothing.
+def test_a_dashboard_submission_carries_no_api_key(submission, fake_minio):
+    """The internal route must never stamp a key onto what it commits.
 
-    If it ever started stamping a key onto its analyses, the dashboard's uploads would
-    become visible to whichever customer that key belonged to.
+    If it ever did, the dashboard's uploads would become visible to whichever customer that
+    key belonged to. Since R1-T2 the route does record an owner — the signed-in account —
+    and that is the other half of the same rule: the two ownership columns are mutually
+    exclusive, and this route fills the web one.
     """
     client, session = submission
+    user = User(
+        id=uuid.uuid4(),
+        email="operator@example.com",
+        password_hash="unused",
+        role=USER_ROLE_USER,
+        is_active=True,
+    )
+    app.dependency_overrides[require_user] = lambda: user
 
     response = client.post(
         "/api/v1/analyses",
         files={"file": ("clip.mp4", b"dashboard-bytes", "video/mp4")},
+        headers={"Origin": DASHBOARD_ORIGIN},
     )
 
     assert response.status_code == 202
-    assert persisted_analysis(session).api_key_id is None
+    persisted = persisted_analysis(session)
+    assert persisted.api_key_id is None
+    assert persisted.owner_id == user.id
 
 
 # --- reading ---------------------------------------------------------------------------
@@ -437,10 +455,46 @@ def session(database):
 
 
 @pytest.fixture
-def reader(session):
-    """A client over the product app bound to the live session."""
+def administrator(session):
+    """A real administrator account, for the internal routes this file also touches.
+
+    A persisted row rather than a stand-in, because the internal upload writes its id into
+    `analyses.owner_id` and PostgreSQL holds that to a foreign key. Everything it owns is
+    deleted before it is: `owner_id` is `ON DELETE RESTRICT`, so an analysis this account
+    submitted through the route — and therefore never registered for cleanup by name —
+    would otherwise block the account's removal and leak both rows into the next test.
+    """
+    db, _, _ = session
+
+    user = User(
+        email=f"{uuid.uuid4().hex}@example.com",
+        password_hash=hash_password("test-account-password"),
+        role=USER_ROLE_ADMIN,
+    )
+    db.add(user)
+    db.commit()
+
+    yield user
+
+    db.rollback()
+    db.query(Analysis).filter(Analysis.owner_id == user.id).delete()
+    db.flush()
+    db.query(User).filter(User.id == user.id).delete()
+    db.commit()
+
+
+@pytest.fixture
+def reader(session, administrator):
+    """A client over the product app bound to the live session.
+
+    Signed in as an administrator, because this file reaches the internal dashboard routes
+    as well as the public ones and those have demanded a web session since R1-T2. The
+    administrator is the role whose view of the dashboard is the whole system, which is what
+    the tests below about the dashboard still seeing a public analysis are describing.
+    """
     db, _, _ = session
     app.dependency_overrides[get_session] = lambda: db
+    app.dependency_overrides[require_user] = lambda: administrator
 
     with TestClient(app) as client:
         yield client
@@ -617,11 +671,13 @@ def test_a_forbidden_analysis_is_indistinguishable_from_one_that_does_not_exist(
 
 
 @integration
-def test_the_dashboard_still_sees_a_public_analysis(reader, session):
-    """Ownership narrows the public read, not the internal one.
+def test_an_administrator_still_sees_a_public_analysis(reader, session):
+    """Key ownership narrows the public read; it does not hide the row from an operator.
 
-    The dashboard is DeepGuard's own view of everything on file, and an analysis submitted
-    through the public API must not disappear from it.
+    The administrator's dashboard is DeepGuard's own view of everything on file, and an
+    analysis submitted through the public API must not disappear from it. An ordinary USER
+    is a different question and is answered in `tests/test_dashboard_authorization.py`,
+    where an API-key analysis is exactly one of the things they cannot reach.
     """
     _, key = issue_key(session)
     analysis = store_analysis(session, owner=key)
@@ -960,10 +1016,11 @@ def test_a_finishing_analysis_frees_a_slot(reader, session, fake_minio):
 
 @integration
 def test_the_dashboard_is_not_throttled(reader, session, fake_minio):
-    """The internal route passes no limit, and unowned analyses are counted for no key.
+    """The internal route passes no limit, and its analyses are counted for no key.
 
     DeepGuard's own uploads are not a customer competing for the queue, and throttling them
-    would be this task reaching into a route it was not asked to change.
+    would be this task reaching into a route it was not asked to change. Still true now that
+    they carry an owner: the ceiling counts analyses per *API key*, and these have none.
     """
     db, analyses, _ = session
 
@@ -971,6 +1028,7 @@ def test_the_dashboard_is_not_throttled(reader, session, fake_minio):
         response = reader.post(
             "/api/v1/analyses",
             files={"file": ("clip.mp4", b"dashboard-bytes", "video/mp4")},
+            headers={"Origin": DASHBOARD_ORIGIN},
         )
 
         assert response.status_code == 202

@@ -27,6 +27,7 @@ from app.web_auth import (
     authenticate,
     clear_session_cookie,
     invalid_credentials,
+    require_same_origin,
     require_user,
     revoke_session,
     session_token,
@@ -108,7 +109,15 @@ def login(
     return authenticated_user(user)
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    # Signing out is a state change — it revokes a row — so it carries the same origin check
+    # as the dashboard's other mutations. Being signed out by a page you merely visited is a
+    # small harm next to having an analysis filed in your name, but it is still something
+    # done to you by a site that has no business doing it.
+    dependencies=[Depends(require_same_origin)],
+)
 def logout(
     response: Response,
     session: Session = Depends(get_session),
@@ -116,7 +125,12 @@ def logout(
 ) -> None:
     """End the caller's session and clear the cookie.
 
-    Deliberately not behind `require_user`. Signing out is not a privileged action, and
+    Behind `require_same_origin` but deliberately not behind `require_user`. The two are
+    different questions and only the first is worth asking here: where the request came from
+    is a property of the request, while demanding a *valid* session to end one would strand
+    exactly the browsers that most need to sign out.
+
+    Signing out is not a privileged action, and
     demanding a valid session for it would mean a browser holding an expired or already
     revoked cookie could not get rid of it — it would be told 401 and keep the cookie. So
     this always answers 204: the row is revoked if there was one to revoke, and the cookie

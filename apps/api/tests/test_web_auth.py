@@ -14,9 +14,12 @@ The pure functions are tested without a database. Everything about sessions need
 expiry is compared against PostgreSQL's clock, rotation is a transaction, and the check
 constraint is the database's — so those live below the integration marker.
 
-The guarded routes are mounted on a throwaway app defined here. R1-T1 adds no product route
-that requires a user or an administrator, and inventing one so the tests have something to
-call would ship an endpoint the task did not ask for.
+The two guarded routes are mounted on a throwaway app defined here. What they exist to prove
+is the behaviour of `require_user` and `require_admin` themselves — including the 403 for a
+role, which no product route asks for yet — and mounting them here keeps those tests from
+depending on whatever the dashboard happens to require this month. The product routes that
+do now demand a session are covered where they live, in
+`tests/test_dashboard_authorization.py`.
 """
 
 import hashlib
@@ -56,6 +59,7 @@ from app.web_auth import (
     require_user,
     verify_password,
 )
+from tests.conftest import DASHBOARD_ORIGIN
 
 # A password long enough to be realistic and constant so the tests are not comparing against
 # a value that changes between runs. It is a test fixture, not a credential: nothing outside
@@ -382,6 +386,18 @@ def client(app):
 
 def login(client, email: str, password: str = PASSWORD):
     return client.post("/api/v1/auth/login", json={"email": email, "password": password})
+
+
+def logout(client):
+    """A sign-out, as the web application makes it.
+
+    Carrying the `Origin` a browser attaches to every POST: since R1-T2 this route is behind
+    `require_same_origin`, because ending somebody's session is a state change and a page on
+    another site has no business making it. What the check does with a foreign or missing
+    origin is `tests/test_dashboard_csrf.py`; the tests here are about what a real sign-out
+    does to the session.
+    """
+    return client.post("/api/v1/auth/logout", headers={"Origin": DASHBOARD_ORIGIN})
 
 
 def assert_invalid_credentials(response) -> None:
@@ -870,7 +886,7 @@ def test_logout_revokes_the_session_and_clears_the_cookie(session, client):
     login(client, user.email)
     token = client.cookies.get(SESSION_COOKIE_NAME)
 
-    response = client.post("/api/v1/auth/logout")
+    response = logout(client)
 
     assert response.status_code == 204
 
@@ -883,10 +899,10 @@ def test_logout_revokes_the_session_and_clears_the_cookie(session, client):
 @integration
 def test_logout_without_a_session_still_succeeds(client):
     """A browser holding a dead cookie must be able to get rid of it, not be told 401."""
-    assert client.post("/api/v1/auth/logout").status_code == 204
+    assert logout(client).status_code == 204
 
     client.cookies.set(SESSION_COOKIE_NAME, generate_session_token())
-    assert client.post("/api/v1/auth/logout").status_code == 204
+    assert logout(client).status_code == 204
 
 
 @integration
@@ -896,9 +912,9 @@ def test_logout_is_idempotent(session, client):
     token = client.cookies.get(SESSION_COOKIE_NAME)
 
     client.cookies.set(SESSION_COOKIE_NAME, token)
-    first = client.post("/api/v1/auth/logout")
+    first = logout(client)
     client.cookies.set(SESSION_COOKIE_NAME, token)
-    second = client.post("/api/v1/auth/logout")
+    second = logout(client)
 
     assert first.status_code == second.status_code == 204
 
@@ -963,7 +979,7 @@ def test_an_unauthenticated_caller_gets_401_from_an_admin_route(client):
 def test_a_revoked_session_cannot_reach_a_user_route(session, client):
     user = make_user(session)
     login(client, user.email)
-    client.post("/api/v1/auth/logout")
+    logout(client)
 
     assert_unauthenticated(client.get("/user-only"))
 
@@ -1108,12 +1124,15 @@ def test_an_api_key_does_not_authenticate_the_web_session_routes(session):
 
 
 @integration
-def test_the_dashboard_routes_still_need_no_credentials(session):
-    """R1-T1 puts no gate on any route that did not have one.
+def test_the_dashboard_routes_require_a_web_session(session):
+    """R1-T2 puts the gate on, and puts it only where it belongs.
 
-    The analyses listing is the dashboard's own, and it has never carried a credential.
-    Adding accounts must not change that — enforcing dashboard ownership is explicitly a
-    later task.
+    The analyses listing is the dashboard's own view and now refuses a caller it cannot
+    identify. `/health` is checked in the same breath because it is the route that must
+    stay open: it is what tells an operator, and the container's own healthcheck, whether
+    this process is answering — and a health probe that had to sign in would report the
+    deployment as broken the moment authentication was misconfigured, which is precisely
+    when a truthful answer matters most.
     """
     db, _, _, _ = session
 
@@ -1125,5 +1144,29 @@ def test_the_dashboard_routes_still_need_no_credentials(session):
     finally:
         production_app.dependency_overrides.clear()
 
-    assert listing.status_code == 200
+    assert_unauthenticated(listing)
     assert health.status_code == 200
+
+
+@integration
+def test_a_signed_in_user_reaches_the_dashboard_listing(session):
+    """The gate opens for a real sign-in, through the routes that ship.
+
+    The whole path, in one test: sign in over the real login route, receive the cookie, and
+    have the cookie jar present it to the listing the way a browser would. Everything about
+    who sees which analyses is proven in `tests/test_dashboard_authorization.py`; what is
+    established here is that a session issued by this module is a session that module's
+    dependency accepts.
+    """
+    db, _, _, _ = session
+    user = make_user(session)
+
+    production_app.dependency_overrides[get_session] = lambda: db
+    try:
+        with TestClient(production_app) as client:
+            assert login(client, user.email).status_code == 200
+            response = client.get("/api/v1/analyses")
+    finally:
+        production_app.dependency_overrides.clear()
+
+    assert response.status_code == 200

@@ -63,6 +63,20 @@ services:
       # case that has to ask: run with `DEEPGUARD_ENV=development docker compose up`, or set
       # it in a local `.env`.
       DEEPGUARD_ENV:
+      # The browser origin the dashboard is served from, and the only one the API accepts a
+      # session-authenticated mutation from (R1-T2). Comma-separated if a deployment really
+      # is served on more than one.
+      #
+      # It cannot be derived from the request: the browser posts to the web application,
+      # which forwards the call over the Docker network, so what arrives here is `api:8000`
+      # and the origin the person is on has to be stated.
+      #
+      # The default is the local dashboard, which is what `WEB_PORT` publishes by default —
+      # unlike `DEEPGUARD_ENV` above, a default here disables nothing: it names one specific
+      # origin, and a production deployment that forgets to set its own has every dashboard
+      # submission refused rather than quietly accepted from anywhere. Override it in `.env`
+      # alongside `WEB_PORT` whenever the dashboard is not on `http://localhost:3000`.
+      DEEPGUARD_WEB_ORIGIN: ${DEEPGUARD_WEB_ORIGIN:-http://localhost:3000}
       # Object storage is reached over the Docker network, never the published host port.
       MINIO_ENDPOINT: minio:9000
       MINIO_SECURE: "false"

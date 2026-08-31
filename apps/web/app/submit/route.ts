@@ -14,6 +14,12 @@
  * rest of this server-rendered dashboard does, and it is why the outcome travels in the
  * query string rather than in a response body nobody would render.
  *
+ * Since R1-T2 the submission is authenticated. The browser's session cookie is forwarded to
+ * the API, which resolves the account from it and records that account as the analysis's
+ * owner. Nothing about the owner travels in the form: this handler could not name one if it
+ * wanted to, which is what stops a signed-in person from filing an analysis under somebody
+ * else's account by editing a hidden field.
+ *
  * One deliberate limitation: `request.formData()` reads the whole upload into memory before
  * forwarding it. The API caps a file at 100 MiB, so that is the ceiling here too. Streaming
  * it through would be better and is not what this task is: the dashboard is an internal
@@ -24,6 +30,7 @@
 import { NextResponse } from "next/server";
 
 import { API_URL } from "../analysis";
+import { LOGIN_PATH, forwardedOrigin, isSameOrigin, sessionHeaders } from "../session";
 
 // How long the API is given to answer. A URL submission waits for the download, which is a
 // real network fetch of up to 100 MiB, so this is generous where the dashboard's read
@@ -67,6 +74,14 @@ async function failureText(response: Response): Promise<string> {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
+  // A submission driven from another site is refused before the upload is read, so a forged
+  // form cannot make this server spend a 100 MiB read on it. The `SameSite=Lax` cookie means
+  // such a request would arrive without a session and be refused by the API anyway; this is
+  // the independent check in front of that.
+  if (!isSameOrigin(request)) {
+    return new NextResponse(null, { status: 403 });
+  }
+
   let form: FormData;
   try {
     form = await request.formData();
@@ -92,11 +107,20 @@ export async function POST(request: Request): Promise<NextResponse> {
     body.append("file", file as File, (file as File).name);
   }
 
+  // The session cookie and the browser's origin, restated for the server-to-server call.
+  // The cookie is what the API resolves the owner of this analysis from, so a submission
+  // without it is refused there rather than quietly committed to nobody; the origin is what
+  // the API's own CSRF check reads, and it has already been accepted against this server's
+  // host a few lines above.
+  const forwarded = { ...(await sessionHeaders()), ...forwardedOrigin(request) };
+
   let response: Response;
   try {
     response = await fetch(target, {
       method: "POST",
-      headers: url ? { "content-type": "application/json" } : undefined,
+      headers: url
+        ? { ...forwarded, "content-type": "application/json" }
+        : forwarded,
       body,
       signal: AbortSignal.timeout(SUBMIT_TIMEOUT_MS),
     });
@@ -104,6 +128,13 @@ export async function POST(request: Request): Promise<NextResponse> {
     // A timeout or a connection failure. The underlying message can name internal hosts,
     // so it is not passed on.
     return back({ error: "The API could not be reached." });
+  }
+
+  // The session expired, was revoked, or was never there. Sending the operator to sign in is
+  // the only useful answer; reporting it beside the form as a refused submission would leave
+  // them retrying an upload that cannot succeed until they do.
+  if (response.status === 401) {
+    return new NextResponse(null, { status: 303, headers: { Location: LOGIN_PATH } });
   }
 
   if (!response.ok) {

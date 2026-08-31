@@ -8,7 +8,15 @@
  *
  * Nothing here derives a figure. Every function either passes a stored value through or
  * refuses the payload; in particular nothing turns a detector score into a classification.
+ *
+ * Every read below is authenticated, since R1-T2. The API decides which analyses a session
+ * may see and answers 401 to one it does not recognise and 404 to an analysis outside its
+ * reach; what these functions do with that is carry the distinction to the page, which
+ * sends the reader to sign in. Nothing here filters by owner — a page that hid another
+ * account's analysis after receiving it would be a security boundary drawn in a browser.
  */
+
+import { SESSION_TIMEOUT_MS, SessionUser, parseSessionUser, sessionHeaders } from "./session";
 
 // Both routes render on the server, so they prefer the Docker-internal API URL and fall
 // back to the public one the browser uses.
@@ -295,9 +303,14 @@ export const NO_AUDIO_WINDOWS = "No audio evidence windows";
 export const NO_PROVENANCE = "No provenance";
 export const REMOTE_PROVENANCE = "Remote provenance (not fetched)";
 export const EXTRACTION_FAILED = "Extraction failed";
+// The listing, or why it could not be shown. `unauthenticated` is the API refusing the
+// session rather than failing, and it is kept apart from every other failure because it is
+// the one the page answers by sending the reader to sign in — telling somebody the list is
+// "temporarily unavailable" when they are simply signed out would strand them on a page
+// that will never fill in.
 export type AnalysesResult =
   | { ok: true; analyses: AnalysisSummary[] }
-  | { ok: false; error: string };
+  | { ok: false; unauthenticated: boolean; error: string };
 
 /** A number the API may legitimately have left out, or `undefined` for anything else. */
 export function parseOptionalNumber(value: unknown): number | null | undefined {
@@ -800,27 +813,81 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     audio_authenticity: audioAuthenticity,
   };
 }
+/**
+ * Who the browser's session authenticates, or null when it authenticates nobody.
+ *
+ * The one question this server asks the API about identity, and it asks the API rather than
+ * reading the cookie because the cookie is opaque: it carries no account, no role and no
+ * expiry, by design (see `app/web_auth.py`). A missing cookie, an expired session and a
+ * revoked one all arrive here as the same null, which is all a caller needs — the answer to
+ * every one of them is to sign in.
+ *
+ * A 401 and an unreachable API are deliberately the same null too. Both mean this render
+ * cannot establish who the reader is, and a page that showed the dashboard chrome for an
+ * identity it could not confirm would be guessing.
+ */
+export async function fetchSession(): Promise<SessionUser | null> {
+  try {
+    const response = await fetch(`${API_URL}/api/v1/auth/me`, {
+      cache: "no-store",
+      headers: await sessionHeaders(),
+      signal: AbortSignal.timeout(SESSION_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return parseSessionUser(await response.json().catch(() => null));
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchAnalyses(): Promise<AnalysesResult> {
   try {
     const response = await fetch(`${API_URL}/api/v1/analyses`, {
       cache: "no-store",
+      headers: await sessionHeaders(),
       signal: AbortSignal.timeout(ANALYSES_TIMEOUT_MS),
     });
+
+    // The session the API would not accept. Reported as its own state rather than as a
+    // failure, because the page can act on it — everything else it can only report.
+    if (response.status === 401) {
+      return {
+        ok: false,
+        unauthenticated: true,
+        error: "Sign in to see your analyses.",
+      };
+    }
 
     // The API's own failure detail is server-side context, not something to surface
     // here, so an unsuccessful status becomes one generic message.
     if (!response.ok) {
-      return { ok: false, error: "The analysis list is temporarily unavailable." };
+      return {
+        ok: false,
+        unauthenticated: false,
+        error: "The analysis list is temporarily unavailable.",
+      };
     }
 
     const payload = await response.json().catch(() => null);
     if (!Array.isArray(payload)) {
-      return { ok: false, error: "The analysis list could not be read." };
+      return {
+        ok: false,
+        unauthenticated: false,
+        error: "The analysis list could not be read.",
+      };
     }
 
     const analyses = payload.map(parseAnalysis);
     if (analyses.some((analysis) => analysis === null)) {
-      return { ok: false, error: "The analysis list could not be read." };
+      return {
+        ok: false,
+        unauthenticated: false,
+        error: "The analysis list could not be read.",
+      };
     }
 
     return { ok: true, analyses: analyses as AnalysisSummary[] };
@@ -828,14 +895,28 @@ export async function fetchAnalyses(): Promise<AnalysesResult> {
     // Timeouts and connection errors are the same thing to a reader of this page: the
     // list is not available right now. The underlying message could leak internal
     // hostnames, so it is not shown.
-    return { ok: false, error: "The analysis list is temporarily unavailable." };
+    return {
+      ok: false,
+      unauthenticated: false,
+      error: "The analysis list is temporarily unavailable.",
+    };
   }
 }
 
-/** One analysis, or why it could not be shown. `missing` is a 404 and not an error. */
+/**
+ * One analysis, or why it could not be shown.
+ *
+ * `missing` is a 404 and not an error, and since R1-T2 it covers two things the API refuses
+ * to tell apart: no analysis has this id, and this session may not see the one that does.
+ * That is the API's decision and this type carries it as it stands — a report that
+ * distinguished the two would republish the fact the 404 exists to withhold.
+ *
+ * `unauthenticated` is separate again: the session was not accepted at all, which the page
+ * answers by sending the reader to sign in rather than by reporting a missing record.
+ */
 export type AnalysisResult =
   | { ok: true; analysis: AnalysisSummary }
-  | { ok: false; missing: boolean; error: string };
+  | { ok: false; missing: boolean; unauthenticated: boolean; error: string };
 
 /**
  * Read one analysis from the API by id, for the report route.
@@ -852,24 +933,45 @@ export async function fetchAnalysis(id: string): Promise<AnalysisResult> {
   try {
     const response = await fetch(`${API_URL}/api/v1/analyses/${encodeURIComponent(id)}`, {
       cache: "no-store",
+      headers: await sessionHeaders(),
       signal: AbortSignal.timeout(ANALYSES_TIMEOUT_MS),
     });
 
+    if (response.status === 401) {
+      return {
+        ok: false,
+        missing: false,
+        unauthenticated: true,
+        error: "Sign in to see this report.",
+      };
+    }
+
     if (response.status === 404) {
-      return { ok: false, missing: true, error: "No analysis was found with this id." };
+      return {
+        ok: false,
+        missing: true,
+        unauthenticated: false,
+        error: "No analysis was found with this id.",
+      };
     }
 
     if (!response.ok) {
       return {
         ok: false,
         missing: false,
+        unauthenticated: false,
         error: "This analysis is temporarily unavailable.",
       };
     }
 
     const analysis = parseAnalysis(await response.json().catch(() => null));
     if (analysis === null) {
-      return { ok: false, missing: false, error: "This analysis could not be read." };
+      return {
+        ok: false,
+        missing: false,
+        unauthenticated: false,
+        error: "This analysis could not be read.",
+      };
     }
 
     return { ok: true, analysis };
@@ -877,6 +979,11 @@ export async function fetchAnalysis(id: string): Promise<AnalysisResult> {
     // A timeout or a connection error is not evidence that the analysis is absent, so the
     // message says the record is unavailable rather than that it does not exist. The
     // underlying error could name internal hosts and is not surfaced.
-    return { ok: false, missing: false, error: "This analysis is temporarily unavailable." };
+    return {
+      ok: false,
+      missing: false,
+      unauthenticated: false,
+      error: "This analysis is temporarily unavailable.",
+    };
   }
 }

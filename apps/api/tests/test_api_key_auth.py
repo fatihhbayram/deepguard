@@ -351,8 +351,13 @@ def test_the_api_key_gate_covers_the_public_routes_and_nothing_else():
 
     Asserted as one set equality rather than as two separate checks, because both failures
     matter and they are opposite mistakes: a public route missing from this set is an
-    unauthenticated external endpoint, and an internal route appearing in it is the
-    dashboard suddenly demanding a credential it has never had.
+    unauthenticated external endpoint, and an internal route appearing in it is an API key
+    becoming a way through the dashboard.
+
+    This is about `require_api_key` specifically, not about whether a route is guarded at
+    all. The internal analyses routes are guarded — by `require_user`, which reads a cookie
+    — and that is exactly the distinction being pinned: two credential families, neither
+    accepted where the other belongs.
 
     The internal paths are named explicitly so that a future FastAPI release changing how
     included routers are stored breaks this loudly, instead of quietly narrowing the walk to
@@ -364,8 +369,8 @@ def test_the_api_key_gate_covers_the_public_routes_and_nothing_else():
     internal = {
         "/health",
         "/api/v1/analyses",
-        # The URL submission (P10-T2). Mounted from its own module and still unauthenticated,
-        # like every other internal route: the dashboard has never carried a credential.
+        # The URL submission (P10-T2). Mounted from its own module, and since R1-T2 behind a
+        # web session like the rest of the dashboard — never behind an API key.
         "/api/v1/analyses/url",
         "/api/v1/analyses/{analysis_id}",
         # Web sign-in (R1-T1). Internal, and named here so that the set equality below has
@@ -599,17 +604,36 @@ def test_an_inactive_key_is_refused_by_the_real_lookup(session):
 
 
 @integration
-def test_analyses_listing_still_answers_without_credentials(session):
-    """The structural check says no analyses route depends on `require_api_key`; this
-    calls one without an `Authorization` header and confirms it is not a 401 in practice.
+def test_an_api_key_does_not_open_the_analyses_listing(session):
+    """The internal listing is not reachable with a B2B credential, valid or not.
+
+    The structural check above says no analyses route depends on `require_api_key`. Since
+    R1-T2 that route does depend on `require_user`, and this is the behavioural half of
+    both claims at once: a working API key gets the same 401 as no credential at all,
+    because the dependency in front of the listing reads a cookie and nothing else.
+
+    That is the isolation this file exists for, in the direction that became reachable when
+    the dashboard gained a gate. A leaked customer key must not become a way to read the
+    operator's view of every analysis on file.
     """
-    db, _ = session
+    db, created = session
+    generated = generate_api_key()
+    key = ApiKey(name="listing-isolation", key_hash=generated.key_hash)
+    db.add(key)
+    db.commit()
+    created.append(key.id)
+    plaintext = generated.plaintext
 
     production_app.dependency_overrides[get_session] = lambda: db
     try:
         with TestClient(production_app) as client:
-            response = client.get("/api/v1/analyses")
+            anonymous = client.get("/api/v1/analyses")
+            with_key = client.get(
+                "/api/v1/analyses", headers={"Authorization": f"Bearer {plaintext}"}
+            )
     finally:
         production_app.dependency_overrides.clear()
 
-    assert response.status_code == 200
+    for refusal in (anonymous, with_key):
+        assert refusal.status_code == 401
+        assert refusal.json() == {"detail": "Not authenticated"}

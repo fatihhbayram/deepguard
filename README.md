@@ -241,22 +241,68 @@ curl http://localhost:8000/health
 A healthy stack returns `{"status":"ok","database":"ok"}`. If the database is unreachable, the
 endpoint returns HTTP 503 with `{"status":"degraded","database":"unavailable"}`.
 
-Then open http://localhost:3000, which shows the same information as a status page and reports
-`OPERATIONAL` when the API and database are both reachable. The page also lists the most
-recent analyses, or `No analyses yet.` on a fresh database.
+Then open http://localhost:3000. It reports `OPERATIONAL` when the API and database are both
+reachable, and asks you to sign in before it shows anything else — see below.
+
+## Accounts and signing in
+
+The dashboard is authenticated. There is no default account and no seeded password anywhere
+in this repository, so the first administrator is created deliberately, on the machine that
+runs the application:
+
+```bash
+docker compose exec api python create_admin.py
+```
+
+It asks for an address and a password, does not echo the password, and refuses to overwrite
+an account that already exists. Sign in at http://localhost:3000/login.
+
+What an account sees is decided by the API, not by the page:
+
+- a `USER` sees the analyses they submitted, and nothing else. Another account's analysis, a
+  public-API submission and an analysis stored before there were accounts are all answered
+  with `404` — the same answer as an id that names nothing, so the response cannot be used
+  to find out which ids are real.
+- an `ADMIN` sees every analysis on file, which is what the internal dashboard is for.
+
+Analyses submitted through the public API stay owned by the API key that submitted them and
+are unaffected by any of this. The two credentials do not overlap in either direction: a
+browser cookie authenticates nothing on `/api/public/v1`, and an API key opens no dashboard
+route.
+
+Dashboard **mutations** — submitting an analysis, signing out — additionally require an
+`Origin` header naming the dashboard, which the browser sends by itself and the web
+application forwards. `DEEPGUARD_WEB_ORIGIN` is what the API accepts (`.env`, comma-separated
+if there is more than one); set it to the origin the dashboard is actually served on, or every
+submission answers `403 Cross-origin request refused`. Nothing is accepted when it is unset —
+a deployment with no configured origin refuses these requests rather than accepting them from
+anywhere. Reads and the public API are not affected.
 
 ## Endpoints
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/health` | API and database reachability |
-| POST | `/api/v1/analyses` | Upload a video and create an analysis |
-| GET | `/api/v1/analyses` | List the most recent analyses |
+| Method | Path | Purpose | Credential |
+| --- | --- | --- | --- |
+| GET | `/health` | API and database reachability | none |
+| POST | `/api/v1/auth/login` | Sign in and receive the session cookie | none |
+| POST | `/api/v1/auth/logout` | End the session | none |
+| GET | `/api/v1/auth/me` | Who the session cookie authenticates | session cookie |
+| POST | `/api/v1/analyses` | Upload a video and create an analysis | session cookie |
+| GET | `/api/v1/analyses` | List the analyses this account may see | session cookie |
+| GET | `/api/v1/analyses/{id}` | One analysis with its evidence | session cookie |
 
-Upload a video and see it appear in the dashboard:
+Upload a video and see it appear in the dashboard. Signing in first is what makes the upload
+yours — the account the cookie resolves to is recorded as the analysis's owner, and the
+listing above is filtered on it. The `Origin` is the header a browser sends on its own; from
+`curl` it has to be stated, and it must match `DEEPGUARD_WEB_ORIGIN`:
 
 ```bash
-curl -F 'file=@sample.mp4;type=video/mp4' http://localhost:8000/api/v1/analyses
+curl -c cookies.txt -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","password":"..."}' \
+  http://localhost:8000/api/v1/auth/login
+
+curl -b cookies.txt -H 'Origin: http://localhost:3000' \
+  -F 'file=@sample.mp4;type=video/mp4' \
+  http://localhost:8000/api/v1/analyses
 ```
 
 The answer is `202 Accepted`, carrying the analysis id, the original's SHA-256 and storage

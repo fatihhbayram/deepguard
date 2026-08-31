@@ -17,12 +17,14 @@ from sqlalchemy.orm import Session, aliased
 from app.db.models import (
     ANALYSIS_STATUS_QUEUED,
     JOB_STATUS_QUEUED,
+    USER_ROLE_ADMIN,
     Analysis,
     AnalysisJob,
     AnalysisSegment,
     AnalysisSignal,
     ApiKey,
     MediaFile,
+    User,
 )
 from app.db.session import get_session
 from app.detection import (
@@ -43,6 +45,7 @@ from app.media import (
 )
 from app.normalization import needs_normalization
 from app.storage import store_original
+from app.web_auth import require_same_origin, require_user
 
 logger = logging.getLogger(__name__)
 
@@ -483,14 +486,18 @@ def persist_analysis(
     was_normalized: bool,
     derivative_storage_key: str | None,
     api_key_id: uuid.UUID | None = None,
+    owner_id: uuid.UUID | None = None,
     max_active_analyses: int | None = None,
 ) -> Analysis:
     """Write the queued analysis, its media and the job it is owed in one transaction.
 
-    `api_key_id` is the key that submitted the upload, or None for the dashboard, which
-    authenticates nobody. It is written in the same insert as the analysis rather than
-    updated onto it afterwards: ownership is what the public API's isolation rests on, and
-    a row that existed for even one commit without its owner would be a row no public read
+    `api_key_id` is the key that submitted the upload, and `owner_id` the signed-in person
+    who did — never both, which is the invariant `ck_analyses_single_owner` holds in the
+    database rather than trusting the two callers that pass them. The public routes pass a
+    key and no user; the dashboard routes, since R1-T2, pass a user resolved from the
+    session cookie and no key. Either is written in the same insert as the analysis rather
+    than updated onto it afterwards: ownership is what both surfaces' isolation rests on,
+    and a row that existed for even one commit without its owner would be a row no read
     could reach and no owner could be inferred for.
 
     `max_active_analyses` caps how much work one key may have outstanding, and only the
@@ -542,7 +549,9 @@ def persist_analysis(
         if active >= max_active_analyses:
             raise ActiveAnalysisLimitReached(active, max_active_analyses)
 
-    analysis = Analysis(status=ANALYSIS_STATUS_QUEUED, api_key_id=api_key_id)
+    analysis = Analysis(
+        status=ANALYSIS_STATUS_QUEUED, api_key_id=api_key_id, owner_id=owner_id
+    )
     session.add(analysis)
     # Assigns the analysis id the media row needs, still inside the same transaction.
     session.flush()
@@ -601,6 +610,7 @@ async def accept_upload(
     session: Session,
     *,
     api_key_id: uuid.UUID | None = None,
+    owner_id: uuid.UUID | None = None,
     max_active_analyses: int | None = None,
 ) -> AcceptedUpload:
     """Admit an upload, prove it is real media, stage it, and queue it for detection.
@@ -711,6 +721,7 @@ async def accept_upload(
             was_normalized=was_normalized,
             derivative_storage_key=canonical_key,
             api_key_id=api_key_id,
+            owner_id=owner_id,
             max_active_analyses=max_active_analyses,
         )
     except ActiveAnalysisLimitReached:
@@ -773,21 +784,42 @@ def created_analysis(accepted: AcceptedUpload) -> CreatedAnalysis:
 
 
 @router.post(
-    "/analyses", response_model=CreatedAnalysis, status_code=status.HTTP_202_ACCEPTED
+    "/analyses",
+    response_model=CreatedAnalysis,
+    status_code=status.HTTP_202_ACCEPTED,
+    # The CSRF boundary, declared as a route dependency rather than as a parameter because
+    # nothing in the handler needs its result: it either refuses the request or says nothing.
+    # It is on the POST alone — the reads above change no state, and adding it to them would
+    # make an origin header a condition of looking at the dashboard.
+    dependencies=[Depends(require_same_origin)],
 )
 async def create_analysis(
-    file: UploadFile, session: Session = Depends(get_session)
+    file: UploadFile,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_user),
 ) -> CreatedAnalysis:
     """Accept a dashboard upload and report everything the request established about it.
 
-    No `api_key_id`: this is the internal route, it authenticates nobody, and the analyses
-    it commits are owned by nobody. That is what keeps them out of every public read.
+    Two dependencies stand in front of this: the session that says who the caller is, and
+    `require_same_origin`, which says the request came from this deployment's own web
+    application rather than from a page somewhere else that happens to be open in the same
+    browser. Neither covers the other.
+
+    The owner is the account the session cookie resolves to, and nothing else. There is no
+    `owner_id` in the request for a caller to choose: a field naming the owner would let a
+    signed-in person file an analysis under somebody else's name, and every read below
+    would then honour it. `require_user` establishes who this is; this route only passes
+    that identity on.
+
+    No `api_key_id` and no concurrency limit: this is the internal route, and the key
+    ownership the public API's isolation rests on belongs to that surface. `owner_id` and
+    `api_key_id` are never both set, which the database holds rather than this line.
 
     The work is `accept_upload`; what is left here is the response, which is wider than the
     public one on purpose — the dashboard is the same trust boundary as the server, so the
     storage keys and content identity it needs are not a leak to it.
     """
-    return created_analysis(await accept_upload(file, session))
+    return created_analysis(await accept_upload(file, session, owner_id=user.id))
 
 
 def signal_figure(metadata: object, key: str, expected: type | tuple[type, ...]) -> Any | None:
@@ -1244,9 +1276,41 @@ def analysis_payloads(session: Session, rows: list[Any]) -> list[AnalysisSummary
     ]
 
 
+def visible_to(statement, user: User):
+    """Narrow a read of the analyses to the ones this account is allowed to see.
+
+    One function, applied by both read routes, because the alternative is two ownership
+    rules that can disagree — and the pair that disagrees is a listing that hides another
+    person's analysis next to a detail route that serves it to anyone holding the id.
+
+    An administrator's statement is returned untouched: the internal dashboard is where an
+    operator looks at the whole system, and that is the role the distinction exists for.
+
+    For everyone else the filter is `owner_id = <this account>`, and it is a `WHERE` clause
+    rather than a check on the rows that come back. That single equality also settles the
+    three cases the plan calls out separately, because none of them can satisfy it: another
+    user's analysis names a different owner, an API-key submission names none, and an
+    analysis stored before there were accounts names none either. All three are simply not
+    in the result, and a caller cannot tell them apart from an id that never existed —
+    which is the point of answering 404 rather than 403.
+    """
+    if user.role == USER_ROLE_ADMIN:
+        return statement
+
+    return statement.where(Analysis.owner_id == user.id)
+
+
 @router.get("/analyses", response_model=list[AnalysisSummary])
-def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSummary]:
-    """Return the most recent analyses, with all four of their signals, for the dashboard.
+def list_analyses(
+    session: Session = Depends(get_session),
+    user: User = Depends(require_user),
+) -> list[AnalysisSummary]:
+    """Return the most recent analyses this account may see, with all four of their signals.
+
+    Authenticated since R1-T2, and filtered in the statement: a signed-in USER is shown the
+    analyses they own and an ADMIN is shown all of them. There is no parameter here for a
+    caller to widen that with — the account comes from the session cookie, so changing which
+    analyses come back means signing in as somebody else.
 
     Four statements serve the whole page — the analyses with their signals, then the three
     evidence reads in `analysis_payloads`. All four are fixed in number: none grows with how
@@ -1258,7 +1322,7 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
     """
     try:
         rows = session.execute(
-            analysis_evidence_select()
+            visible_to(analysis_evidence_select(), user)
             .order_by(Analysis.created_at.desc(), Analysis.id.desc())
             .limit(RECENT_ANALYSES_LIMIT)
         ).all()
@@ -1275,7 +1339,9 @@ def list_analyses(session: Session = Depends(get_session)) -> list[AnalysisSumma
 
 @router.get("/analyses/{analysis_id}", response_model=AnalysisSummary)
 def get_analysis(
-    analysis_id: uuid.UUID, session: Session = Depends(get_session)
+    analysis_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_user),
 ) -> AnalysisSummary:
     """Return one analysis with all four of its signals and their stored evidence.
 
@@ -1295,10 +1361,18 @@ def get_analysis(
 
     A `uuid.UUID` path parameter means a malformed id is rejected by validation as a 422
     before any statement runs; only a well-formed id that names nothing reaches the 404.
+
+    Since R1-T2 the ownership filter is part of that statement, and the 404 below therefore
+    covers two things a caller cannot distinguish: an id that names no analysis, and one
+    that names an analysis this account may not see. That is deliberate. A 403 for the
+    second would confirm the id exists, which is exactly the fact a person guessing ids is
+    trying to establish, so an analysis outside the caller's reach is simply not found.
     """
     try:
         rows = session.execute(
-            analysis_evidence_select().where(Analysis.id == analysis_id)
+            visible_to(analysis_evidence_select(), user).where(
+                Analysis.id == analysis_id
+            )
         ).all()
 
         payloads = analysis_payloads(session, rows)

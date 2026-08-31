@@ -28,10 +28,40 @@ from app.db.models import (
     AnalysisSignal,
     MediaFile,
 )
+from app.db.models import USER_ROLE_ADMIN, User
 from app.db.session import SessionLocal, engine
 from app.main import app
+from app.web_auth import require_user
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def signed_in_administrator():
+    """Every read through a route in this module is made as an administrator.
+
+    The dashboard routes have demanded a web session since R1-T2, and what this file is
+    about is the schema underneath them: that a committed row comes back out of real
+    PostgreSQL with its columns intact. An administrator is the role that reads the whole
+    table, so the rows these tests write — owned by nobody, as everything stored before
+    there were accounts is — are still the rows the endpoint returns.
+
+    The account is not persisted, because nothing here needs it to be: the visibility rule
+    reads the role and stops. Ownership against real accounts and real rows is proven in
+    `tests/test_dashboard_authorization.py`.
+    """
+    administrator = User(
+        id=uuid.uuid4(),
+        email="persistence-suite@example.com",
+        password_hash="unused",
+        role=USER_ROLE_ADMIN,
+        is_active=True,
+    )
+    app.dependency_overrides[require_user] = lambda: administrator
+
+    yield
+
+    app.dependency_overrides.pop(require_user, None)
 
 
 @pytest.fixture(scope="module")

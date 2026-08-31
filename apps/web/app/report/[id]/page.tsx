@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
+import { LOGIN_PATH } from "../../session";
 import {
   ActiveSpeakerSignal,
   AnalysisSummary,
@@ -533,6 +534,13 @@ export default async function Report({ params }: { params: Promise<{ id: string 
   const { id } = await params;
   const result = await fetchAnalysis(id);
 
+  // No usable session. The reader is sent to sign in rather than shown a report page that
+  // cannot fill in — and deliberately before the 404 below, so a signed-out reader is never
+  // told anything at all about whether this id exists.
+  if (!result.ok && result.unauthenticated) {
+    redirect(LOGIN_PATH);
+  }
+
   // A well-formed id the API answered 404 for names no analysis, and the route says so with
   // the status code rather than with a 200 that only reads as an error. `notFound()` works by
   // throwing, so it is called out here where nothing catches: putting it inside `fetchAnalysis`
@@ -543,6 +551,11 @@ export default async function Report({ params }: { params: Promise<{ id: string 
   // parsed are all states where the analysis may well exist and something else went wrong;
   // reporting those as missing would tell the reader a record is gone when nothing established
   // that. They keep the error page, which does not claim to know either way.
+  //
+  // Since R1-T2 the API also answers 404 for an analysis this session may not see, and that
+  // arrives here as the same `missing`. This page must not tell the two apart or it would
+  // hand back the very fact the API withheld: that the id is real, and belongs to somebody
+  // else. "Not Found" is the whole of what a reader without access is told.
   if (!result.ok && result.missing) {
     notFound();
   }

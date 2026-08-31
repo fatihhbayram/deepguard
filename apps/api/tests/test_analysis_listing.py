@@ -4,6 +4,12 @@ The session is faked here so the suite needs no live database: what is under tes
 query this route builds and how it maps rows onto the response. The query is asserted by
 compiling it, because a fake driver cannot prove ordering or a limit.
 `tests/test_persistence.py` covers the same endpoint against real PostgreSQL.
+
+The route has demanded a signed-in account since R1-T2, so the caller here is an
+administrator: an administrator's listing is the unnarrowed one, which is what leaves every
+existing assertion in this file about the *shape* of the query rather than about who asked
+for it. The ownership filter is its own small group of tests below, and it is proven against
+real users and real rows in `tests/test_dashboard_authorization.py`.
 """
 
 import uuid
@@ -15,8 +21,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 
 from app.api.analyses import DASHBOARD_SEGMENTS, RECENT_ANALYSES_LIMIT
+from app.db.models import USER_ROLE_ADMIN, USER_ROLE_USER, User
 from app.db.session import get_session
 from app.main import app
+from app.web_auth import require_user
 
 CREATED_AT = datetime(2026, 8, 19, 18, 8, 1, tzinfo=timezone.utc)
 
@@ -387,6 +395,22 @@ class FakeSession:
         return self.segment_rows if "clip_index" in sql else self.speaking_rows
 
 
+def account(role: str = USER_ROLE_ADMIN) -> User:
+    """A signed-in account, never persisted.
+
+    The routes take the user their dependency returns and read two things off it — the id
+    and the role — so an unsaved instance is the whole of what these tests need. Signing in
+    for real, against real rows, is what `tests/test_dashboard_authorization.py` does.
+    """
+    return User(
+        id=uuid.uuid4(),
+        email=f"{uuid.uuid4().hex}@example.com",
+        password_hash="unused",
+        role=role,
+        is_active=True,
+    )
+
+
 @pytest.fixture
 def fake_session():
     session = FakeSession()
@@ -396,7 +420,22 @@ def fake_session():
 
 
 @pytest.fixture
-def client(fake_session):
+def admin():
+    """The account every request in this module is made as, unless a test says otherwise."""
+    return account(USER_ROLE_ADMIN)
+
+
+@pytest.fixture
+def client(fake_session, admin):
+    app.dependency_overrides[require_user] = lambda: admin
+
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def anonymous_client(fake_session):
+    """A client with no session at all, for the tests about being refused one."""
     with TestClient(app) as test_client:
         yield test_client
 
@@ -406,6 +445,86 @@ def compiled(session, index: int = 0) -> str:
     statement = session.statements[index]
 
     return str(statement.compile(compile_kwargs={"literal_binds": True}))
+
+
+# --- who may read the listing at all ---------------------------------------------------
+
+
+def test_an_unauthenticated_listing_is_refused(anonymous_client, fake_session):
+    """No cookie, no listing — and, just as importantly, no query.
+
+    The refusal has to come from the dependency, before the route body runs. A route that
+    read the analyses and then decided whether to show them would still have read them, and
+    the next mistake in that shape is one that forgets the second half.
+    """
+    response = anonymous_client.get("/api/v1/analyses")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Not authenticated"}
+    assert fake_session.statements == []
+
+
+def test_an_unauthenticated_detail_read_is_refused(anonymous_client, fake_session):
+    response = anonymous_client.get(f"/api/v1/analyses/{uuid.uuid4()}")
+
+    assert response.status_code == 401
+    assert fake_session.statements == []
+
+
+# --- what the account's role narrows the listing to -------------------------------------
+
+
+def test_a_user_listing_is_filtered_to_that_users_analyses(fake_session):
+    """The narrowing is a `WHERE` clause on the one statement the listing issues.
+
+    Asserted against the compiled SQL rather than against the rows that come back, because
+    the fake returns whatever it is given: what has to be true is that the *database* was
+    asked for this user's analyses, not that the route filtered a wider answer afterwards.
+    A filter applied after the read would leave the wider read in place for the next change
+    to expose.
+    """
+    user = account(USER_ROLE_USER)
+    app.dependency_overrides[require_user] = lambda: user
+
+    with TestClient(app) as client:
+        assert client.get("/api/v1/analyses").status_code == 200
+
+    sql = compiled(fake_session)
+    assert "analyses.owner_id = " in sql
+    assert user.id.hex in sql
+
+
+def test_an_admin_listing_is_not_filtered_by_owner(client, fake_session):
+    """An administrator reads the whole system, so no ownership clause is added at all."""
+    client.get("/api/v1/analyses")
+
+    assert "owner_id" not in compiled(fake_session)
+
+
+def test_a_user_detail_read_is_filtered_to_that_users_analyses(fake_session):
+    """The same narrowing on the report's route, so the two readers cannot disagree.
+
+    This is the pair that matters: a listing that hides another account's analysis while the
+    detail route serves it to anyone holding the id would leak every record whose id ever
+    appeared in a link.
+    """
+    user = account(USER_ROLE_USER)
+    wanted = uuid.uuid4()
+    app.dependency_overrides[require_user] = lambda: user
+
+    with TestClient(app) as client:
+        client.get(f"/api/v1/analyses/{wanted}")
+
+    sql = compiled(fake_session)
+    assert "analyses.owner_id = " in sql
+    assert user.id.hex in sql
+    assert wanted.hex in sql
+
+
+def test_an_admin_detail_read_is_not_filtered_by_owner(client, fake_session):
+    client.get(f"/api/v1/analyses/{uuid.uuid4()}")
+
+    assert "owner_id" not in compiled(fake_session)
 
 
 def test_empty_database_returns_an_empty_list(client, fake_session):

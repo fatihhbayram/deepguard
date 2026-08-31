@@ -24,6 +24,14 @@ Every sign-in failure is the same failure. An address with no account, a wrong p
 a deactivated account all produce an identical 401, and the verification cost is paid even
 when no account was found — otherwise the response time alone would answer the question the
 uniform body is refusing to.
+
+Since R1-T2 this module also holds `require_same_origin`, the check that a state-changing
+request carrying one of these cookies came from the deployment's own web application. It
+lives here because it is part of what a session cookie is worth: `SameSite=Lax` keeps the
+browser from attaching one to a cross-site POST, and this is the independent check behind
+that, enforced by the server that owns the data rather than only by the one that renders the
+page. It guards the dashboard mutations and nothing else — reads change nothing, and the
+public API authenticates by a header no browser attaches on its own.
 """
 
 import hashlib
@@ -97,6 +105,22 @@ ENVIRONMENT_VARIABLE = "DEEPGUARD_ENV"
 # insecure cookie.
 INSECURE_COOKIE_ENVIRONMENTS = frozenset({"development", "test"})
 
+# The browser origins this API accepts a session-authenticated mutation from, comma-separated
+# — for example `https://inspectroot.example.com`, or `http://localhost:3000` locally.
+#
+# It has to be configured rather than derived. The browser never speaks to this API directly:
+# it posts to the web application, which forwards the call over the Docker network, so the
+# `Host` this request arrived on is `api:8000` and has nothing to do with the origin the
+# person is actually on. Comparing the two would refuse every legitimate submission.
+#
+# Unset, no origin is allowed and every dashboard mutation is refused. That is the same
+# fail-secure direction as the `Secure` cookie flag above and for the same reason: the
+# opposite default would silently disable a protection on any deployment nobody remembered to
+# configure, and a protection that is off looks exactly like one that is on. This way the
+# failure is immediate, total and obvious — submissions stop working the moment the variable
+# is missing, which is a thing an operator notices in seconds.
+WEB_ORIGIN_VARIABLE = "DEEPGUARD_WEB_ORIGIN"
+
 
 def cookie_is_secure() -> bool:
     """Whether the session cookie is marked `Secure`, read fresh on every response.
@@ -112,6 +136,89 @@ def cookie_is_secure() -> bool:
     environment = os.getenv(ENVIRONMENT_VARIABLE, "").strip().lower()
 
     return environment not in INSECURE_COOKIE_ENVIRONMENTS
+
+
+def normalize_origin(origin: str) -> str:
+    """One spelling of an origin, so the allowlist and the header are compared like for like.
+
+    Case-folded and stripped of a trailing slash. A browser sends `https://example.com` with
+    no path at all, but an operator writing the allowlist will sooner or later paste
+    `https://Example.com/`, and an allowlist that silently fails to match what the browser
+    sends is a protection that refuses every real request while looking configured.
+
+    Nothing else is normalized. The port is part of an origin — `http://localhost:3000` and
+    `http://localhost:8000` are different origins and must stay different here — and so is
+    the scheme.
+    """
+    return origin.strip().rstrip("/").lower()
+
+
+def allowed_origins() -> frozenset[str]:
+    """The browser origins a session-authenticated mutation may come from.
+
+    Read fresh on every request rather than captured at import, for the same reason
+    `cookie_is_secure` is: it is one `os.getenv` on a path that is about to write to
+    PostgreSQL, and it lets a test state the environment around a request.
+
+    An empty or unset variable yields an empty set, which allows nothing. See
+    `WEB_ORIGIN_VARIABLE` — that is the deliberate direction of the failure.
+    """
+    configured = os.getenv(WEB_ORIGIN_VARIABLE, "")
+
+    return frozenset(
+        normalize_origin(entry) for entry in configured.split(",") if entry.strip()
+    )
+
+
+def cross_origin() -> HTTPException:
+    """The refusal for a mutation whose `Origin` this deployment does not accept.
+
+    403 rather than 401: the caller may well be perfectly authenticated, and telling them to
+    sign in again would send them round a loop that cannot fix anything. What failed is where
+    the request came from.
+    """
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Cross-origin request refused",
+    )
+
+
+def require_same_origin(request: Request) -> None:
+    """Refuse a session-authenticated mutation that did not come from the web application.
+
+    The CSRF check, and deliberately the whole of it. The session cookie is already
+    `SameSite=Lax`, so a browser does not attach it to a cross-site POST in the first place;
+    this is the independent second boundary behind that, enforced by the server that actually
+    owns the data rather than only by the one that renders the page. A token scheme would add
+    a store, a rotation policy and a failure mode of its own to a boundary one header
+    comparison closes, and R1-T2 explicitly does not introduce one.
+
+    A missing `Origin` is refused, not waved through. Every browser sends one on a POST, so
+    the only callers this turns away are the ones that are not a browser form — which is the
+    shape a forged submission has. Reading absence as "no opinion" would leave a check that
+    anyone can skip by omitting a header, which is not a check.
+
+    This is why `app/submit/route.ts` and `app/logout/route.ts` forward the browser's
+    `Origin` rather than letting their own server-to-server call arrive without one. The web
+    application checks the header against its own host first; this checks it against what the
+    deployment was told its web origin is. Neither is a substitute for the other: the first
+    is closest to the browser, and the second is the one an attacker cannot reach around by
+    posting straight at the API — which they can, because cookies are not scoped by port and
+    this API is reachable from the same browser as the dashboard.
+
+    Applied only to the dashboard mutations. Reads are not state-changing and cannot be read
+    cross-origin anyway — no CORS headers are served — and the public API is not on this
+    surface at all: it authenticates by `Authorization` header, which a browser will not
+    attach on its own, so there is no CSRF for an origin check to prevent there.
+    """
+    origin = request.headers.get("origin")
+
+    if origin is None or normalize_origin(origin) not in allowed_origins():
+        # The rejected value is not logged. It is attacker-controlled text on an
+        # unauthenticated-in-spirit path, and what an operator needs to debug a misconfigured
+        # allowlist is the allowlist, which they already have.
+        logger.info("Refused a dashboard mutation from an unaccepted origin.")
+        raise cross_origin()
 
 
 def normalize_email(email: str) -> str:
@@ -335,9 +442,9 @@ def set_session_cookie(response: Response, token: str) -> None:
     that defaces a page and one that walks off with a session.
 
     `SameSite=Lax`, so the cookie is not attached to cross-site POSTs. That is most of what
-    CSRF protection is for on this surface, and it is why R1-T1 ships no CSRF tokens: the
-    cookie flag covers the case, and a token scheme with nothing extra to protect would be
-    machinery for its own sake.
+    CSRF protection is for on this surface, and it is why neither R1-T1 nor R1-T2 ships CSRF
+    tokens: the flag covers the case, `require_same_origin` is the independent check behind
+    it, and a token scheme on top of the two would be machinery for its own sake.
 
     `Secure` only in production, because a browser will not store a `Secure` cookie sent
     over plain HTTP and localhost is plain HTTP — see `cookie_is_secure`.

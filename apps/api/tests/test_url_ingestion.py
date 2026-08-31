@@ -35,10 +35,12 @@ from app.api.url_analyses import MAX_URL_LENGTH, URL_MEDIA_TYPES
 from app.auth import generate_api_key
 from app.db.models import (
     ANALYSIS_STATUS_QUEUED,
+    USER_ROLE_USER,
     Analysis,
     AnalysisJob,
     ApiKey,
     MediaFile,
+    User,
 )
 from app.db.session import SessionLocal, engine, get_session
 from app.downloader import (
@@ -51,6 +53,8 @@ from app.downloader import (
     UnsupportedUrl,
 )
 from app.main import app
+from app.web_auth import require_user
+from tests.conftest import DASHBOARD_ORIGIN
 
 INTERNAL_URL = "/api/v1/analyses/url"
 PUBLIC_URL = "/api/public/v1/analyses/url"
@@ -240,8 +244,10 @@ class SubmissionSession:
 
 
 @contextmanager
-def client_over(session: SubmissionSession):
+def client_over(session: SubmissionSession, user: User | None = None):
     app.dependency_overrides[get_session] = lambda: session
+    if user is not None:
+        app.dependency_overrides[require_user] = lambda: user
 
     with TestClient(app) as client:
         yield client
@@ -249,9 +255,40 @@ def client_over(session: SubmissionSession):
     app.dependency_overrides.clear()
 
 
+def dashboard_account() -> User:
+    """A signed-in account for the internal route, never persisted."""
+    return User(
+        id=uuid.uuid4(),
+        email=f"{uuid.uuid4().hex}@example.com",
+        password_hash="unused",
+        role=USER_ROLE_USER,
+        is_active=True,
+    )
+
+
 @pytest.fixture
-def dashboard():
-    """A client over the internal route, which authenticates nobody."""
+def dashboard_user():
+    """The account the internal submissions below are made as."""
+    return dashboard_account()
+
+
+@pytest.fixture
+def dashboard(dashboard_user):
+    """A client over the internal route, signed in as an ordinary account.
+
+    Since R1-T2 that route demands a web session and records the account as the analysis's
+    owner, so the submissions below are made as somebody — which is the state every test
+    here was already describing when it said "the dashboard".
+    """
+    session = SubmissionSession()
+
+    with client_over(session, dashboard_user) as client:
+        yield client, session
+
+
+@pytest.fixture
+def anonymous_dashboard():
+    """A client over the internal route with no session at all."""
     session = SubmissionSession()
 
     with client_over(session) as client:
@@ -294,10 +331,26 @@ def persisted(session: SubmissionSession, model):
     return [row for row in session.added if isinstance(row, model)]
 
 
-def submit(client, url: str = SUBMITTED_URL, key: str | None = None, path=INTERNAL_URL):
-    return client.post(
-        path, json={"url": url}, headers=authorization(key) if key else {}
-    )
+def submit(
+    client,
+    url: str = SUBMITTED_URL,
+    key: str | None = None,
+    path=INTERNAL_URL,
+    origin: str | None = DASHBOARD_ORIGIN,
+):
+    """One URL submission, to either surface.
+
+    The `Origin` is what a browser attaches to a dashboard POST, and since R1-T2 the internal
+    route refuses a submission without an accepted one. It is a parameter rather than a fixed
+    header so the CSRF tests can send a foreign origin or none at all, and so the public
+    submissions below can be made the way a customer's server actually makes them — with no
+    origin at all, which that surface neither needs nor looks at.
+    """
+    headers = authorization(key) if key else {}
+    if origin is not None:
+        headers["Origin"] = origin
+
+    return client.post(path, json={"url": url}, headers=headers)
 
 
 # --- the internal route ------------------------------------------------------------------
@@ -366,13 +419,42 @@ def test_the_response_reports_what_an_upload_reports(dashboard, download, fake_m
     assert body["size_bytes"] == len(DOWNLOADED_BYTES)
 
 
-def test_the_analysis_is_owned_by_nobody(dashboard, download, fake_minio):
-    """The internal route authenticates nobody, so what it commits stays out of public reads."""
+def test_the_analysis_is_owned_by_the_signed_in_account(
+    dashboard, dashboard_user, download, fake_minio
+):
+    """The internal route records the account that submitted the URL, and no API key.
+
+    The same pairing the upload route holds to, because a URL is a second door into one
+    pipeline and not a second kind of analysis: `api_key_id` stays null, which is what keeps
+    what the dashboard commits out of every public read, and `owner_id` is what keeps it out
+    of every other account's dashboard.
+    """
     client, session = dashboard
 
     submit(client)
 
-    assert persisted(session, Analysis)[0].api_key_id is None
+    analysis = persisted(session, Analysis)[0]
+    assert analysis.owner_id == dashboard_user.id
+    assert analysis.api_key_id is None
+
+
+def test_an_unauthenticated_url_submission_is_refused_before_anything_is_fetched(
+    anonymous_dashboard, download, fake_minio
+):
+    """No session, no download. The refusal precedes the fetch this server would make.
+
+    That order is the whole point on this route: an unauthenticated caller who could make
+    the request run yt-dlp would have an outbound fetch primitive without an account, which
+    is worth more to an attacker than the analysis it would have produced.
+    """
+    client, session = anonymous_dashboard
+
+    response = submit(client)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Not authenticated"}
+    assert not download.called
+    assert session.added == []
 
 
 def test_the_downloaded_file_is_removed_after_a_successful_analysis(
@@ -550,7 +632,9 @@ def test_an_unusable_url_string_is_refused_before_anything_is_fetched(
 def test_a_body_without_a_url_is_refused(dashboard, download, fake_minio):
     client, _ = dashboard
 
-    response = client.post(INTERNAL_URL, json={})
+    response = client.post(
+        INTERNAL_URL, json={}, headers={"Origin": DASHBOARD_ORIGIN}
+    )
 
     assert response.status_code == 422
     assert not download.called

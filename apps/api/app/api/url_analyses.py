@@ -35,8 +35,10 @@ from app.api.analyses import (
     accept_upload,
     created_analysis,
 )
+from app.db.models import User
 from app.db.session import get_session
 from app.media import MAX_UPLOAD_BYTES
+from app.web_auth import require_same_origin, require_user
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +119,7 @@ async def accept_url(
     session: Session,
     *,
     api_key_id: uuid.UUID | None = None,
+    owner_id: uuid.UUID | None = None,
     max_active_analyses: int | None = None,
 ) -> AcceptedUpload:
     """Download the media behind a URL and put it through the upload pipeline.
@@ -138,8 +141,9 @@ async def accept_url(
     downloader's own and it removes it — what is added here is that the file handle closes
     first, and that both happen whatever the pipeline did with the file.
 
-    `api_key_id` and `max_active_analyses` are passed straight through, so a public URL
-    submission is owned and throttled exactly as a public upload is.
+    `api_key_id`, `owner_id` and `max_active_analyses` are passed straight through, so a URL
+    submission is owned and throttled exactly as an upload from the same surface is: a
+    public one by its key, a dashboard one by the signed-in account.
     """
     with ExitStack() as cleanup:
         try:
@@ -173,21 +177,35 @@ async def accept_url(
             ),
             session,
             api_key_id=api_key_id,
+            owner_id=owner_id,
             max_active_analyses=max_active_analyses,
         )
 
 
 @router.post(
-    "/analyses/url", response_model=CreatedAnalysis, status_code=status.HTTP_202_ACCEPTED
+    "/analyses/url",
+    response_model=CreatedAnalysis,
+    status_code=status.HTTP_202_ACCEPTED,
+    # The same CSRF boundary the upload route carries. It matters at least as much here: a
+    # forged submission on this route would make this server fetch a URL somebody else chose.
+    dependencies=[Depends(require_same_origin)],
 )
 async def create_url_analysis(
-    submission: UrlSubmission, session: Session = Depends(get_session)
+    submission: UrlSubmission,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_user),
 ) -> CreatedAnalysis:
     """Accept a dashboard URL submission and report what the request established about it.
 
-    The internal route, so no `api_key_id` and no limit: the analysis it commits is owned by
-    nobody, which is what keeps it out of every public read, and the dashboard is not
-    throttled. The response is the upload route's, because what was established is the same
-    — the media, its identity and where it was put.
+    The internal route, so no `api_key_id` and no limit: the key ownership belongs to the
+    public surface and the dashboard is not throttled. What it does carry, since R1-T2, is
+    the signed-in account the session cookie resolves to, written as the analysis's owner
+    exactly as the upload route beside it does — the two doors into this pipeline must not
+    disagree about who owns what came through them.
+
+    The response is the upload route's, because what was established is the same — the
+    media, its identity and where it was put.
     """
-    return created_analysis(await accept_url(submission.url, session))
+    return created_analysis(
+        await accept_url(submission.url, session, owner_id=user.id)
+    )

@@ -1,5 +1,7 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
+import { LOGIN_PATH, SessionUser } from "./session";
 import {
   ABSENT,
   ANALYSIS_STATUS_COMPLETED,
@@ -28,6 +30,7 @@ import {
   UNMATCHED_VOICE,
   UNSUPPORTED,
   fetchAnalyses,
+  fetchSession,
   isSupportedRiskLevel,
 } from "./analysis";
 
@@ -217,6 +220,46 @@ function HealthControl({
         </div>
       </div>
     </details>
+  );
+}
+
+/**
+ * Who is signed in, and the way out.
+ *
+ * Minimal on purpose: the address, the role, and a sign-out. The role is stated because it
+ * changes what this page shows — an administrator is looking at every analysis in the
+ * system, a user at their own — and a reader who cannot tell which they are looking at
+ * cannot read the case log correctly.
+ *
+ * The role is shown as the API reported it and is not interpreted here. Nothing on this page
+ * branches on it: what a session may see is decided in the API's `WHERE` clause, and a
+ * dashboard that filtered by role in React would be drawing a security boundary in a place
+ * anyone can edit.
+ *
+ * Sign-out is a form posting to `/logout`, not a link. A link would be a GET, and a GET that
+ * ends a session can be fired by a prefetch or an image tag on some other page.
+ */
+function SessionControl({ user }: { user: SessionUser }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span
+        className="hidden max-w-[24ch] truncate font-mono text-[11px] text-muted sm:inline"
+        title={user.email}
+      >
+        {user.email}
+      </span>
+      <span className="border border-line px-2 py-1 font-mono text-[10px] tracking-[0.16em] text-bone">
+        {user.role}
+      </span>
+      <form action="/logout" method="post">
+        <button
+          type="submit"
+          className="border border-line px-3 py-1.5 font-mono text-[11px] tracking-[0.16em] text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+        >
+          SIGN OUT
+        </button>
+      </form>
+    </div>
   );
 }
 
@@ -1066,7 +1109,20 @@ export default async function Home({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
-  const [result, analysesResult] = await Promise.all([fetchHealth(), fetchAnalyses()]);
+  const [result, analysesResult, user] = await Promise.all([
+    fetchHealth(),
+    fetchAnalyses(),
+    fetchSession(),
+  ]);
+
+  // Nobody is signed in, or the API would not accept the session that was presented. Either
+  // way this page has nothing to render: it is a view of one account's analyses, and there
+  // is no account. The redirect is the whole of the dashboard's access control on this side
+  // — the API has already refused the listing, and what the reader gets here is somewhere
+  // useful to go rather than an empty page they cannot explain.
+  if (user === null || (!analysesResult.ok && analysesResult.unauthenticated)) {
+    redirect(LOGIN_PATH);
+  }
 
   const apiOk = result.reachable && result.httpOk && result.health.status === "ok";
   const dbOk = result.reachable && result.health.database === "ok";
@@ -1082,7 +1138,10 @@ export default async function Home({
             <h1 className="font-mono text-[13px] tracking-[0.24em] text-bone">INSPECTROOT</h1>
           </div>
 
-          <HealthControl result={result} apiOk={apiOk} dbOk={dbOk} systemOk={systemOk} />
+          <div className="flex items-center gap-4">
+            <HealthControl result={result} apiOk={apiOk} dbOk={dbOk} systemOk={systemOk} />
+            <SessionControl user={user} />
+          </div>
         </div>
       </header>
 
@@ -1117,6 +1176,14 @@ export default async function Home({
         <section className="mt-20">
           <Legend>CASE LOG</Legend>
           <Heading>Recent analyses</Heading>
+          {/* What the log is a log of, which differs by role and is worth saying rather than
+              leaving the reader to infer from what is missing. This is a caption on a list
+              the API already narrowed; it does not do the narrowing. */}
+          <p className="mt-4 max-w-[62ch] text-[15px] leading-relaxed text-muted">
+            {user.role === "ADMIN"
+              ? "Every analysis in the system, as an administrator sees it."
+              : "The analyses submitted by this account."}
+          </p>
 
           <div className="mt-6">
             <Methodology />
