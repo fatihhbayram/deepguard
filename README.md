@@ -168,10 +168,13 @@ apps/api/                FastAPI service and the worker that shares its image
   app/speaker_diarization.py         WAV extraction and local pyannote diarization
   app/storage.py         MinIO object storage
   app/db/                SQLAlchemy models, engine and session
+  app/config.py          required credentials, and the startup refusal without them
   alembic/               database migrations
   tests/                 pytest suite
 apps/web/                Next.js application
   app/page.tsx           connectivity status and recent analyses
+scripts/db_backup.sh     pg_dump of the Dockerized PostgreSQL
+scripts/db_restore.sh    pg_restore of a dump taken by the script above
 docs/planning/           product, API and data-model scope
 docker-compose.yml       service definitions
 ```
@@ -189,8 +192,37 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-The defaults in `.env.example` are development credentials and work as-is. Change
+The `.env` is required, not optional. Five variables have no default anywhere and the stack
+refuses to run without them:
+
+| Variable | Used by |
+| --- | --- |
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | PostgreSQL, the API, the worker |
+| `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | MinIO, the API, the worker |
+
+The refusal happens twice, deliberately. `docker compose` will not even render its
+configuration with one of them unset — it stops before creating a container, naming the
+variable — and inside the container `apps/api/app/config.py` stops the API and the worker at
+startup with the same message. What used to happen instead was worse than either: the
+process fell back to `deepguard`/`deepguard123`, connected to whatever was listening on those
+credentials, and looked healthy.
+
+Everything else in `.env.example` is optional. Without the NVIDIA and Hugging Face
+credentials the stack still starts and an analysis still runs to completion — the detector
+that could not be reached records a failed or unavailable signal instead of a score.
+
+The values in `.env.example` are development credentials and work as-is. Change
 `POSTGRES_PASSWORD` and `MINIO_ROOT_PASSWORD` before deploying anywhere shared.
+
+`.env` is passed into the API and the worker in full (`env_file`), so a variable added to it
+reaches the two processes that read the database, object storage and the detectors without
+the compose file having to be edited. PostgreSQL and MinIO are given only the handful of
+variables their own images read. The web container is given three values explicitly and none
+of them is a secret — it is the browser-facing process and has no use for a database password
+or a detector key.
+
+Every service restarts `unless-stopped`: a container that crashes or a host that reboots
+brings the stack back, and a container an operator stopped by hand stays stopped.
 
 Apply the database schema once the stack is up. Migrations are run explicitly, not on
 container start:
@@ -243,6 +275,52 @@ endpoint returns HTTP 503 with `{"status":"degraded","database":"unavailable"}`.
 
 Then open http://localhost:3000. It reports `OPERATIONAL` when the API and database are both
 reachable, and asks you to sign in before it shows anything else — see below.
+
+## Backup and restore
+
+Two scripts, in `scripts/`, against the PostgreSQL running in Compose. Both read the
+credentials from `.env` and run `pg_dump`/`pg_restore` *inside* the `postgres` container, so
+nothing has to be installed on the host and the client can never be a different major version
+from the server.
+
+Take a backup:
+
+```bash
+scripts/db_backup.sh                      # backups/deepguard-<utc timestamp>.dump
+scripts/db_backup.sh /mnt/backups/x.dump  # or an explicit destination
+```
+
+The dump is PostgreSQL's compressed custom format — what `pg_restore` reads. It is written to
+a `.partial` file and moved into place only after `pg_dump` succeeds, so an interrupted run
+cannot leave something that looks like a backup and is not. `backups/` is git-ignored: a dump
+holds every analysis this deployment has run.
+
+Restore one:
+
+```bash
+docker compose stop api api-worker                          # nothing writing underneath it
+scripts/db_restore.sh backups/deepguard-20260101T000000Z.dump
+docker compose start api api-worker
+```
+
+The restore is destructive — `--clean` drops every object in the dump before recreating it —
+so it names the target database and asks you to type that name back before it does anything.
+`--yes` skips the prompt for scripted use. The dump's table of contents is read first, so an
+unreadable file is refused with the database still intact, and `--exit-on-error` means a
+restore that reports success actually completed: `pg_restore` otherwise continues past errors
+and exits 0, leaving a half-restored database that looks fine.
+
+Rehearse a restore without touching the live database by giving it somewhere else to go. The
+database is created if it does not exist:
+
+```bash
+scripts/db_restore.sh --database deepguard_restore_check --yes backups/latest.dump
+docker compose exec postgres psql -U deepguard -d deepguard_restore_check -c 'SELECT count(*) FROM analyses'
+docker compose exec postgres dropdb -U deepguard deepguard_restore_check
+```
+
+Neither script touches MinIO. The database records where each artifact is stored, not the
+bytes; the object store is backed up separately and is not in scope here.
 
 ## Accounts and signing in
 

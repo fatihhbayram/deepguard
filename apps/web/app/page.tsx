@@ -7,7 +7,7 @@ import {
   ABSENT,
   ANALYSIS_STATUS_COMPLETED,
   ANALYSIS_STATUS_FAILED,
-  API_URL,
+  apiUrl,
   AUDIO_UNAVAILABLE,
   ActiveSpeakerSignal,
   AnalysisSummary,
@@ -58,7 +58,7 @@ function parseHealth(payload: unknown): HealthResponse | null {
 }
 async function fetchHealth(): Promise<HealthResult> {
   try {
-    const response = await fetch(`${API_URL}/health`, {
+    const response = await fetch(`${apiUrl()}/health`, {
       cache: "no-store",
       // The same id every other call this render makes carries, so the health probe's line
       // in the API log groups with them rather than looking like traffic from nowhere.
@@ -177,7 +177,7 @@ function StatusRow({ label, ok, detail }: { label: string; ok: boolean; detail: 
  * port, or a socket message, and this page is served to anyone who can reach it. The three
  * rows below say which component is not answering, which is the whole of what a reader
  * needs; `unreachable` and `unknown` are the generic states that stand in for the detail.
- * Do not render `result.error` or `API_URL` here.
+ * Do not render `result.error` or the API base URL here.
  */
 function HealthControl({
   result,

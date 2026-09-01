@@ -1,17 +1,26 @@
 services:
   postgres:
     image: postgres:16
+    # Every service here restarts unless it was stopped deliberately (R1-T5). `unless-stopped`
+    # rather than `always` on purpose: `always` brings a container back up on the next daemon
+    # start even after an operator stopped it by hand, which is the one restart nobody wants
+    # during an incident.
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-deepguard}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deepguard}
-      POSTGRES_DB: ${POSTGRES_DB:-deepguard}
+      # `:?` instead of `:-` (R1-T5). These used to default to `deepguard`/`deepguard`, which
+      # meant a host with no `.env` still started a database — with the development password,
+      # silently. Now `docker compose config`, `up` and `run` all refuse with the message
+      # below before a single container is created, which is the earliest possible place to
+      # catch it and the only one that also covers the API and the worker beside it.
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env — see .env.example}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env — see .env.example}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env — see .env.example}
     ports:
       - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-deepguard} -d ${POSTGRES_DB:-deepguard}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -21,8 +30,8 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-deepguard}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-deepguard123}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env — see .env.example}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env — see .env.example}
     ports:
       - "127.0.0.1:${MINIO_API_PORT:-9002}:9000"
       - "127.0.0.1:${MINIO_CONSOLE_PORT:-9003}:9001"
@@ -38,10 +47,26 @@ services:
     build:
       context: ./apps/api
     restart: unless-stopped
+    # The whole `.env`, handed to the process rather than re-listed variable by variable
+    # (R1-T5). The `environment:` block below still wins wherever the two overlap, and it
+    # keeps every value this service needs stated explicitly — what `env_file` adds is that a
+    # variable an operator puts in `.env` reaches the application without the compose file
+    # having to be edited to carry it across.
+    #
+    # Only the API and the worker get it: they are the two processes that read the database,
+    # object storage and the detectors, so they are the two that need the whole set. PostgreSQL
+    # and MinIO are configured by the handful of variables their own images read, and `web` is
+    # given its three values explicitly — see the comment on that service.
+    #
+    # The file is required: `docker compose` refuses to do anything without it, which is the
+    # same fail-fast direction as the `:?` substitutions above. `cp .env.example .env` is the
+    # documented first step of setup.
+    env_file:
+      - .env
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-deepguard}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deepguard}
-      POSTGRES_DB: ${POSTGRES_DB:-deepguard}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env — see .env.example}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env — see .env.example}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env — see .env.example}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       # A second database on the same server, used by `pytest` and by nothing else. This
@@ -80,8 +105,8 @@ services:
       # Object storage is reached over the Docker network, never the published host port.
       MINIO_ENDPOINT: minio:9000
       MINIO_SECURE: "false"
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-deepguard}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-deepguard123}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env — see .env.example}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env — see .env.example}
       # Detector credentials. Absent or wrong, the upload still succeeds and the
       # analysis records a failed NVIDIA signal.
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
@@ -121,10 +146,14 @@ services:
       context: ./apps/api
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
+    # The same `.env` the API gets, for the same reason. This is the process that actually
+    # calls the detectors, so it is the one whose keys most often change.
+    env_file:
+      - .env
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-deepguard}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deepguard}
-      POSTGRES_DB: ${POSTGRES_DB:-deepguard}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env — see .env.example}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env — see .env.example}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env — see .env.example}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       # Which deployment this is. Read by the API for the session cookie and by both
@@ -135,8 +164,8 @@ services:
       DEEPGUARD_ENV:
       MINIO_ENDPOINT: minio:9000
       MINIO_SECURE: "false"
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-deepguard}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-deepguard123}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env — see .env.example}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env — see .env.example}
       # This is the process that actually calls NVIDIA. Without credentials it still runs
       # every job to completion and records a failed signal for each.
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
@@ -197,9 +226,21 @@ services:
         # Baked into the browser bundle at build time, so it must be host-reachable.
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     restart: unless-stopped
+    # No `env_file` here, unlike the API and the worker (R1-T5 review). This container is
+    # reachable from a browser and needs three values, all of them below and none of them a
+    # secret. Handing it the whole `.env` would put the PostgreSQL password, the MinIO root
+    # credentials and the detector API keys into the environment of a public-facing Node
+    # process that has no use for any of them — surface with nothing on the other side of it.
+    #
+    # The two variables that do come from `.env` are interpolated by Compose on the host and
+    # passed through by name, which is the difference: the file is read where the stack is
+    # started, not injected where it is served.
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-      # Server-side rendering talks to the API over the Docker network.
+      # Server-side rendering talks to the API over the Docker network. Read on every call
+      # since R1-T5, so this value reaches the running server rather than the build — see
+      # `apiUrl()` in `apps/web/app/analysis.ts`. It is stated here and not in `.env` because
+      # it names a Docker network hostname that is only correct inside this stack.
       API_INTERNAL_URL: http://api:8000
       # The third process that has to agree about the log shape (R1-T4). Not `NODE_ENV`,
       # which is `production` in this container even on a laptop — this is always a

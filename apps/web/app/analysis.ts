@@ -24,10 +24,39 @@
 import { requestIdHeaders } from "./observability";
 import { SESSION_TIMEOUT_MS, SessionUser, parseSessionUser, sessionHeaders } from "./session";
 
-// Both routes render on the server, so they prefer the Docker-internal API URL and fall
-// back to the public one the browser uses.
-export const API_URL =
-  process.env.API_INTERNAL_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+/**
+ * Where this server sends its API calls, resolved on every call rather than once (R1-T5).
+ *
+ * It used to be a module-level constant with `http://localhost:8000` behind it. Both halves
+ * of that were wrong for a deployment. The constant is evaluated when the module is first
+ * loaded, which during `next build` is while the page is being prerendered — inside the
+ * image, where `API_INTERNAL_URL` is not set — so a value read once could be baked from the
+ * build environment instead of the running one. Reading it per call is what makes
+ * `docker compose up` with a changed `.env` actually change where this server points, with
+ * no rebuild. It costs two property lookups on a path that is about to make a network call.
+ *
+ * The localhost fallback is gone for the same reason the backend's credential defaults are
+ * (see `apps/api/app/config.py`): a deployment that forgot to configure this would come up
+ * looking healthy and quietly call *itself* on port 8000, and "connection refused" from a
+ * hostname nobody configured is a much harder thing to diagnose than a stated refusal.
+ *
+ * `API_INTERNAL_URL` wins because both readers of this run on the server, where the API is
+ * reachable over the Docker network under a name the browser cannot resolve.
+ * `NEXT_PUBLIC_API_URL` is the fallback for running this application outside Compose, where
+ * the two URLs are the same thing.
+ */
+export function apiUrl(): string {
+  const configured = process.env.API_INTERNAL_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "";
+
+  if (!configured.trim()) {
+    throw new Error(
+      "Neither API_INTERNAL_URL nor NEXT_PUBLIC_API_URL is set. This server has no API to " +
+        "call: set one of them in the environment or in the repository's .env file.",
+    );
+  }
+
+  return configured.trim();
+}
 
 export const HEALTH_TIMEOUT_MS = 3000;
 export const ANALYSES_TIMEOUT_MS = 5000;
@@ -834,7 +863,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
  */
 export async function fetchSession(): Promise<SessionUser | null> {
   try {
-    const response = await fetch(`${API_URL}/api/v1/auth/me`, {
+    const response = await fetch(`${apiUrl()}/api/v1/auth/me`, {
       cache: "no-store",
       headers: { ...(await sessionHeaders()), ...(await requestIdHeaders()) },
       signal: AbortSignal.timeout(SESSION_TIMEOUT_MS),
@@ -852,7 +881,7 @@ export async function fetchSession(): Promise<SessionUser | null> {
 
 export async function fetchAnalyses(): Promise<AnalysesResult> {
   try {
-    const response = await fetch(`${API_URL}/api/v1/analyses`, {
+    const response = await fetch(`${apiUrl()}/api/v1/analyses`, {
       cache: "no-store",
       headers: { ...(await sessionHeaders()), ...(await requestIdHeaders()) },
       signal: AbortSignal.timeout(ANALYSES_TIMEOUT_MS),
@@ -937,7 +966,7 @@ export type AnalysisResult =
  */
 export async function fetchAnalysis(id: string): Promise<AnalysisResult> {
   try {
-    const response = await fetch(`${API_URL}/api/v1/analyses/${encodeURIComponent(id)}`, {
+    const response = await fetch(`${apiUrl()}/api/v1/analyses/${encodeURIComponent(id)}`, {
       cache: "no-store",
       headers: { ...(await sessionHeaders()), ...(await requestIdHeaders()) },
       signal: AbortSignal.timeout(ANALYSES_TIMEOUT_MS),

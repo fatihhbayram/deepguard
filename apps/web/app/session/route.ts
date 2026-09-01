@@ -19,7 +19,7 @@
 
 import { NextResponse } from "next/server";
 
-import { API_URL } from "../analysis";
+import { apiUrl } from "../analysis";
 import { requestIdHeaders } from "../observability";
 import { LOGIN_PATH, isSameOrigin } from "../session";
 
@@ -68,7 +68,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   let response: Response;
   try {
-    response = await fetch(`${API_URL}/api/v1/auth/login`, {
+    response = await fetch(`${apiUrl()}/api/v1/auth/login`, {
       method: "POST",
       // The request id, and nothing else added: a sign-in carries no session yet, so this
       // is the only thing joining this call to the API's line about it.

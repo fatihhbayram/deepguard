@@ -29,7 +29,7 @@
 
 import { NextResponse } from "next/server";
 
-import { API_URL } from "../analysis";
+import { apiUrl } from "../analysis";
 import { logError, logInfo, requestIdHeaders } from "../observability";
 import { LOGIN_PATH, forwardedOrigin, isSameOrigin, sessionHeaders } from "../session";
 
@@ -102,7 +102,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     return back({ error: "Choose a file or paste a URL first." });
   }
 
-  const target = url ? `${API_URL}/api/v1/analyses/url` : `${API_URL}/api/v1/analyses`;
+  const target = url ? `${apiUrl()}/api/v1/analyses/url` : `${apiUrl()}/api/v1/analyses`;
   const body = url ? JSON.stringify({ url }) : new FormData();
   if (!url && body instanceof FormData) {
     body.append("file", file as File, (file as File).name);

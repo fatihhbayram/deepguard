@@ -10,3 +10,7 @@ __pycache__/
 # Node
 node_modules/
 .next/
+
+# Database dumps written by scripts/db_backup.sh. They hold every analysis this deployment
+# has run and are exactly the thing that must never reach a repository.
+backups/

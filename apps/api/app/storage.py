@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 from minio import Minio
 from minio.error import S3Error
 
+from app.config import require
+
 load_dotenv()
 
 ORIGINALS_BUCKET = "deepguard-originals"
@@ -20,11 +22,19 @@ _BUCKET_EXISTS_CODES = frozenset({"BucketAlreadyOwnedByYou", "BucketAlreadyExist
 
 
 def _build_client() -> Minio:
-    """Client for the MinIO service on the Docker network, not the host-published port."""
+    """Client for the MinIO service on the Docker network, not the host-published port.
+
+    The credentials are required and have no defaults (R1-T5). They used to fall back to
+    `deepguard`/`deepguard123`, which is the pair `.env.example` ships and therefore the pair
+    a forgotten variable would silently authenticate with — against a bucket holding the
+    originals, which are the artifacts this service promises to keep unmodified. The endpoint
+    and the scheme keep their defaults: neither is a secret, and both are set explicitly by
+    every service in `docker-compose.yml`.
+    """
     return Minio(
         os.getenv("MINIO_ENDPOINT", "minio:9000"),
-        access_key=os.getenv("MINIO_ROOT_USER", "deepguard"),
-        secret_key=os.getenv("MINIO_ROOT_PASSWORD", "deepguard123"),
+        access_key=require("MINIO_ROOT_USER"),
+        secret_key=require("MINIO_ROOT_PASSWORD"),
         secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
     )
 

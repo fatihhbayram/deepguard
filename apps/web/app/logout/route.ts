@@ -14,7 +14,7 @@
 
 import { NextResponse } from "next/server";
 
-import { API_URL } from "../analysis";
+import { apiUrl } from "../analysis";
 import { requestIdHeaders } from "../observability";
 import {
   LOGIN_PATH,
@@ -40,7 +40,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   let response: Response | null = null;
   try {
-    response = await fetch(`${API_URL}/api/v1/auth/logout`, {
+    response = await fetch(`${apiUrl()}/api/v1/auth/logout`, {
       method: "POST",
       // The origin travels with the cookie: the API refuses this mutation too if it did not
       // come from the web application, and this call carries no origin of its own.
