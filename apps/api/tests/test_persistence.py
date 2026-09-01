@@ -167,10 +167,14 @@ def test_migration_created_the_analysis_schema(database):
     # `lease_expires_at` (P9-F1) is how a crashed worker is told from a slow one: the worker
     # holding a job pushes it forward while it runs, and a deadline that falls into the past
     # is what makes the job recoverable.
+    # `request_id` (R1-T4) is the correlation id the API bound to the request that queued
+    # this job, carried here because the queue is the only thing the API and the worker
+    # share — an id kept in memory would have ended with the response.
     assert {column["name"] for column in inspector.get_columns("analysis_jobs")} == {
         "id",
         "analysis_id",
         "status",
+        "request_id",
         "lease_expires_at",
         "error_message",
         "created_at",

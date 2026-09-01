@@ -18,6 +18,7 @@ from app.db.models import USER_ROLE_USER, Analysis, AnalysisJob, MediaFile, User
 from app.db.session import get_session
 from app.main import app
 from app.normalization import DERIVATIVE_TEMP_PREFIX
+from app.observability import REQUEST_ID_HEADER
 from app.web_auth import require_user
 from tests.conftest import DASHBOARD_ORIGIN
 
@@ -1084,6 +1085,65 @@ def test_the_upload_queues_a_job_for_the_analysis(
     job = _added(fake_session, AnalysisJob)
     assert job.analysis_id == analysis.id
     assert job.status == "queued"
+
+
+def test_the_queued_job_carries_the_request_that_asked_for_it(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    """The correlation id crosses from the request into the queue (R1-T4).
+
+    This row is the only thing the API and the worker share. The analysis runs minutes later
+    in another process, so an id kept in memory would end with this response and the work it
+    queued would be uncorrelated — which is the state this task exists to fix.
+    """
+    response = client.post(
+        "/api/v1/analyses",
+        files={"file": ("clip.mp4", b"payload", "video/mp4")},
+        headers={"Origin": DASHBOARD_ORIGIN, REQUEST_ID_HEADER: "web-4f21ab"},
+    )
+
+    assert response.status_code == 202
+    # The web application's id, not one of the API's own: the trace starts at the browser
+    # boundary, and a second id minted here would split one request in two.
+    assert _added(fake_session, AnalysisJob).request_id == "web-4f21ab"
+
+
+def test_a_job_queued_without_a_caller_id_carries_the_one_the_api_minted(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    """A caller that sends no id still gets a job that is correlated to something.
+
+    The id the API answers with and the id it wrote down are the same value, which is what
+    lets a caller that never sent one still find its own analysis in the worker's log.
+    """
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 202
+    assert _added(fake_session, AnalysisJob).request_id == response.headers[
+        REQUEST_ID_HEADER
+    ]
+
+
+def test_an_unusable_caller_id_never_reaches_the_job_row(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    """What is stored is what the middleware accepted, never what the caller sent.
+
+    The column is bounded and so is the check in front of it, but the reason to prove this
+    here is not the width: a value from outside travels from this row into the worker's log
+    lines, and the refusal has to happen once, at the boundary, rather than at each of the
+    places that later writes it out.
+    """
+    response = client.post(
+        "/api/v1/analyses",
+        files={"file": ("clip.mp4", b"payload", "video/mp4")},
+        headers={"Origin": DASHBOARD_ORIGIN, REQUEST_ID_HEADER: "A" * 65},
+    )
+
+    assert response.status_code == 202
+    stored = _added(fake_session, AnalysisJob).request_id
+    assert stored != "A" * 65
+    assert stored == response.headers[REQUEST_ID_HEADER]
 
 
 def test_a_queued_job_carries_no_error_message(

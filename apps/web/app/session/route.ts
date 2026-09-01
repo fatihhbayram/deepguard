@@ -20,6 +20,7 @@
 import { NextResponse } from "next/server";
 
 import { API_URL } from "../analysis";
+import { requestIdHeaders } from "../observability";
 import { LOGIN_PATH, isSameOrigin } from "../session";
 
 // How long the API is given to answer a sign-in. Argon2id is deliberately slow — that is
@@ -69,7 +70,9 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     response = await fetch(`${API_URL}/api/v1/auth/login`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      // The request id, and nothing else added: a sign-in carries no session yet, so this
+      // is the only thing joining this call to the API's line about it.
+      headers: { ...(await requestIdHeaders()), "content-type": "application/json" },
       body: JSON.stringify({ email, password }),
       signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
     });

@@ -127,6 +127,12 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-deepguard}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
+      # Which deployment this is. Read by the API for the session cookie and by both
+      # processes for the log format (R1-T4): a development stack gets readable lines, and
+      # anything else — unset included — gets JSON. Passed through with no default for the
+      # reason the `api` service above gives at length; the whole stack has to be told the
+      # same thing, or the API and the worker log one request in two different shapes.
+      DEEPGUARD_ENV:
       MINIO_ENDPOINT: minio:9000
       MINIO_SECURE: "false"
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-deepguard}
@@ -195,6 +201,10 @@ services:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
       # Server-side rendering talks to the API over the Docker network.
       API_INTERNAL_URL: http://api:8000
+      # The third process that has to agree about the log shape (R1-T4). Not `NODE_ENV`,
+      # which is `production` in this container even on a laptop — this is always a
+      # production Next.js build — and therefore cannot tell the two deployments apart.
+      DEEPGUARD_ENV:
     ports:
       - "127.0.0.1:${WEB_PORT:-3000}:3000"
     depends_on:

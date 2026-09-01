@@ -50,6 +50,12 @@ missing column several statements in, fails that analysis and takes the next one
 deployment that skipped a migration used to look like a burst of failed customer analyses.
 `wait_for_schema` turns that into a worker that has not started yet and says why.
 
+Every job is run under the id of the request that submitted it (R1-T4). The API binds one
+to each request it serves and writes it onto the job row; `claim_job` reads it back and
+`correlated` binds it for the length of the work, so the analysis this process does hours
+later and the upload that asked for it are one grep apart. The queue is what carries it: a
+correlation id held in memory would have ended with the response that queued the job.
+
 Normalization moved here in P4-F2 (D020). It used to run on the upload request under a
 deadline that was really about how long a client would wait, which rejected a perfectly
 good 4K HEVC upload before anything had been analysed.
@@ -58,8 +64,8 @@ Run it with `python -m app.worker`.
 """
 
 import asyncio
+import contextvars
 import logging
-import os
 import signal
 import tempfile
 import threading
@@ -100,6 +106,7 @@ from app.detection import (
     undetectable_media,
 )
 from app.normalization import NormalizationError, NormalizationTimeout, normalize_to_mp4
+from app.observability import bind_request_id, configure_logging, reset_request_id
 from app.speaker_diarization import SpeakerDiarizationTimeout
 from app.risk_engine import RiskDecision, SvdEvidence, evaluate
 from app.storage import fetch_object, store_derivative
@@ -177,6 +184,15 @@ class ClaimedJob:
     # The rate the transcode has to hold constant. Read from `media_files` rather than
     # re-probed: it is the original's own rate, established once at upload.
     frame_rate: float
+    # The request that asked for this analysis, as the API recorded it (R1-T4). Carried out
+    # of the claim with everything else the work needs, and bound to this worker's logging
+    # context for the length of the job, so a line written here and a line written by the
+    # API minutes earlier say the same id.
+    #
+    # Null for a job queued before the column existed, or by anything that ran outside a
+    # request. The job is run exactly the same way; its log lines simply carry no id, which
+    # is the truth about them.
+    request_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -334,11 +350,17 @@ def leased(job_id: uuid.UUID) -> Iterator[None]:
 
     The thread is stopped and joined on the way out, including on the exception paths, so a
     finished job stops being renewed at once rather than holding capacity for another lease.
+
+    It runs in a copy of this context rather than in a fresh one, which is what carries the
+    job's request id into it (R1-T4). A new thread otherwise starts with every `ContextVar`
+    at its default, so the one line this thread can write — the warning that the job was
+    recovered out from under it — would be the one line about the job that could not be
+    found by its correlation id.
     """
     stopped = threading.Event()
     heartbeat = threading.Thread(
-        target=_renew_until_stopped,
-        args=(job_id, stopped),
+        target=contextvars.copy_context().run,
+        args=(_renew_until_stopped, job_id, stopped),
         name=f"lease-{job_id}",
         daemon=True,
     )
@@ -349,6 +371,30 @@ def leased(job_id: uuid.UUID) -> Iterator[None]:
     finally:
         stopped.set()
         heartbeat.join(timeout=HEARTBEAT_SECONDS)
+
+
+@contextmanager
+def correlated(claimed: ClaimedJob) -> Iterator[None]:
+    """Log everything inside the block under the request that asked for this job (R1-T4).
+
+    The worker's half of the correlation the API starts. The id was written with the job at
+    enqueue time and read back with the claim, so binding it here makes every line this
+    process writes about this job — its own, SQLAlchemy's, a library's warning — carry the
+    same id as the request that submitted the media, minutes or hours earlier.
+
+    A job with no recorded id binds nothing rather than inventing one. An id the worker made
+    up would correlate to no other line in any log, which is worse than an absent field: it
+    looks like a trace and is not one.
+
+    Unbound on the way out, including on the exception paths. This process runs job after
+    job in one thread, so a binding left standing would attribute the next job's lines — and
+    every idle poll between them — to the request that submitted the last one.
+    """
+    token = bind_request_id(claimed.request_id)
+    try:
+        yield
+    finally:
+        reset_request_id(token)
 
 
 def claim_job(session: Session) -> ClaimedJob | None:
@@ -399,6 +445,10 @@ def claim_job(session: Session) -> ClaimedJob | None:
         original_storage_key=original_storage_key,
         normalization_required=normalization_required,
         frame_rate=frame_rate,
+        # Read here, inside the claim, like everything else this job needs: after the commit
+        # there is no session, and fetching the correlation id in a second statement would be
+        # a round trip for a value this one already has in hand.
+        request_id=job.request_id,
     )
     session.commit()
 
@@ -1051,6 +1101,12 @@ def process_one(session: Session) -> bool:
 
     Everything after the claim is guarded: a job this worker took and then failed to
     finish must not be left `processing` forever, because nothing in P3 goes back for it.
+
+    Everything after the claim also runs under the claiming request's id (R1-T4). The
+    binding starts at the claim rather than at the top of this function on purpose: recovery
+    above belongs to no request — it fails other workers' jobs, several at a time — and
+    attributing it to whichever job this pass happened to pick up afterwards would be a
+    correlation that is simply untrue.
     """
     recover_stale_jobs(session)
 
@@ -1058,87 +1114,96 @@ def process_one(session: Session) -> bool:
     if claimed is None:
         return False
 
-    logger.info("Claimed job %s for analysis %s.", claimed.job_id, claimed.analysis_id)
-
-    # From here to the end of the job, a background thread keeps saying this worker is
-    # alive. Without it the lease would run out during any analysis longer than
-    # `LEASE_SECONDS` and another worker would recover a job that was going perfectly well.
-    with leased(claimed.job_id):
-        # Assigned before the block so the timeout handler can still reach it. A transcode
-        # that runs out of time unwinds past the assignment below, and the provenance read
-        # off the original — which happened before the transcode and is complete — must not
-        # be lost to a variable that went out of scope.
-        provenance_signal = None
-
-        try:
-            # One download serves both evidence sources. Provenance is read from these bytes
-            # because they are the forensic original — normalization would strip the manifest
-            # — and detection reads either these bytes or the derivative transcoded from them,
-            # which is why the original is fetched first and kept for the whole job.
-            with fetched_artifact(claimed.original_storage_key) as original:
-                # Reading credentials never raises here: `extract_provenance` returns a failed
-                # signal instead. Nor does media that cannot be transcoded, nor anything the
-                # active-speaker chain can fail with — `analyse` turns all of those into failed
-                # signals. What can still reach the handler below is the object store, a broken
-                # image, a subprocess that outlived its configured limit (R1-T3), or a bug.
-                provenance_signal = extract_provenance(original)
-                evidence = analyse(claimed, original)
-        except AnalysisTimedOut as timed_out:
-            # A limit was breached partway through (R1-T3). The job is failed like any other
-            # worker-side failure, and everything it had genuinely produced up to that point
-            # is committed first: a timeout in one chain does not make an independent reading
-            # taken earlier untrue, and throwing away real forensic findings over this
-            # worker's own deadline would be destroying evidence to tidy up.
-            logger.warning(
-                "Job %s ran out of time in %s; failing it and keeping the evidence it had "
-                "already produced.",
-                claimed.job_id,
-                type(timed_out.error).__name__,
-            )
-            abandon_job(session, claimed, timed_out, provenance_signal)
-            return True
-        except Exception as error:
-            # Not a detector saying no and not media that could not be prepared — a failure on
-            # our own side. It is recorded against the job and the loop carries on.
-            logger.exception("Job %s failed.", claimed.job_id)
-            fail_job(session, claimed, error)
-            return True
-
-        try:
-            # Persisting the evidence and classifying it are two commits inside here. A failure
-            # in the second leaves the first standing: the job fails with its forensic record
-            # intact rather than losing evidence to a classification that could not be made.
-            decision = complete_job(session, claimed, evidence, provenance_signal)
-        except Exception as error:
-            logger.exception("Job %s could not be completed.", claimed.job_id)
-            fail_job(session, claimed, error)
-            return True
-
-    if decision is None:
-        # Recovered as stale while this ran. The analysis is already `failed` and its slot
-        # already released; saying so is all that is left to do. The evidence this job
-        # produced is committed and stays — see `complete_job`.
-        logger.warning(
-            "Job %s was recovered as stale while it ran; its verdict is discarded.",
-            claimed.job_id,
+    with correlated(claimed):
+        logger.info(
+            "Claimed job %s for analysis %s.", claimed.job_id, claimed.analysis_id
         )
+
+        # From here to the end of the job, a background thread keeps saying this worker is
+        # alive. Without it the lease would run out during any analysis longer than
+        # `LEASE_SECONDS` and another worker would recover a job that was going perfectly
+        # well.
+        with leased(claimed.job_id):
+            # Assigned before the block so the timeout handler can still reach it. A
+            # transcode that runs out of time unwinds past the assignment below, and the
+            # provenance read off the original — which happened before the transcode and is
+            # complete — must not be lost to a variable that went out of scope.
+            provenance_signal = None
+
+            try:
+                # One download serves both evidence sources. Provenance is read from these
+                # bytes because they are the forensic original — normalization would strip
+                # the manifest — and detection reads either these bytes or the derivative
+                # transcoded from them, which is why the original is fetched first and kept
+                # for the whole job.
+                with fetched_artifact(claimed.original_storage_key) as original:
+                    # Reading credentials never raises here: `extract_provenance` returns a
+                    # failed signal instead. Nor does media that cannot be transcoded, nor
+                    # anything the active-speaker chain can fail with — `analyse` turns all
+                    # of those into failed signals. What can still reach the handler below is
+                    # the object store, a broken image, a subprocess that outlived its
+                    # configured limit (R1-T3), or a bug.
+                    provenance_signal = extract_provenance(original)
+                    evidence = analyse(claimed, original)
+            except AnalysisTimedOut as timed_out:
+                # A limit was breached partway through (R1-T3). The job is failed like any
+                # other worker-side failure, and everything it had genuinely produced up to
+                # that point is committed first: a timeout in one chain does not make an
+                # independent reading taken earlier untrue, and throwing away real forensic
+                # findings over this worker's own deadline would be destroying evidence to
+                # tidy up.
+                logger.warning(
+                    "Job %s ran out of time in %s; failing it and keeping the evidence it "
+                    "had already produced.",
+                    claimed.job_id,
+                    type(timed_out.error).__name__,
+                )
+                abandon_job(session, claimed, timed_out, provenance_signal)
+                return True
+            except Exception as error:
+                # Not a detector saying no and not media that could not be prepared — a
+                # failure on our own side. It is recorded against the job and the loop
+                # carries on.
+                logger.exception("Job %s failed.", claimed.job_id)
+                fail_job(session, claimed, error)
+                return True
+
+            try:
+                # Persisting the evidence and classifying it are two commits inside here. A
+                # failure in the second leaves the first standing: the job fails with its
+                # forensic record intact rather than losing evidence to a classification that
+                # could not be made.
+                decision = complete_job(session, claimed, evidence, provenance_signal)
+            except Exception as error:
+                logger.exception("Job %s could not be completed.", claimed.job_id)
+                fail_job(session, claimed, error)
+                return True
+
+        if decision is None:
+            # Recovered as stale while this ran. The analysis is already `failed` and its
+            # slot already released; saying so is all that is left to do. The evidence this
+            # job produced is committed and stays — see `complete_job`.
+            logger.warning(
+                "Job %s was recovered as stale while it ran; its verdict is discarded.",
+                claimed.job_id,
+            )
+            return True
+
+        logger.info(
+            "Completed job %s with a %s detection signal, a %s active-speaker signal, a %s "
+            "audio-authenticity signal and a %s provenance signal%s. Risk %s by %s under %s.",
+            claimed.job_id,
+            evidence.detection.signal.status,
+            evidence.active_speaker.signal.status,
+            evidence.audio_authenticity.signal.status,
+            provenance_signal.status,
+            " against a normalized derivative" if evidence.derivative_storage_key else "",
+            decision.risk_level,
+            decision.rule_id,
+            decision.rules_version,
+        )
+
         return True
-
-    logger.info(
-        "Completed job %s with a %s detection signal, a %s active-speaker signal, a %s "
-        "audio-authenticity signal and a %s provenance signal%s. Risk %s by %s under %s.",
-        claimed.job_id,
-        evidence.detection.signal.status,
-        evidence.active_speaker.signal.status,
-        evidence.audio_authenticity.signal.status,
-        provenance_signal.status,
-        " against a normalized derivative" if evidence.derivative_storage_key else "",
-        decision.risk_level,
-        decision.rule_id,
-        decision.rules_version,
-    )
-
-    return True
 
 
 class Stopping:
@@ -1241,10 +1306,7 @@ def main() -> int:
     Returns the process's exit status rather than calling `sys.exit`, so the whole startup
     sequence is reachable from a test without a `SystemExit` to catch.
     """
-    logging.basicConfig(
-        level=os.getenv("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging()
 
     try:
         logger.info("Operation limits: %s.", validate_limits())

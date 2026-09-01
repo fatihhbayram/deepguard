@@ -44,6 +44,7 @@ from app.media import (
     probe_media,
 )
 from app.normalization import needs_normalization
+from app.observability import current_request_id
 from app.storage import store_original
 from app.web_auth import require_same_origin, require_user
 
@@ -577,7 +578,19 @@ def persist_analysis(
         )
     )
 
-    session.add(AnalysisJob(analysis_id=analysis.id, status=JOB_STATUS_QUEUED))
+    # The request that asked for this analysis, written with the job so the worker can bind
+    # it to its own logs minutes later (R1-T4). Read from the request context rather than
+    # taken as a parameter: all three submission routes would otherwise have to accept and
+    # forward an argument none of them has any other use for, and the id is ambient context
+    # by nature — see `app.observability`. Null outside a request, which is what a job
+    # queued by anything other than one honestly is.
+    session.add(
+        AnalysisJob(
+            analysis_id=analysis.id,
+            status=JOB_STATUS_QUEUED,
+            request_id=current_request_id(),
+        )
+    )
 
     session.commit()
 

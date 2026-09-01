@@ -9,12 +9,25 @@ from app.api.auth import router as auth_router
 from app.api.public_v1.analyses import router as public_analyses_router
 from app.api.url_analyses import router as url_analyses_router
 from app.db.session import get_session
+from app.observability import RequestId, configure_logging
 from app.request_limits import UploadRequestSizeLimit
+
+# Before the application object, so that anything the routers log while they are being
+# imported already goes through the one configured handler. Uvicorn has set its own logging
+# up by the time it imports this module, and this is what takes that over — see
+# `configure_logging`.
+configure_logging()
 
 app = FastAPI(title="DeepGuard API")
 
 # In front of routing, so an oversized body is bounded before FastAPI parses the upload.
 app.add_middleware(UploadRequestSizeLimit)
+
+# Outside that, because `add_middleware` puts the most recently added layer outermost. The
+# order is deliberate: a request refused for its size never reaches the guard's inner
+# application, and it should still be a request with an id in the log and in the 413 it gets
+# back.
+app.add_middleware(RequestId)
 
 app.include_router(analyses_router)
 # The internal URL submission, under the same `/api/v1` prefix as the upload beside it. Its

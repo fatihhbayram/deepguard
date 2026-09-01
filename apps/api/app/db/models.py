@@ -270,6 +270,24 @@ class AnalysisJob(Base):
 
     status: Mapped[str] = mapped_column(String(16), nullable=False)
 
+    # The request that asked for this analysis, carried across the queue (R1-T4). The API
+    # binds an id to every request it serves and writes it here in the same insert as the
+    # job; the worker reads it back when it claims the job and binds it to its own logs, so
+    # one grep covers the browser request, the API request and the analysis minutes later.
+    #
+    # This column exists because the queue is the only thing the two processes share. A
+    # correlation id held in memory would end with the response, and the work this row
+    # describes had not started yet.
+    #
+    # Nullable, and not backfilled: every job queued before this existed was queued by a
+    # request nobody recorded, and inventing an id for one would be inventing the very fact
+    # the column is for. Nullable also keeps the column honest about jobs written by
+    # anything that runs outside a request.
+    #
+    # Bounded and character-restricted where it is accepted, not here — see
+    # `app.observability.accepted_request_id`. The width matches the ceiling it enforces.
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # When the claim on this job stops being believed, and therefore the one thing that
     # tells a crashed worker apart from a slow one. The worker that claims a job sets this
     # ahead of the database clock and pushes it forward again while it works; a worker that

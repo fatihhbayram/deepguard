@@ -30,6 +30,7 @@
 import { NextResponse } from "next/server";
 
 import { API_URL } from "../analysis";
+import { logError, logInfo, requestIdHeaders } from "../observability";
 import { LOGIN_PATH, forwardedOrigin, isSameOrigin, sessionHeaders } from "../session";
 
 // How long the API is given to answer. A URL submission waits for the download, which is a
@@ -112,7 +113,19 @@ export async function POST(request: Request): Promise<NextResponse> {
   // without it is refused there rather than quietly committed to nobody; the origin is what
   // the API's own CSRF check reads, and it has already been accepted against this server's
   // host a few lines above.
-  const forwarded = { ...(await sessionHeaders()), ...forwardedOrigin(request) };
+  //
+  // The request id travels with them (R1-T4), and this is the call it matters most on: the
+  // API writes it onto the queued job, so the analysis the worker runs minutes from now is
+  // still findable from the line logged just below.
+  const forwarded = {
+    ...(await sessionHeaders()),
+    ...forwardedOrigin(request),
+    ...(await requestIdHeaders()),
+  };
+
+  await logInfo("Forwarding a dashboard submission to the API.", {
+    submission: url ? "url" : "file",
+  });
 
   let response: Response;
   try {
@@ -124,9 +137,14 @@ export async function POST(request: Request): Promise<NextResponse> {
       body,
       signal: AbortSignal.timeout(SUBMIT_TIMEOUT_MS),
     });
-  } catch {
+  } catch (error) {
     // A timeout or a connection failure. The underlying message can name internal hosts,
-    // so it is not passed on.
+    // so it is not passed on to the browser — but it is exactly what an operator reading
+    // the logs needs, and this server's log is not the browser.
+    await logError("The API could not be reached for a dashboard submission.", {
+      reason: error instanceof Error ? error.message : String(error),
+    });
+
     return back({ error: "The API could not be reached." });
   }
 
@@ -149,5 +167,13 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   // Accepted either way; the id is what the operator can follow. A 202 whose body could not
   // be read is still a queued analysis, and saying otherwise would be worse than saying less.
+  //
+  // Logged with both identities, which is what makes the trace usable from either end: the
+  // request id joins this line to the API's and to the worker's, and the analysis id is what
+  // the person on the dashboard is looking at.
+  await logInfo("The API queued a dashboard submission.", {
+    analysis_id: typeof id === "string" ? id : null,
+  });
+
   return typeof id === "string" ? back({ submitted: id }) : back({ submitted: "" });
 }

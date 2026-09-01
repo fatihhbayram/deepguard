@@ -14,8 +14,14 @@
  * reach; what these functions do with that is carry the distinction to the page, which
  * sends the reader to sign in. Nothing here filters by owner — a page that hid another
  * account's analysis after receiving it would be a security boundary drawn in a browser.
+ *
+ * Every call also carries this browser request's id (R1-T4), beside the session cookie and
+ * for a comparable reason: the cookie says who is asking, and the id says which asking this
+ * is. One page render makes three of these calls and they all report the same id, so the
+ * API's log lines for them group with this server's — see `./observability`.
  */
 
+import { requestIdHeaders } from "./observability";
 import { SESSION_TIMEOUT_MS, SessionUser, parseSessionUser, sessionHeaders } from "./session";
 
 // Both routes render on the server, so they prefer the Docker-internal API URL and fall
@@ -830,7 +836,7 @@ export async function fetchSession(): Promise<SessionUser | null> {
   try {
     const response = await fetch(`${API_URL}/api/v1/auth/me`, {
       cache: "no-store",
-      headers: await sessionHeaders(),
+      headers: { ...(await sessionHeaders()), ...(await requestIdHeaders()) },
       signal: AbortSignal.timeout(SESSION_TIMEOUT_MS),
     });
 
@@ -848,7 +854,7 @@ export async function fetchAnalyses(): Promise<AnalysesResult> {
   try {
     const response = await fetch(`${API_URL}/api/v1/analyses`, {
       cache: "no-store",
-      headers: await sessionHeaders(),
+      headers: { ...(await sessionHeaders()), ...(await requestIdHeaders()) },
       signal: AbortSignal.timeout(ANALYSES_TIMEOUT_MS),
     });
 
@@ -933,7 +939,7 @@ export async function fetchAnalysis(id: string): Promise<AnalysisResult> {
   try {
     const response = await fetch(`${API_URL}/api/v1/analyses/${encodeURIComponent(id)}`, {
       cache: "no-store",
-      headers: await sessionHeaders(),
+      headers: { ...(await sessionHeaders()), ...(await requestIdHeaders()) },
       signal: AbortSignal.timeout(ANALYSES_TIMEOUT_MS),
     });
 

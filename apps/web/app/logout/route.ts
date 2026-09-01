@@ -15,6 +15,7 @@
 import { NextResponse } from "next/server";
 
 import { API_URL } from "../analysis";
+import { requestIdHeaders } from "../observability";
 import {
   LOGIN_PATH,
   SESSION_COOKIE_NAME,
@@ -43,7 +44,11 @@ export async function POST(request: Request): Promise<NextResponse> {
       method: "POST",
       // The origin travels with the cookie: the API refuses this mutation too if it did not
       // come from the web application, and this call carries no origin of its own.
-      headers: { ...(await sessionHeaders()), ...forwardedOrigin(request) },
+      headers: {
+        ...(await sessionHeaders()),
+        ...forwardedOrigin(request),
+        ...(await requestIdHeaders()),
+      },
       signal: AbortSignal.timeout(LOGOUT_TIMEOUT_MS),
     });
   } catch {

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import { requestIdHeaders } from "./observability";
 import { LOGIN_PATH, SessionUser } from "./session";
 import {
   ABSENT,
@@ -59,6 +60,9 @@ async function fetchHealth(): Promise<HealthResult> {
   try {
     const response = await fetch(`${API_URL}/health`, {
       cache: "no-store",
+      // The same id every other call this render makes carries, so the health probe's line
+      // in the API log groups with them rather than looking like traffic from nowhere.
+      headers: await requestIdHeaders(),
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     });
 

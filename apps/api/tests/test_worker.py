@@ -22,6 +22,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app import (
     detection,
+    observability,
     normalization,
     nvidia_active_speaker,
     nvidia_video,
@@ -104,7 +105,7 @@ def queue(database):
     """Creates queued uploads exactly as the route commits them, and removes them again."""
     created = []
 
-    def enqueue(*, was_normalized=False, age=0):
+    def enqueue(*, was_normalized=False, age=0, request_id=None):
         with SessionLocal() as session:
             analysis = Analysis(status="queued")
             session.add(analysis)
@@ -136,6 +137,10 @@ def queue(database):
             job = AnalysisJob(
                 analysis_id=analysis.id,
                 status="queued",
+                # The correlation id the API writes with the job (R1-T4). Null by default,
+                # which is what a job queued before the column existed carries and what
+                # most of this module is about — the work runs identically either way.
+                request_id=request_id,
                 created_at=BACKDATE + timedelta(seconds=age),
             )
             session.add(job)
@@ -553,6 +558,86 @@ def test_claiming_carries_what_the_work_needs_out_of_the_transaction(queue):
     # decision needs `major_brand`, and no column holds it.
     assert claimed.normalization_required is True
     assert claimed.frame_rate == 30.0
+
+
+@pytest.mark.integration
+def test_claiming_carries_the_request_that_asked_for_the_analysis(queue):
+    """The other end of the correlation the API started (R1-T4).
+
+    The id was written onto this row by a request that finished minutes ago in another
+    process. Reading it back inside the claim is what lets this worker log the analysis under
+    the same id, and it is read here rather than in a second statement because the claim
+    already has the row in hand.
+    """
+    _, job_id = queue(request_id="web-4f21ab")
+
+    with SessionLocal() as session:
+        claimed = worker.claim_job(session)
+
+    assert claimed.job_id == job_id
+    assert claimed.request_id == "web-4f21ab"
+
+
+@pytest.mark.integration
+def test_a_job_queued_before_correlation_existed_is_claimed_all_the_same(queue):
+    """No id is not an error, and nothing is invented to stand in for one.
+
+    Every job queued before R1-T4 carries null here, and a worker that made an id up for one
+    would write a trace that correlates to nothing anywhere — worse than an absent field,
+    because it looks like a trace.
+    """
+    queue(request_id=None)
+
+    with SessionLocal() as session:
+        claimed = worker.claim_job(session)
+
+    assert claimed.request_id is None
+
+
+@pytest.mark.integration
+def test_the_whole_job_runs_under_the_requests_id(queue, fake_storage, monkeypatch):
+    """Every line the worker writes about this job reports the request that submitted it.
+
+    Asserted from inside the work rather than off a formatted log line, because what has to
+    hold is that the binding is in force *while the job runs* — which is what any logger,
+    including SQLAlchemy's and a library's, reads when it emits a record. Checking a
+    formatted string would only prove the formatter.
+    """
+    bound = []
+    real = worker.extract_provenance
+    monkeypatch.setattr(
+        worker,
+        "extract_provenance",
+        lambda path: (bound.append(observability.current_request_id()), real(path))[1],
+    )
+
+    queue(request_id="web-4f21ab")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    assert bound == ["web-4f21ab"]
+    # And it is not still bound afterwards: this process runs job after job in one thread,
+    # so a binding left standing would attribute the next job to this request.
+    assert observability.current_request_id() is None
+
+
+@pytest.mark.integration
+def test_a_job_with_no_recorded_request_binds_nothing(queue, fake_storage, monkeypatch):
+    bound = []
+    real = worker.extract_provenance
+    monkeypatch.setattr(
+        worker,
+        "extract_provenance",
+        lambda path: (bound.append(observability.current_request_id()), real(path))[1],
+    )
+
+    queue(request_id=None)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    assert bound == [None]
 
 
 def test_claiming_media_that_needs_no_derivative_says_so(queue):
