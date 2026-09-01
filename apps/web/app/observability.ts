@@ -4,54 +4,48 @@
  * A browser request that submits media touches three processes: this server renders and
  * forwards it, the API accepts and queues it, and the worker analyses it minutes later.
  * Until R1-T4 those three wrote logs that had nothing in common, so "what happened to the
- * upload at 14:02" was a question answered by joining timestamps by eye. The id minted here
- * is what joins them instead: it travels to the API in `X-Request-ID`, the API binds it to
- * every line it logs, and it is written onto the queued job so the worker can bind it too.
+ * upload at 14:02" was a question answered by joining timestamps by eye. The id this server
+ * stamps on the request is what joins them instead: it travels to the API in `X-Request-ID`,
+ * the API binds it to every line it logs, and it is written onto the queued job so the
+ * worker can bind it too.
  *
- * This is the boundary, which is why the id is minted *here* rather than in the API. The
+ * This server is the boundary, which is why the id starts *here* rather than in the API. The
  * browser sends none, and a value the API invented would already be one hop late — the
  * redirect this server writes, and any failure before the call is even made, would sit
- * outside the trace. An incoming `X-Request-ID` is honoured instead of replaced, so a
- * reverse proxy or a caller that already runs a trace keeps its own id.
+ * outside the trace. It is `middleware.ts` that puts it on the request; what this module
+ * does is read it back and write it into log lines.
  *
  * There is no logging library here and no reporting SDK. `console` writes to stdout and
  * stderr, which is where a container's logs come from; formatting them as JSON in production
  * is the whole of what an aggregator needs, and it is four lines rather than a dependency.
  */
 
-import { cache } from "react";
 import { headers } from "next/headers";
 
-// The header the id travels in. Must match `REQUEST_ID_HEADER` in `app/observability.py`;
-// there is no way to derive one from the other across the two languages, so the pairing is
-// stated in both — as the session cookie's name already is.
-export const REQUEST_ID_HEADER = "x-request-id";
+// The header name and the rule for what may travel in it, defined in `app/request-id.ts`
+// because `middleware.ts` needs them too and cannot import this module. Re-exported so the
+// callers that have always taken them from here — `instrumentation.ts` among them — go on
+// doing so.
+import { REQUEST_ID_HEADER, acceptedRequestId } from "./request-id";
 
-// What an id arriving from outside may look like. The same narrow rule the API applies, and
-// for the same reason: this value is written into log lines, so a newline in it could forge
-// a record and an unbounded one could fill a disk. Anything else is replaced by a fresh id
-// rather than trimmed — a mangled id would still claim to correlate these lines with
-// somebody else's.
-const REQUEST_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
-
-/** The caller's id if it is one this server may repeat, otherwise nothing. */
-export function acceptedRequestId(value: string | null): string | null {
-  return value !== null && REQUEST_ID_PATTERN.test(value) ? value : null;
-}
+export { REQUEST_ID_HEADER, acceptedRequestId };
 
 /**
- * The id for the browser request being served, minted once and reused.
+ * The id for the browser request being served.
  *
- * `cache` is what makes "once" true. A page render calls this from every fetch it makes —
- * the session, the listing, the health probe — and without memoization each of those would
- * mint an id of its own, leaving one page view scattered across three unrelated traces.
- * React's cache is per-request, so two renders never share one either.
+ * A read, not a decision. `middleware.ts` has already put the id on this request's headers
+ * before anything here runs, so every call within one request — three fetches in a render,
+ * or the forwarded header and both log lines in `POST /submit` — reads the one value that
+ * was written there, with nothing to memoize and no way for two readers to disagree.
+ *
+ * The mint below is unreachable while the middleware's matcher covers every path that runs
+ * application code, and it stays here rather than throwing because this is the code path
+ * that logs: a fresh id makes one uncorrelated line, and an exception raised inside a logger
+ * would lose the line the caller was trying to write.
  */
-export const requestId = cache(async (): Promise<string> => {
-  const incoming = acceptedRequestId((await headers()).get(REQUEST_ID_HEADER));
-
-  return incoming ?? crypto.randomUUID();
-});
+export async function requestId(): Promise<string> {
+  return (await headers()).get(REQUEST_ID_HEADER) ?? crypto.randomUUID();
+}
 
 /** The id restated as the header the API reads it from. */
 export async function requestIdHeaders(): Promise<Record<string, string>> {
