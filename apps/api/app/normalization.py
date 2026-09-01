@@ -18,13 +18,16 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.limits import normalization_timeout_seconds
 from app.media import MediaMetadata
 
 logger = logging.getLogger(__name__)
 
 FFMPEG_BINARY = "ffmpeg"
 
-# How long one transcode may run before it is killed.
+# How long one transcode may run before it is killed. The figure now lives in `app.limits`
+# as `DEFAULT_NORMALIZATION_TIMEOUT_SECONDS`, unchanged and overridable from the environment
+# (R1-T3); the reasoning behind it is here, where the transcode is.
 #
 # This used to be 60 seconds, and the figure was set by a constraint that no longer
 # exists: normalization ran on the upload request, so the bound was really "how long may
@@ -38,7 +41,6 @@ FFMPEG_BINARY = "ffmpeg"
 # fractions of a second. Fifteen minutes is an order of magnitude above that, which leaves
 # room for a longer file inside the 100 MiB upload ceiling and for a machine under load,
 # without letting one pathological input stall the queue indefinitely.
-FFMPEG_TIMEOUT_SECONDS = 900
 DERIVATIVE_TEMP_PREFIX = "deepguard-normalized-"
 DERIVATIVE_TEMP_SUFFIX = ".mp4"
 
@@ -64,8 +66,23 @@ class NormalizationError(Exception):
     """The media is real video but could not be transcoded into the canonical form."""
 
 
-class NormalizationTimeout(NormalizationError):
-    """Transcoding outlived the processing limit and was stopped."""
+class NormalizationTimeout(Exception):
+    """Transcoding outlived the processing limit and was stopped.
+
+    Deliberately *not* a `NormalizationError`, since R1-T3. The distinction it draws is the
+    one the worker acts on: a `NormalizationError` is a fact about the media — ffmpeg looked
+    at these bytes and refused them — and the analysis records it as a gap in one evidence
+    source and finishes. A timeout is not a fact about the media at all. The same file on an
+    idle machine may transcode in a minute and blow through the limit on a loaded one, so
+    what a timeout reports is this worker's condition, and recording it against the video
+    would attribute the machine's state to the evidence.
+
+    So it sits beside `NormalizationUnavailable` rather than under `NormalizationError`, and
+    the class hierarchy is what carries that: the worker's `except NormalizationError` is
+    the clause that turns media problems into signals, and a timeout is no longer caught by
+    it. It propagates, the job is failed with the class name as its error message, and the
+    capacity the analysis was holding is released.
+    """
 
 
 class NormalizationUnavailable(Exception):
@@ -117,7 +134,12 @@ async def _run_ffmpeg(source: Path, destination: Path, frame_rate: float) -> Non
     Both paths are separate argv entries, so a filename can never be interpreted as
     shell syntax. A transcode that outlives the timeout is killed and reaped rather than
     left running.
+
+    The bound is read per call from `app.limits`, and read once so the figure a timeout
+    reports is the one it was judged against.
     """
+    timeout_seconds = normalization_timeout_seconds()
+
     args = (
         "-nostdin",
         "-y",
@@ -154,13 +176,13 @@ async def _run_ffmpeg(source: Path, destination: Path, frame_rate: float) -> Non
 
     try:
         _, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=FFMPEG_TIMEOUT_SECONDS
+            process.communicate(), timeout=timeout_seconds
         )
     except asyncio.TimeoutError:
         _terminate(process)
         await process.wait()
         raise NormalizationTimeout(
-            f"ffmpeg timed out after {FFMPEG_TIMEOUT_SECONDS}s"
+            f"ffmpeg timed out after {timeout_seconds}s"
         ) from None
 
     if process.returncode != 0:

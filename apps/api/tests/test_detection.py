@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from app import detection, normalization, nvidia_video
+from app import detection, normalization, nvidia_video, speaker_diarization
 from app.c2pa_extractor import C2paEvidence
 from app.detection import MAX_PERSISTED_SEGMENTS, detect_synthetic_video, extract_provenance
 
@@ -371,17 +371,26 @@ def test_media_that_could_not_be_prepared_carries_no_figure():
     assert signal.provider_version is None
 
 
-def test_a_transcode_that_ran_out_of_time_is_not_a_provider_timeout():
-    signal = detection.undetectable_media(
-        normalization.NormalizationTimeout("ffmpeg timed out after 900s"),
-        detection.SYNTHETIC_VIDEO_SIGNAL,
+def test_a_transcode_that_ran_out_of_time_is_not_evidence_about_the_media():
+    # R1-T3 moved this. A transcode that ran out of time used to be recorded as a failed
+    # signal beside one that ffmpeg refused, which said something about the video on the
+    # strength of a fact about the machine — the same file transcodes fine on an idle host.
+    # The hierarchy is what carries the distinction now, so the worker's `except
+    # NormalizationError` cannot catch it and turn it into evidence.
+    assert not issubclass(
+        normalization.NormalizationTimeout, normalization.NormalizationError
     )
 
-    # `TIMEOUT` means a provider that may still be working, which says nothing about the
-    # media either way. ffmpeg giving up is a different fact and is told apart by the
-    # failure kind rather than by borrowing a status that would misdescribe it.
-    assert signal.status == "FAILED"
-    assert signal.signal_metadata == {"error": "NormalizationTimeout"}
+
+def test_audio_extraction_that_ran_out_of_time_is_not_a_diarization_failure():
+    # The audio-side counterpart, and the same reasoning. `analyse_audio` catches
+    # `SpeakerDiarizationError` to turn "this upload has no usable audio" into two failed
+    # signals; a timeout is not that, so it is deliberately outside that hierarchy and
+    # reaches the worker instead.
+    assert not issubclass(
+        speaker_diarization.SpeakerDiarizationTimeout,
+        speaker_diarization.SpeakerDiarizationError,
+    )
 
 
 def test_preparation_failure_never_leaks_the_local_path():

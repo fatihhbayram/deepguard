@@ -1052,21 +1052,109 @@ def test_media_that_cannot_be_transcoded_does_not_cost_the_analysis_its_provenan
 
 
 @pytest.mark.integration
-def test_a_transcode_that_ran_out_of_time_is_told_apart_from_one_that_broke(
-    queue, fake_storage, fake_ffmpeg
-):
-    analysis_id, _ = queue(was_normalized=True)
+def test_a_transcode_that_ran_out_of_time_fails_the_job(queue, fake_storage, fake_ffmpeg):
+    analysis_id, job_id = queue(was_normalized=True)
     fake_ffmpeg.error = normalization.NormalizationTimeout("ffmpeg timed out after 900s")
 
     with SessionLocal() as session:
         worker.process_one(session)
 
+    # R1-T3. A transcode that ran out of time is a statement about this worker — a machine
+    # under load, or a limit set too tight for it — and not about the video, so it is not
+    # written down as evidence the way a transcode ffmpeg *refused* is. The job is closed as
+    # failed and the capacity it was holding is released.
+    assert read_job(job_id).status == "failed"
+    assert read_analysis(analysis_id).status == "failed"
+
+    signals = read_signals(analysis_id)
+    # The provenance was read off the forensic original before the transcode was attempted,
+    # and it is a complete reading in its own right. It survives.
+    assert set(signals) == {"provenance"}
+    assert signals["provenance"].status == "SUCCESS"
+    # Nothing stands in for the three signals that were never reached. A `FAILED` row would
+    # be a finding — "this source was asked and had no answer" — and none of them was asked.
+    assert "synthetic_video" not in signals
+
+
+@pytest.mark.integration
+def test_a_timed_out_transcode_records_only_the_failure_kind(
+    queue, fake_storage, fake_ffmpeg
+):
+    _, job_id = queue(was_normalized=True)
+    fake_ffmpeg.error = normalization.NormalizationTimeout(
+        "ffmpeg timed out after 900s on /tmp/deepguard-job-abc123"
+    )
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    # The class name and nothing else. A timeout message can quote the local artifact's
+    # path, and `error_message` is a column a customer-facing surface may read.
+    error_message = read_job(job_id).error_message
+    assert error_message == "NormalizationTimeout"
+    assert "deepguard-job" not in error_message
+
+
+@pytest.mark.integration
+def test_audio_extraction_that_ran_out_of_time_fails_the_job(
+    queue, fake_storage, fake_audio
+):
+    analysis_id, job_id = queue()
+    fake_audio.error = speaker_diarization.SpeakerDiarizationTimeout(
+        "Audio extraction timed out after 300s"
+    )
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    # The audio side of the same rule: the job is failed, because it did not finish.
+    assert read_job(job_id).status == "failed"
+    assert read_job(job_id).error_message == "SpeakerDiarizationTimeout"
+    assert read_analysis(analysis_id).status == "failed"
+
+    signals = read_signals(analysis_id)
+    # But the two readings taken before the extraction was attempted are complete and
+    # independent of it, so they are kept rather than discarded with the job. Only the two
+    # signals the timeout actually prevented are absent.
+    assert set(signals) == {"provenance", "synthetic_video"}
+    assert "active_speaker" not in signals
+    assert "audio_authenticity" not in signals
+
+
+@pytest.mark.integration
+def test_evidence_produced_before_a_timeout_survives_it(
+    queue, fake_storage, fake_audio, fake_nvidia
+):
+    analysis_id, job_id = queue()
+    fake_audio.error = speaker_diarization.SpeakerDiarizationTimeout(
+        "Audio extraction timed out after 300s"
+    )
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    # The regression this test exists for: NVIDIA answered, and the answer is a complete,
+    # self-contained reading of this media (rule 11). A later timeout in the unrelated audio
+    # chain does not make it less true, and the job failing must not take it down with it.
     signal = read_signals(analysis_id)["synthetic_video"]
-    # `TIMEOUT` is reserved for a provider that may still have been working, which says
-    # nothing about the media. ffmpeg giving up is not that; the failure kind is what
-    # separates the two.
-    assert signal.status == "FAILED"
-    assert signal.signal_metadata == {"error": "NormalizationTimeout"}
+    assert signal.status == "SUCCESS"
+    assert signal.score == NVIDIA_PROBABILITY
+    assert signal.provider_version == NVIDIA_FUNCTION_ID
+    assert signal.signal_metadata["logit"] == NVIDIA_LOGIT
+
+    # Its clip evidence comes with it. Segments hang off their signal's id, so a partial
+    # write that dropped them would leave a scored signal with nothing behind it.
+    assert read_segments(signal.id)
+
+    # And the analysis is still failed and still unclassified. Keeping the evidence must not
+    # turn a job that did not finish into one that did, and no rule was run over a partial
+    # evidence set: a null risk level is the absence of a conclusion, not `UNKNOWN`, which
+    # is a conclusion an explicit rule reached.
+    analysis = read_analysis(analysis_id)
+    assert analysis.status == "failed"
+    assert analysis.risk_level is None
+    assert analysis.risk_rule_id is None
+    assert read_job(job_id).error_message == "SpeakerDiarizationTimeout"
 
 
 @pytest.mark.integration

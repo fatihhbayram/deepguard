@@ -31,6 +31,7 @@ from typing import AsyncIterator, Sequence
 import grpc
 from dotenv import load_dotenv
 
+from app.limits import nvidia_asd_timeout_seconds
 from app.nvidia_active_speaker_proto import activespeakerdetection_pb2 as asd_pb2
 from app.nvidia_active_speaker_proto import activespeakerdetection_pb2_grpc as asd_pb2_grpc
 from app.nvidia_active_speaker_proto import audio_pb2, video_pb2
@@ -52,8 +53,10 @@ DATA_CHUNK_SIZE = 64 * 1024
 DIARIZATION_BATCH_SIZE = 100
 
 # Detection is a full per-frame video pass on NVIDIA's GPU, so the deadline is generous. It
-# exists to guarantee the call always ends, not to bound normal inference.
-DEFAULT_TIMEOUT_SECONDS = 600.0
+# exists to guarantee the call always ends, not to bound normal inference. The figure lives
+# in `app.limits` as `DEFAULT_NVIDIA_ASD_TIMEOUT_SECONDS`, unchanged and overridable from the
+# environment (R1-T3) — under its own variable, because this is a separate deployment from
+# the Synthetic Video one and may well need a different deadline.
 
 # NVIDIA accepts H.264 in MP4 and nothing else, which is what P1's derivative already is.
 VIDEO_CODEC = video_pb2.VIDEO_CODEC_H264
@@ -466,7 +469,7 @@ async def analyze_active_speaker(
     api_key: str | None = None,
     function_id: str | None = None,
     target: str = PREVIEW_TARGET,
-    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    timeout_seconds: float | None = None,
 ) -> NvidiaActiveSpeakerResult:
     """Run NVIDIA active-speaker detection over a video and its diarization.
 
@@ -480,11 +483,18 @@ async def analyze_active_speaker(
 
     Leave `speaker_detection_threshold` unset to use NVIDIA's own default.
 
+    `timeout_seconds` left `None` takes the configured deadline from `app.limits`, resolved
+    here rather than bound as a default argument — a default is evaluated once at import and
+    would freeze whatever the environment happened to say then.
+
     Returns the provider's per-frame evidence untransformed. Raises
     `NvidiaActiveSpeakerInputError` for unusable arguments,
     `NvidiaActiveSpeakerLocalFileError` if our own file cannot be read, and a
     `NvidiaActiveSpeakerProviderError` subclass for every provider-side outcome.
     """
+    if timeout_seconds is None:
+        timeout_seconds = nvidia_asd_timeout_seconds()
+
     resolved_key, resolved_function_id = _load_credentials(api_key, function_id)
     _validate_diarization(diarization)
 

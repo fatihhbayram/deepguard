@@ -35,6 +35,21 @@ passed. The two halves are what make it safe: the heartbeat is how a slow analys
 apart from a dead worker, and the conditional writes in `_set_status` are how a worker that
 comes back from the dead is stopped from undoing its own recovery.
 
+A job stopped by one of its own limits is failed but not emptied (R1-T3). Every external
+operation carries a configurable deadline, and breaching one fails the job — the analysis did
+not finish and must not be published as though it had. What it does not do is discard the
+independent readings the job had already produced: a C2PA manifest, or a synthetic-video
+verdict NVIDIA returned before an unrelated audio extraction timed out, are complete findings
+in their own right (rule 11), and a deadline this worker set does not make them less true. So
+`AnalysisTimedOut` carries what was obtained, `abandon_job` commits it, and the analysis is
+left `failed` with no risk decision at all.
+
+Nothing is claimed until the database is at this image's Alembic head (R1-T3). A worker
+running against a half-migrated schema does not fail cleanly — it takes a job, trips over a
+missing column several statements in, fails that analysis and takes the next one — so a
+deployment that skipped a migration used to look like a burst of failed customer analyses.
+`wait_for_schema` turns that into a worker that has not started yet and says why.
+
 Normalization moved here in P4-F2 (D020). It used to run on the upload request under a
 deadline that was really about how long a client would wait, which rejected a perfectly
 good 4K HEVC upload before anything had been analysed.
@@ -71,7 +86,9 @@ from app.db.models import (
     AnalysisSignal,
     MediaFile,
 )
-from app.db.session import SessionLocal
+from app.db.schema import SchemaNotReady, check_schema_ready
+from app.db.session import SessionLocal, engine
+from app.limits import InvalidTimeout, validate as validate_limits
 from app.detection import (
     ACTIVE_SPEAKER_SIGNAL,
     NVIDIA_PROVIDER,
@@ -82,7 +99,8 @@ from app.detection import (
     unanalysable_audio,
     undetectable_media,
 )
-from app.normalization import NormalizationError, normalize_to_mp4
+from app.normalization import NormalizationError, NormalizationTimeout, normalize_to_mp4
+from app.speaker_diarization import SpeakerDiarizationTimeout
 from app.risk_engine import RiskDecision, SvdEvidence, evaluate
 from app.storage import fetch_object, store_derivative
 
@@ -126,6 +144,12 @@ HEARTBEAT_SECONDS = 30
 # Nobody caught an exception to produce it — the worker that would have is gone — so it is
 # written literally.
 STALE_LEASE_ERROR = "StaleWorkerLease"
+
+# How long to wait between asking the database again whether it is at the schema this image
+# expects (R1-T3). Longer than the idle poll: a migration is a deployment step measured in
+# seconds at least, and a worker that cannot start yet should say so occasionally rather
+# than filling the log while an operator runs `alembic upgrade`.
+SCHEMA_POLL_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -492,6 +516,58 @@ class Evidence:
     derivative_storage_key: str | None = None
     derivative_sha256: str | None = None
 
+    def entries(self) -> tuple[SignalEvidence, ...]:
+        """The three artifact-dependent findings, in the order they are written.
+
+        Named rather than unpacked at the call site so the partial path below and the
+        complete one persist through the same code: a signal added to this class and not to
+        this tuple would be a visible omission, and one written on one path but not the
+        other is exactly the drift the two paths must not have.
+        """
+        return (self.detection, self.active_speaker, self.audio_authenticity)
+
+
+class AnalysisTimedOut(Exception):
+    """A controllable external operation outlived its limit, partway through a job.
+
+    Both halves of this class matter and they pull in opposite directions.
+
+    It is an *exception*, because the job it belongs to did not finish and must not be
+    published as though it had. Nothing here is classified: a risk level is a statement
+    about media, and the operation that would have produced the evidence behind one never
+    completed.
+
+    It *carries evidence*, because independent findings the job had already produced are
+    not made wrong by a later timeout. A C2PA manifest read off the forensic original and a
+    synthetic-video verdict NVIDIA returned are complete, self-contained readings of this
+    media (rule 11); the audio extraction that timed out afterwards says nothing about
+    either. Discarding them would destroy real forensic findings over a scheduling event —
+    the same thing `complete_job` refuses to do when a job is recovered as stale.
+
+    So `produced` holds what was genuinely obtained, and it holds nothing else. The signals
+    that were never reached are absent rather than written as `FAILED` rows: a failed signal
+    is a finding — "this source was asked and had no answer" — and the sources behind the
+    timeout were never asked. Recording them would turn the worker's own limit into evidence
+    about the video, which is the one thing this class exists to avoid.
+    """
+
+    def __init__(
+        self,
+        error: BaseException,
+        produced: tuple[SignalEvidence, ...] = (),
+        derivative_storage_key: str | None = None,
+        derivative_sha256: str | None = None,
+    ) -> None:
+        self.error = error
+        self.produced = produced
+        # Recorded only when something actually read the derivative. On a transcode that
+        # timed out there is no derivative at all; on an audio extraction that did, the
+        # detection above it read exactly this artifact, so the key names an object that
+        # provably exists and was provably used.
+        self.derivative_storage_key = derivative_storage_key
+        self.derivative_sha256 = derivative_sha256
+        super().__init__(type(error).__name__)
+
 
 def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
     """Prepare the artifact detection needs, ask every question about it, report the outcomes.
@@ -517,20 +593,48 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
     a broken container, not broken media, and recording it as evidence about the video
     would leave a real defect looking like a routine gap. It propagates and fails the job,
     exactly as `NvidiaLocalFileError` does.
+
+    Since R1-T3 a transcode that ran out of time, and audio extraction that did, are
+    neither of those. `NormalizationTimeout` and `SpeakerDiarizationTimeout` are not
+    subclasses of the error types caught here, so neither becomes a signal: a timeout is a
+    statement about this worker — a machine under load, a limit set too tight — and writing
+    it down as a finding about the media would attribute the machine's condition to the
+    video. Both are re-raised as `AnalysisTimedOut`, which fails the job.
+
+    What that re-raise carries is the point of it. Everything already obtained travels with
+    the exception, so a timeout during audio extraction costs the audio signals and not the
+    synthetic-video verdict NVIDIA had already returned. Failing the job and keeping its
+    evidence are separate decisions here, and this is what lets `process_one` make them
+    separately.
     """
     try:
         with prepared_artifact(claimed, original) as artifact:
             signal, segments = run_detection(artifact.path)
-            # The rate NVIDIA's frame indices have to be read against. It is the rate of
-            # the artifact just handed over: a derivative was transcoded to hold exactly
-            # this rate constant, and media that needed no derivative is the original,
-            # whose probed rate this is.
-            (speaker_signal, speaker_segments), (audio_signal, audio_segments) = (
-                run_audio_evidence(artifact.path, claimed.frame_rate)
-            )
+            detected = SignalEvidence(signal=signal, segments=segments)
+
+            try:
+                # The rate NVIDIA's frame indices have to be read against. It is the rate of
+                # the artifact just handed over: a derivative was transcoded to hold exactly
+                # this rate constant, and media that needed no derivative is the original,
+                # whose probed rate this is.
+                (speaker_signal, speaker_segments), (audio_signal, audio_segments) = (
+                    run_audio_evidence(artifact.path, claimed.frame_rate)
+                )
+            except SpeakerDiarizationTimeout as error:
+                # The detection above is finished and independent of anything the audio
+                # chain would have produced, so it goes with the exception rather than
+                # being lost to it. So does the derivative it read, which is why the
+                # identity is carried too: the artifact provably exists and provably had a
+                # reader.
+                raise AnalysisTimedOut(
+                    error,
+                    produced=(detected,),
+                    derivative_storage_key=artifact.storage_key,
+                    derivative_sha256=artifact.sha256,
+                ) from error
 
             return Evidence(
-                detection=SignalEvidence(signal=signal, segments=segments),
+                detection=detected,
                 active_speaker=SignalEvidence(
                     signal=speaker_signal, segments=speaker_segments
                 ),
@@ -540,6 +644,14 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
                 derivative_storage_key=artifact.storage_key,
                 derivative_sha256=artifact.sha256,
             )
+    except NormalizationTimeout as error:
+        # Nothing artifact-dependent was reached: the transcode is what timed out, and every
+        # signal below it needed the artifact it never produced. `produced` is therefore
+        # empty — which is not the same as "no evidence survives this job". The provenance
+        # read off the forensic original happened before this call and is `process_one`'s to
+        # keep, exactly as it would be on any other failure.
+        logger.warning("Preparing the media for detection ran out of time.", exc_info=True)
+        raise AnalysisTimedOut(error) from error
     except NormalizationError as error:
         logger.warning("Preparing the media for detection failed.", exc_info=True)
         return Evidence(
@@ -608,15 +720,36 @@ def persist_evidence(
     transcoded for one. Neither is a fact about this worker — both are already recorded as
     the signal's own status — and the work this job was queued to do was done.
     """
-    if evidence.derivative_storage_key is not None:
-        _record_derivative(session, claimed, evidence)
-
-    persisted = (
-        SignalEvidence(signal=provenance_signal, segments=[]),
-        evidence.detection,
-        evidence.active_speaker,
-        evidence.audio_authenticity,
+    write_evidence(
+        session,
+        claimed,
+        (SignalEvidence(signal=provenance_signal, segments=[]), *evidence.entries()),
+        derivative_storage_key=evidence.derivative_storage_key,
+        derivative_sha256=evidence.derivative_sha256,
     )
+
+
+def write_evidence(
+    session: Session,
+    claimed: ClaimedJob,
+    persisted: tuple[SignalEvidence, ...],
+    derivative_storage_key: str | None = None,
+    derivative_sha256: str | None = None,
+) -> None:
+    """Commit exactly the signals it is given, and the derivative they were read from.
+
+    Split out of `persist_evidence` in R1-T3 so a job that ran out of time writes its
+    evidence through the same statements a job that finished does. A second, near-identical
+    persistence path for the partial case would be the kind of duplicate that stops matching
+    the moment either side gains a column, and the two differ only in *which* signals exist
+    — never in how one is written.
+
+    Which is why this takes a tuple rather than an `Evidence`. A partial job has no
+    active-speaker or audio-authenticity finding to write, and their absence is the whole
+    point: an empty row is not evidence, and a `FAILED` one would be a finding nobody made.
+    """
+    if derivative_storage_key is not None:
+        _record_derivative(session, claimed, derivative_storage_key, derivative_sha256)
 
     for entry in persisted:
         entry.signal.analysis_id = claimed.analysis_id
@@ -733,21 +866,81 @@ def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision | None:
     return decision
 
 
-def _record_derivative(session: Session, claimed: ClaimedJob, evidence: Evidence) -> None:
+def _record_derivative(
+    session: Session,
+    claimed: ClaimedJob,
+    storage_key: str,
+    sha256: str | None,
+) -> None:
     """Name the artifact this analysis was detected against, now that it exists.
 
     Only ever called with a derivative this worker created and uploaded. Media that was
     already canonical had its own key written at upload and is not touched here: there is
     no second artifact, and overwriting the column would say there was.
+
+    Takes the two values rather than the `Evidence` they used to come from, because since
+    R1-T3 they also arrive on a job that timed out — where detection read the derivative and
+    the signals that would have completed the `Evidence` do not exist.
     """
     session.execute(
         MediaFile.__table__.update()
         .where(MediaFile.analysis_id == claimed.analysis_id)
-        .values(
-            derivative_storage_key=evidence.derivative_storage_key,
-            derivative_sha256=evidence.derivative_sha256,
-        )
+        .values(derivative_storage_key=storage_key, derivative_sha256=sha256)
     )
+
+
+def abandon_job(
+    session: Session,
+    claimed: ClaimedJob,
+    timed_out: AnalysisTimedOut,
+    provenance_signal: AnalysisSignal | None,
+) -> None:
+    """Keep what a timed-out job proved, then close it out as failed (R1-T3).
+
+    Two commits in a fixed order, and the order is the same one `complete_job` uses for the
+    same reason: the evidence is committed first and on its own, so a defect in closing the
+    job out costs the decision and not the forensic record.
+
+    What survives is only what was actually obtained — the provenance read off the original,
+    and any artifact-dependent signal the analysis got to before the limit was breached.
+    Each is a complete, independent reading in its own right (rule 11), and a later timeout
+    in an unrelated chain does not make an earlier one less true. Nothing is invented to
+    stand in for what was not reached: the sources behind the timeout are absent from
+    `analysis_signals`, not written as `FAILED`, because a failed signal means a source was
+    asked and had no answer and these were never asked.
+
+    Then the job fails, through the same `fail_job` every other worker-side failure uses.
+    The analysis is `failed` and its risk columns stay null — the timeout is not reinterpreted
+    as a finding, no rule was run over a partial evidence set, and null is the absence of a
+    conclusion rather than `UNKNOWN`, which is a conclusion an explicit rule reached. So a
+    reader of this analysis sees the signals that were genuinely produced under a status that
+    says plainly the analysis did not finish.
+
+    A job with nothing to keep — a transcode that timed out before any signal existed, and
+    whose provenance read had not happened either — skips the first commit rather than
+    opening an empty transaction.
+    """
+    persisted = tuple(
+        entry
+        for entry in (
+            SignalEvidence(signal=provenance_signal, segments=[])
+            if provenance_signal is not None
+            else None,
+            *timed_out.produced,
+        )
+        if entry is not None
+    )
+
+    if persisted or timed_out.derivative_storage_key is not None:
+        write_evidence(
+            session,
+            claimed,
+            persisted,
+            derivative_storage_key=timed_out.derivative_storage_key,
+            derivative_sha256=timed_out.derivative_sha256,
+        )
+
+    fail_job(session, claimed, timed_out.error)
 
 
 def fail_job(session: Session, claimed: ClaimedJob, error: BaseException) -> None:
@@ -871,6 +1064,12 @@ def process_one(session: Session) -> bool:
     # alive. Without it the lease would run out during any analysis longer than
     # `LEASE_SECONDS` and another worker would recover a job that was going perfectly well.
     with leased(claimed.job_id):
+        # Assigned before the block so the timeout handler can still reach it. A transcode
+        # that runs out of time unwinds past the assignment below, and the provenance read
+        # off the original — which happened before the transcode and is complete — must not
+        # be lost to a variable that went out of scope.
+        provenance_signal = None
+
         try:
             # One download serves both evidence sources. Provenance is read from these bytes
             # because they are the forensic original — normalization would strip the manifest
@@ -881,9 +1080,23 @@ def process_one(session: Session) -> bool:
                 # signal instead. Nor does media that cannot be transcoded, nor anything the
                 # active-speaker chain can fail with — `analyse` turns all of those into failed
                 # signals. What can still reach the handler below is the object store, a broken
-                # image, or a bug.
+                # image, a subprocess that outlived its configured limit (R1-T3), or a bug.
                 provenance_signal = extract_provenance(original)
                 evidence = analyse(claimed, original)
+        except AnalysisTimedOut as timed_out:
+            # A limit was breached partway through (R1-T3). The job is failed like any other
+            # worker-side failure, and everything it had genuinely produced up to that point
+            # is committed first: a timeout in one chain does not make an independent reading
+            # taken earlier untrue, and throwing away real forensic findings over this
+            # worker's own deadline would be destroying evidence to tidy up.
+            logger.warning(
+                "Job %s ran out of time in %s; failing it and keeping the evidence it had "
+                "already produced.",
+                claimed.job_id,
+                type(timed_out.error).__name__,
+            )
+            abandon_job(session, claimed, timed_out, provenance_signal)
+            return True
         except Exception as error:
             # Not a detector saying no and not media that could not be prepared — a failure on
             # our own side. It is recorded against the job and the loop carries on.
@@ -948,6 +1161,51 @@ class Stopping:
         signal.signal(signal.SIGINT, self.request)
 
 
+def wait_for_schema(stopping: Stopping, sleep=time.sleep) -> bool:
+    """Block until the database is at this image's Alembic head. Returns whether it got there.
+
+    The gate this loop needs and did not have (R1-T3). A worker started against a database
+    that has not been migrated yet does not fail cleanly: it claims a job, gets several
+    statements in, trips over a column that does not exist, fails that analysis, and takes
+    the next one. A deployment that forgot `alembic upgrade head` therefore showed up as a
+    run of failed customer analyses rather than as a deployment that forgot a migration. So
+    the question is asked once, here, before anything is claimed.
+
+    It waits rather than exits, which is the same choice `run` makes below and made for the
+    same reason: during a rollout the migration and the new worker start within seconds of
+    each other, and a worker that exited would be restarted by Compose into a condition that
+    is about to resolve itself — a crash loop that reads, in the logs, exactly like a
+    deployment that is broken. Waiting says the same thing once every `SCHEMA_POLL_SECONDS`
+    and starts working the moment the migration lands, with no restart in between.
+
+    Waiting is not the same as waiting silently. Every attempt logs what it found against
+    what it expected, so a schema that is genuinely never going to be migrated is a
+    repeating, specific line naming the revisions and the command to fix it, rather than a
+    process that appears healthy and does nothing.
+
+    A database that cannot be reached at all is treated the same way and deliberately not
+    told apart: both are "not ready yet", both resolve without intervention when the
+    dependency comes up, and both are logged with the exception behind them.
+
+    Returns False when shutdown was requested while waiting, so a container being stopped
+    mid-rollout exits promptly instead of holding SIGTERM until the migration lands.
+    """
+    while not stopping.requested:
+        try:
+            check_schema_ready(engine)
+            return True
+        except SchemaNotReady as error:
+            logger.warning("%s Waiting for the migration.", error)
+        except Exception:
+            logger.exception(
+                "The database schema could not be checked; waiting before trying again."
+            )
+
+        sleep(SCHEMA_POLL_SECONDS)
+
+    return False
+
+
 def run(stopping: Stopping, sleep=time.sleep) -> None:
     """Poll for work until asked to stop.
 
@@ -968,19 +1226,45 @@ def run(stopping: Stopping, sleep=time.sleep) -> None:
             sleep(IDLE_POLL_SECONDS)
 
 
-def main() -> None:
+def main() -> int:
+    """Start the worker, after two checks that are cheaper to fail than a job is (R1-T3).
+
+    The order is deliberate. Configuration is resolved first, from the environment alone,
+    because a mistyped timeout needs no database to detect and a process that will refuse to
+    run should refuse before it waits several minutes for a migration to explain that. A bad
+    value exits non-zero: unlike a schema that is about to be migrated, nothing about a typo
+    in a compose file resolves by waiting, so this is the one startup condition worth a
+    restart loop that an operator will notice.
+
+    The schema comes second and waits instead, for the reasons `wait_for_schema` gives.
+
+    Returns the process's exit status rather than calling `sys.exit`, so the whole startup
+    sequence is reachable from a test without a `SystemExit` to catch.
+    """
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
+    try:
+        logger.info("Operation limits: %s.", validate_limits())
+    except InvalidTimeout as error:
+        logger.error("The worker is misconfigured and will not start: %s", error)
+        return 1
+
     stopping = Stopping()
     stopping.install()
+
+    if not wait_for_schema(stopping):
+        logger.info("Shutdown was requested before the schema was ready.")
+        return 0
 
     logger.info("DeepGuard worker started.")
     run(stopping)
     logger.info("DeepGuard worker stopped.")
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

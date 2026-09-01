@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from app import normalization
+from app import limits, normalization
 from app.media import MediaMetadata
 
 
@@ -187,7 +187,7 @@ def test_nonzero_exit_is_a_normalization_failure(spawned, tmp_path):
 
 
 def test_timeout_kills_and_reaps_the_child_process(spawned, monkeypatch, tmp_path):
-    monkeypatch.setattr(normalization, "FFMPEG_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setenv(limits.NORMALIZATION_TIMEOUT_VARIABLE, "0.01")
     process = FakeProcess(hang=True)
     spawned(process)
 
@@ -199,7 +199,7 @@ def test_timeout_kills_and_reaps_the_child_process(spawned, monkeypatch, tmp_pat
 
 
 def test_a_child_that_raced_us_to_exit_is_still_reaped(spawned, monkeypatch, tmp_path):
-    monkeypatch.setattr(normalization, "FFMPEG_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setenv(limits.NORMALIZATION_TIMEOUT_VARIABLE, "0.01")
     process = FakeProcess(hang=True)
     process.kill = lambda: (_ for _ in ()).throw(ProcessLookupError())
     spawned(process)

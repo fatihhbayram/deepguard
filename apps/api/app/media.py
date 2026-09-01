@@ -13,10 +13,11 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.limits import ffprobe_timeout_seconds
+
 logger = logging.getLogger(__name__)
 
 FFPROBE_BINARY = "ffprobe"
-FFPROBE_TIMEOUT_SECONDS = 10
 
 # One ceiling for media entering DeepGuard, whatever door it comes through — a multipart
 # upload or a URL download. It lives here, beside the other facts about admitted media,
@@ -71,7 +72,13 @@ async def _run_ffprobe(path: Path) -> str:
     No shell is involved: the path is passed as a separate argv entry, so a filename can
     never be interpreted as shell syntax. A probe that outlives the timeout is killed and
     reaped rather than left running.
+
+    The bound is read per call from `app.limits` (R1-T3), so a deployment can widen it
+    without a rebuild. It is read once here and carried into the failure message, so what a
+    timeout reports is the figure it was actually judged against.
     """
+    timeout_seconds = ffprobe_timeout_seconds()
+
     args = (
         "-v", "error",
         "-select_streams", "v:0",
@@ -92,14 +99,12 @@ async def _run_ffprobe(path: Path) -> str:
 
     try:
         stdout, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=FFPROBE_TIMEOUT_SECONDS
+            process.communicate(), timeout=timeout_seconds
         )
     except asyncio.TimeoutError:
         _terminate(process)
         await process.wait()
-        raise MediaProbeError(
-            f"ffprobe timed out after {FFPROBE_TIMEOUT_SECONDS}s"
-        ) from None
+        raise MediaProbeError(f"ffprobe timed out after {timeout_seconds}s") from None
 
     if process.returncode != 0:
         # stderr is diagnostic only: it can quote container internals and the temp path.

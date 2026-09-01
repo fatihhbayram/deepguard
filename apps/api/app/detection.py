@@ -212,10 +212,10 @@ def undetectable_media(error: Exception, signal_type: str) -> AnalysisSignal:
     about the same prepared artifact, so a transcode that fails costs both of them, and
     each records that separately rather than one standing in for the other.
 
-    `status` is `FAILED` even for a transcode that ran out of time. `TIMEOUT` means a
-    provider that may still have been working, which says nothing about the media either
-    way; ffmpeg giving up is not that, and the two are told apart by the failure kind in
-    the metadata rather than by borrowing a status that would misdescribe one of them.
+    A transcode that ran out of time never reaches here at all, since R1-T3.
+    `NormalizationTimeout` is no longer a `NormalizationError` and is not caught beside one:
+    it says the worker breached its own limit rather than that the media was refused, and it
+    fails the job instead of being recorded as evidence about a video nobody looked at.
     """
     return AnalysisSignal(
         provider=NVIDIA_PROVIDER,
@@ -652,6 +652,11 @@ async def analyse_audio(
     ordinary fact about an upload, so it is recorded as two failed signals rather than a
     failed job — the provenance and synthetic-video evidence this analysis already has must
     survive it.
+
+    Extraction that *outlived its limit* is the exception to that, since R1-T3.
+    `SpeakerDiarizationTimeout` is no longer a `SpeakerDiarizationError` and so is not caught
+    below: it describes this worker's condition rather than the upload's audio, and it
+    propagates to fail the job. `app.speaker_diarization` states the trade that makes.
 
     AASIST is blocking CPU work, so it goes to a thread the way diarization does; running it
     on the event loop would stall the ffmpeg and gRPC I/O this coroutine is built around.

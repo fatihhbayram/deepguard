@@ -49,6 +49,8 @@ from typing import AsyncIterator
 
 from dotenv import load_dotenv
 
+from app.limits import audio_extraction_timeout_seconds
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -69,8 +71,9 @@ AUDIO_CODEC = "pcm_s16le"
 # Extraction only demuxes and re-encodes audio, which runs far faster than real time — this
 # bound exists so a pathological input cannot stall the caller forever, not to pace normal
 # work. Inference itself is not bounded here; it is CPU-bound local work with no deadline to
-# enforce, and killing it halfway would produce nothing useful.
-FFMPEG_TIMEOUT_SECONDS = 300
+# enforce, and killing it halfway would produce nothing useful. The figure itself lives in
+# `app.limits` as `DEFAULT_AUDIO_EXTRACTION_TIMEOUT_SECONDS`, unchanged and overridable from
+# the environment (R1-T3).
 
 AUDIO_TEMP_PREFIX = "deepguard-diarization-"
 AUDIO_TEMP_SUFFIX = ".wav"
@@ -88,8 +91,25 @@ class SpeakerDiarizationAudioError(SpeakerDiarizationError):
     """
 
 
-class SpeakerDiarizationTimeout(SpeakerDiarizationError):
-    """Audio extraction outlived its limit and was stopped."""
+class SpeakerDiarizationTimeout(Exception):
+    """Audio extraction outlived its limit and was stopped.
+
+    Deliberately *not* a `SpeakerDiarizationError`, since R1-T3, for the same reason
+    `NormalizationTimeout` is not a `NormalizationError`. Every other failure in this module
+    is a fact about the media or about the configuration — there is no audio stream, the
+    token is missing, the model would not load — and each is recorded as a failed signal so
+    the analysis keeps the evidence it already has. A timeout is a fact about this machine:
+    the same file that extracts in seconds when the worker is idle can outlive the bound
+    when it is not.
+
+    The hierarchy is what carries that distinction to the caller. `app.detection` catches
+    `SpeakerDiarizationError` to turn audio problems into signals, and a timeout is no
+    longer caught by it: it propagates and the job is failed with the class name as its
+    error message. The cost is real and worth stating — the synthetic-video evidence
+    gathered earlier in the same job has not been persisted yet and is discarded with it —
+    but a worker that cannot demux audio inside its own limit is not a worker whose other
+    results should be published as though nothing were wrong.
+    """
 
 
 class SpeakerDiarizationUnavailable(SpeakerDiarizationError):
@@ -151,7 +171,12 @@ async def _extract_audio(source: Path, destination: Path) -> None:
     """Demux the first audio stream into a mono 16 kHz PCM WAV, without a shell.
 
     Both paths are separate argv entries, so a filename can never be read as shell syntax.
+
+    The bound is read per call from `app.limits`, once, so the figure a timeout reports is
+    the one it was judged against.
     """
+    timeout_seconds = audio_extraction_timeout_seconds()
+
     args = (
         "-nostdin",
         "-y",
@@ -183,13 +208,13 @@ async def _extract_audio(source: Path, destination: Path) -> None:
 
     try:
         _, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=FFMPEG_TIMEOUT_SECONDS
+            process.communicate(), timeout=timeout_seconds
         )
     except asyncio.TimeoutError:
         _terminate(process)
         await process.wait()
         raise SpeakerDiarizationTimeout(
-            f"Audio extraction timed out after {FFMPEG_TIMEOUT_SECONDS}s"
+            f"Audio extraction timed out after {timeout_seconds}s"
         ) from None
 
     if process.returncode != 0:
@@ -280,8 +305,9 @@ async def prepared_audio(media_path: Path) -> AsyncIterator[Path]:
     broke halfway nor one that was cancelled leaves a WAV behind.
 
     Raises `SpeakerDiarizationAudioError` when the media yields no usable audio,
-    `SpeakerDiarizationTimeout` when extraction outlives its limit, and
-    `SpeakerDiarizationUnavailable` when FFmpeg itself cannot be run.
+    `SpeakerDiarizationUnavailable` when FFmpeg itself cannot be run, and
+    `SpeakerDiarizationTimeout` — which is not a `SpeakerDiarizationError` and is not meant
+    to be handled beside the other two — when extraction outlives its limit.
     """
     descriptor, name = tempfile.mkstemp(prefix=AUDIO_TEMP_PREFIX, suffix=AUDIO_TEMP_SUFFIX)
     os.close(descriptor)

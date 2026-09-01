@@ -42,6 +42,7 @@ from urllib.parse import urlsplit
 
 import yt_dlp
 
+from app.limits import download_socket_timeout_seconds
 from app.media import MAX_UPLOAD_BYTES
 
 logger = logging.getLogger(__name__)
@@ -88,8 +89,9 @@ MEDIA_FORMAT = "best[ext=mp4]/best[ext=mov]/best"
 # that only pays off where it is actually required.
 EXTRACTOR_ARGS = {"youtube": {"player_client": ["android"]}}
 
-# How long a single stalled read may hang before the download gives up.
-SOCKET_TIMEOUT_SECONDS = 30
+# How long a single stalled read may hang before the download gives up lives in `app.limits`
+# as `DEFAULT_DOWNLOAD_SOCKET_TIMEOUT_SECONDS`, unchanged and overridable from the
+# environment (R1-T3).
 
 # `live_status` values that mean there is no finished file to fetch. A stream that has not
 # started has nothing; one that is running has no end, and yt-dlp would sit there recording
@@ -346,7 +348,8 @@ def _options(directory: Path) -> dict:
         "noplaylist": True,
         "max_filesize": MAX_DOWNLOAD_BYTES,
         "concurrent_fragment_downloads": 1,
-        "socket_timeout": SOCKET_TIMEOUT_SECONDS,
+        # Read here rather than at import, so a deployment can widen it without a rebuild.
+        "socket_timeout": download_socket_timeout_seconds(),
         "retries": 2,
         "quiet": True,
         "no_warnings": True,

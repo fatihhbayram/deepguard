@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from app import limits
 from app import speaker_diarization as diarization
 from app.speaker_diarization import (
     SpeakerDiarizationAudioError,
@@ -395,7 +396,7 @@ def test_a_missing_ffmpeg_binary_is_unavailable(monkeypatch, temp_files):
 def test_slow_extraction_is_killed_reaped_and_reported(monkeypatch, spawned, temp_files):
     process = FakeProcess(hang=True)
     spawned(process)
-    monkeypatch.setattr(diarization, "FFMPEG_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setenv(limits.AUDIO_EXTRACTION_TIMEOUT_VARIABLE, "0.01")
 
     with pytest.raises(SpeakerDiarizationTimeout):
         asyncio.run(_extract_then_diarize(MEDIA))
@@ -744,7 +745,7 @@ def test_the_temp_wav_is_removed_after_a_failed_model_load(
 
 def test_the_temp_wav_is_removed_after_a_timeout(monkeypatch, spawned, temp_files):
     spawned(FakeProcess(hang=True))
-    monkeypatch.setattr(diarization, "FFMPEG_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setenv(limits.AUDIO_EXTRACTION_TIMEOUT_VARIABLE, "0.01")
 
     with pytest.raises(SpeakerDiarizationTimeout):
         asyncio.run(_extract_then_diarize(MEDIA))

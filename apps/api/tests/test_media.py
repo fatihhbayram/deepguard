@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from app import media
+from app import limits, media
 
 
 class FakeProcess:
@@ -75,7 +75,7 @@ def test_nonzero_exit_is_invalid_media(spawned):
 
 
 def test_timeout_kills_and_reaps_the_child_process(spawned, monkeypatch):
-    monkeypatch.setattr(media, "FFPROBE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setenv(limits.FFPROBE_TIMEOUT_VARIABLE, "0.01")
     process = FakeProcess(hang=True)
     spawned(process)
 
@@ -87,7 +87,7 @@ def test_timeout_kills_and_reaps_the_child_process(spawned, monkeypatch):
 
 
 def test_a_child_that_raced_us_to_exit_is_still_reaped(spawned, monkeypatch):
-    monkeypatch.setattr(media, "FFPROBE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setenv(limits.FFPROBE_TIMEOUT_VARIABLE, "0.01")
     process = FakeProcess(hang=True)
     process.kill = lambda: (_ for _ in ()).throw(ProcessLookupError())
     spawned(process)

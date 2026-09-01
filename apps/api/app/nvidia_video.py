@@ -23,6 +23,7 @@ from typing import AsyncIterator
 import grpc
 from dotenv import load_dotenv
 
+from app.limits import nvidia_svd_timeout_seconds
 from app.nvidia_svd import syntheticvideodetector_pb2 as svd_pb2
 from app.nvidia_svd import syntheticvideodetector_pb2_grpc as svd_pb2_grpc
 
@@ -37,8 +38,9 @@ PREVIEW_TARGET = "grpc.nvcf.nvidia.com:443"
 DATA_CHUNK_SIZE = 1024 * 1024
 
 # Detection is a full video pass on NVIDIA's GPU, so the deadline is generous. It exists
-# to guarantee the call always ends, not to bound normal inference.
-DEFAULT_TIMEOUT_SECONDS = 600.0
+# to guarantee the call always ends, not to bound normal inference. The figure lives in
+# `app.limits` as `DEFAULT_NVIDIA_SVD_TIMEOUT_SECONDS`, unchanged and overridable from the
+# environment (R1-T3).
 
 
 class NvidiaVideoError(Exception):
@@ -233,16 +235,23 @@ async def analyze_video(
     api_key: str | None = None,
     function_id: str | None = None,
     target: str = PREVIEW_TARGET,
-    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    timeout_seconds: float | None = None,
 ) -> NvidiaVideoResult:
     """Run NVIDIA synthetic-video detection on an already provider-compatible MP4.
 
     `file_path` must be the MP4/H.264 constant-frame-rate derivative P1 produced; this
     function never inspects, transcodes or rewrites the media.
 
+    `timeout_seconds` left `None` takes the configured deadline from `app.limits`, resolved
+    here rather than bound as a default argument — a default is evaluated once at import and
+    would freeze whatever the environment happened to say then.
+
     Raises `NvidiaLocalFileError` if our own file cannot be read, and a
     `NvidiaProviderError` subclass for every provider-side outcome.
     """
+    if timeout_seconds is None:
+        timeout_seconds = nvidia_svd_timeout_seconds()
+
     resolved_key, resolved_function_id = _load_credentials(api_key, function_id)
 
     metadata = (

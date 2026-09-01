@@ -98,6 +98,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    # What this container may take from the host (R1-T3). The API serves requests and stages
+    # uploads; it transcodes nothing and infers nothing, so it is the modest one of the pair
+    # — FastAPI, SQLAlchemy and an upload buffered to disk, not a model in memory.
+    #
+    # `deploy.resources.limits` is honoured by `docker compose up` on Compose v2, so these
+    # apply to an ordinary local stack and not only to Swarm. Below them the container is
+    # killed by the kernel's OOM killer rather than the host being driven into swap, which is
+    # the whole point: a leak should cost one container and not the machine PostgreSQL and
+    # MinIO are also on.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
 
   # Same image as the API, different entrypoint: one codebase, and the queue is the only
   # thing the two processes say to each other. It publishes no port and serves no
@@ -128,11 +142,47 @@ services:
       # model, and its turns are what the Active Speaker NIM is given to match faces
       # against. Unset, the active-speaker signal fails and the other two are unaffected.
       HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
+      # How long each external operation may run before it is stopped and the job closed as
+      # failed (R1-T3). Every one of them has a default in `app/limits.py` equal to the value
+      # that was hardcoded before, so an unset variable changes nothing; they are listed here
+      # without defaults so `docker compose config` shows an operator the full set of knobs
+      # and a value set on the host reaches the process that uses it.
+      #
+      # The transcode bound is the one worth revisiting per deployment: it scales with the
+      # machine rather than with the service, and a host that gives this container one core
+      # will need longer for the same 4K source than the one the 900 s default was measured
+      # on. The CPU limit below and this timeout are therefore tuned together, or a tighter
+      # `cpus` quietly turns working uploads into failed jobs.
+      DEEPGUARD_FFMPEG_TIMEOUT_SECONDS:
+      DEEPGUARD_AUDIO_EXTRACTION_TIMEOUT_SECONDS:
+      DEEPGUARD_FFPROBE_TIMEOUT_SECONDS:
+      DEEPGUARD_NVIDIA_SVD_TIMEOUT_SECONDS:
+      DEEPGUARD_NVIDIA_ASD_TIMEOUT_SECONDS:
+      DEEPGUARD_DOWNLOAD_SOCKET_TIMEOUT_SECONDS:
     depends_on:
       postgres:
         condition: service_healthy
       minio:
         condition: service_healthy
+    # The heavy container, and the reason this task exists (R1-T3). It runs ffmpeg over 4K
+    # sources and holds a pyannote pipeline — torch, and the diarization model's weights — in
+    # memory for the length of a job, so it is the one process here that can plausibly eat a
+    # host.
+    #
+    # 4 GB against the API's 2 GB is sized for that pipeline plus one transcode, with room
+    # for the ONNX runtime AASIST runs on. It is a ceiling rather than a reservation: a job
+    # that stays inside it sees no difference, and one that does not is OOM-killed as this
+    # container, which the lease in `app/worker.py` then recovers as a stale claim — a failed
+    # analysis with a reason, instead of a host that started swapping.
+    #
+    # `cpus` is a quota, not a pinning, and it bounds ffmpeg specifically: libx264 will use
+    # every core it is offered, and an unbounded transcode is what starves PostgreSQL on a
+    # single-host deployment. Read it together with `DEEPGUARD_FFMPEG_TIMEOUT_SECONDS` above.
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4G
 
   web:
     build:
@@ -155,6 +205,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    # The lightest of the three (R1-T3). Next.js server-side rendering forwarding calls to
+    # the API: no media ever passes through this process, so 1 GB is generous and exists to
+    # bound a leak rather than to fit the workload.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
 
 volumes:
   postgres_data:
