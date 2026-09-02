@@ -28,11 +28,17 @@ format can be added the day a dataset actually arrives in it (AGENTS.md, YAGNI).
 
 **Paths resolve against the manifest, not the working directory.** A corpus directory
 is therefore relocatable and a run reproduces from anywhere on the machine.
+
+**The manifest is read exactly once.** `load_manifest` returns a `Dataset` carrying the
+clips *and* the SHA-256 of the bytes they were parsed from, because a fingerprint taken
+in a second read describes whatever the file happened to contain at that moment rather
+than the ground truth the run actually measured.
 """
 
 import csv
 import hashlib
-from dataclasses import dataclass
+import io
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # The ground-truth vocabulary, and the single place where a label becomes a binary
@@ -66,8 +72,23 @@ class Clip:
         return self.label != GENUINE_LABEL
 
 
-def load_manifest(manifest_path: Path) -> list[Clip]:
-    """Read and validate a manifest into clips, ordered deterministically by `clip_id`.
+@dataclass(frozen=True)
+class Dataset:
+    """Clips, together with the identity of the manifest they were parsed from.
+
+    The two travel as one value on purpose. `manifest_sha256` is the digest of the
+    exact bytes `clips` came from, captured in the same read, so a caller cannot
+    accidentally pair records with the fingerprint of a manifest that has since been
+    edited. That pairing is the whole traceability claim a `results.json` makes.
+    """
+
+    clips: list[Clip] = field(default_factory=list)
+    manifest_path: Path = Path()
+    manifest_sha256: str = ""
+
+
+def load_manifest(manifest_path: Path) -> Dataset:
+    """Read and validate a manifest into a `Dataset`, ordered by `clip_id`.
 
     Raises `ManifestError` — with every problem listed — if the manifest is missing,
     malformed, empty, carries an unknown label, repeats a `clip_id`, or points at media
@@ -79,17 +100,33 @@ def load_manifest(manifest_path: Path) -> list[Clip]:
         raise ManifestError(f"manifest not found: {manifest_path}")
 
     base = manifest_path.parent
-    with manifest_path.open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames is None:
-            raise ManifestError(f"manifest is empty: {manifest_path}")
-        missing = {"path", "label"} - set(reader.fieldnames)
-        if missing:
-            raise ManifestError(
-                f"manifest {manifest_path} is missing required column(s): "
-                f"{', '.join(sorted(missing))}"
-            )
-        rows = list(reader)
+
+    # One read, and both the records and their fingerprint derive from it. Hashing the
+    # file separately -- before the run or, worse, after it -- allows a manifest edited
+    # mid-run to produce clips parsed from one ground truth stamped with the digest of
+    # another, which is precisely the traceability the digest is there to provide.
+    raw = manifest_path.read_bytes()
+    fingerprint = hashlib.sha256(raw).hexdigest()
+
+    # `utf-8-sig` strips a leading byte-order mark, and is plain UTF-8 when there is
+    # none. Spreadsheet exports are the expected source of these manifests and Excel's
+    # "CSV UTF-8" writes a BOM, which would otherwise glue itself to the *first* column
+    # name: a BOM'd `path` column reads as missing, and a BOM'd `clip_id` column reads
+    # as absent, silently demoting every clip_id to its path and changing both the
+    # record ordering and any clip_id-derived score. Only the parse tolerates the BOM;
+    # the fingerprint above hashes the raw bytes, so two encodings of the same rows
+    # remain distinguishable in the artifact.
+    handle = io.StringIO(raw.decode("utf-8-sig"), newline="")
+    reader = csv.DictReader(handle)
+    if reader.fieldnames is None:
+        raise ManifestError(f"manifest is empty: {manifest_path}")
+    missing = {"path", "label"} - set(reader.fieldnames)
+    if missing:
+        raise ManifestError(
+            f"manifest {manifest_path} is missing required column(s): "
+            f"{', '.join(sorted(missing))}"
+        )
+    rows = list(reader)
 
     problems: list[str] = []
     clips: list[Clip] = []
@@ -139,7 +176,11 @@ def load_manifest(manifest_path: Path) -> list[Clip]:
     if not clips:
         raise ManifestError(f"manifest describes no clips: {manifest_path}")
 
-    return sorted(clips, key=lambda clip: clip.clip_id)
+    return Dataset(
+        clips=sorted(clips, key=lambda clip: clip.clip_id),
+        manifest_path=manifest_path,
+        manifest_sha256=fingerprint,
+    )
 
 
 def _resolve(base: Path, raw: Path | str) -> Path:
@@ -157,16 +198,3 @@ def label_counts(clips: list[Clip]) -> dict[str, int]:
         counts[clip.label] = counts.get(clip.label, 0) + 1
     return dict(sorted(counts.items()))
 
-
-def manifest_fingerprint(manifest_path: Path) -> str:
-    """SHA-256 of the manifest bytes.
-
-    Recorded in every artifact so a result set names the exact ground truth it was
-    measured against. Labels get corrected, rows get added, and without this a
-    `results.json` from last month is a number with no corpus attached.
-    """
-    digest = hashlib.sha256()
-    with Path(manifest_path).open("rb") as handle:
-        for block in iter(lambda: handle.read(65536), b""):
-            digest.update(block)
-    return digest.hexdigest()

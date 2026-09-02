@@ -1,5 +1,6 @@
 """The run loop and the artifacts it writes, including a model that fails mid-corpus."""
 
+import hashlib
 import json
 from datetime import datetime, timezone
 
@@ -13,7 +14,7 @@ from benchmark.cli import (
     resolve_model,
     run_benchmark,
 )
-from benchmark.dataset import Clip
+from benchmark.dataset import Clip, load_manifest
 
 
 def make_clip(clip_id, label, tmp_path):
@@ -83,19 +84,19 @@ def test_run_benchmark_records_a_score_and_a_latency_per_clip(tmp_path):
 
 
 def test_a_clip_the_model_crashes_on_is_recorded_and_excluded(tmp_path):
-    clips, manifest = build_corpus(tmp_path)
+    _, manifest = build_corpus(tmp_path)
+    dataset = load_manifest(manifest)
 
     def flaky(clip):
         if clip.clip_id == "clip_d":
             raise RuntimeError("decoder blew up")
         return perfect_model(clip)
 
-    records, latencies = run_benchmark(clips, flaky, threshold=0.5)
+    records, latencies = run_benchmark(dataset.clips, flaky, threshold=0.5)
     results = build_results(
-        manifest_path=manifest,
+        dataset=dataset,
         model_reference="flaky",
         threshold=0.5,
-        clips=clips,
         records=records,
         latencies_ms=latencies,
         baseline_rss_mb=10.0,
@@ -231,3 +232,50 @@ def test_main_reports_a_broken_manifest_and_writes_nothing(tmp_path, capsys):
     assert exit_code == 1
     assert "media file not found" in capsys.readouterr().err
     assert not output.exists()
+
+
+def test_fingerprint_is_the_manifest_that_produced_the_records(tmp_path):
+    """A manifest edited mid-run must not relabel the artifact with the new bytes.
+
+    The digest exists so a result set names the ground truth it was measured against.
+    If it were taken after scoring, a manifest rewritten while the model was running
+    would stamp records parsed from the *old* corpus with the digest of the *new* one —
+    an artifact pointing at a file that never produced it, which is worse than no
+    fingerprint at all because it looks authoritative.
+    """
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for name in ("a.mp4", "b.mp4"):
+        (corpus / name).write_bytes(b"not really media")
+    manifest = corpus / "manifest.csv"
+    original_bytes = b"clip_id,path,label\na,a.mp4,real\n"
+    manifest.write_bytes(original_bytes)
+
+    ingested_sha = hashlib.sha256(original_bytes).hexdigest()
+
+    def rewrite_manifest_then_score(clip):
+        # The edit lands after ingestion and before the artifact is assembled, which is
+        # the window a post-run hash would read from.
+        manifest.write_bytes(b"clip_id,path,label\na,a.mp4,real\nb,b.mp4,synthetic\n")
+        return 0.9
+
+    dataset = load_manifest(manifest)
+    records, latencies = run_benchmark(
+        dataset.clips, rewrite_manifest_then_score, 0.5
+    )
+    results = build_results(
+        dataset=dataset,
+        model_reference="test",
+        threshold=0.5,
+        records=records,
+        latencies_ms=latencies,
+        baseline_rss_mb=1.0,
+        peak_mb=2.0,
+        started_at=datetime(2026, 9, 2, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 9, 2, tzinfo=timezone.utc),
+    )
+
+    assert manifest.read_bytes() != original_bytes  # the file really did change
+    assert results["dataset"]["manifest_sha256"] == ingested_sha
+    assert results["dataset"]["clip_count"] == 1
+    assert [c["clip_id"] for c in results["clips"]] == ["a"]

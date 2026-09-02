@@ -47,10 +47,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from benchmark import metrics
 from benchmark.dataset import (
     Clip,
+    Dataset,
     ManifestError,
     label_counts,
     load_manifest,
-    manifest_fingerprint,
 )
 
 # Bumped when the shape of `results.json` changes, so a later reader can tell whether it
@@ -194,10 +194,9 @@ def per_label_breakdown(records: list[dict]) -> dict[str, dict]:
 
 def build_results(
     *,
-    manifest_path: Path,
+    dataset: Dataset,
     model_reference: str,
     threshold: float,
-    clips: list[Clip],
     records: list[dict],
     latencies_ms: list[float],
     baseline_rss_mb: float,
@@ -206,6 +205,7 @@ def build_results(
     finished_at: datetime,
 ) -> dict:
     """Assemble the `results.json` document."""
+    clips = dataset.clips
     scored = [r for r in records if r["status"] == "ok"]
     failed = [r for r in records if r["status"] != "ok"]
     matrix = metrics.confusion_matrix(
@@ -221,8 +221,10 @@ def build_results(
             "duration_s": (finished_at - started_at).total_seconds(),
         },
         "dataset": {
-            "manifest": str(manifest_path),
-            "manifest_sha256": manifest_fingerprint(manifest_path),
+            "manifest": str(dataset.manifest_path),
+            # Captured when the manifest was read, not recomputed here: this digest
+            # names the bytes these very records came from.
+            "manifest_sha256": dataset.manifest_sha256,
             "clip_count": len(clips),
             "label_counts": label_counts(clips),
             "genuine": sum(1 for c in clips if not c.is_manipulated),
@@ -375,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        clips = load_manifest(args.manifest)
+        dataset = load_manifest(args.manifest)
     except ManifestError as error:
         print(error, file=sys.stderr)
         return 1
@@ -386,19 +388,18 @@ def main(argv: list[str] | None = None) -> int:
         print(error, file=sys.stderr)
         return 1
 
-    print(f"{len(clips)} clip(s) from {args.manifest}, model {args.model}")
+    print(f"{len(dataset.clips)} clip(s) from {args.manifest}, model {args.model}")
 
     baseline_rss_mb = peak_rss_mb()
     started_at = datetime.now(timezone.utc)
-    records, latencies_ms = run_benchmark(clips, model, args.threshold)
+    records, latencies_ms = run_benchmark(dataset.clips, model, args.threshold)
     finished_at = datetime.now(timezone.utc)
     peak_mb = peak_rss_mb()
 
     results = build_results(
-        manifest_path=args.manifest,
+        dataset=dataset,
         model_reference=args.model,
         threshold=args.threshold,
-        clips=clips,
         records=records,
         latencies_ms=latencies_ms,
         baseline_rss_mb=baseline_rss_mb,
