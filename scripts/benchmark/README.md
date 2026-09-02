@@ -62,6 +62,49 @@ PYTHONPATH=. python3 scripts/benchmark/cli.py --model my_detector:detect ...
 `mock` is the built-in stand-in: a deterministic, label-blind score derived from the
 clip id. It exists to exercise the harness and its accuracy means nothing.
 
+### The face-manipulation candidate (R3)
+
+`benchmark.models.face_manipulation:detect` wraps Selim Seferbekov's DFDC-winning
+EfficientNet-B7, republished with immutable digests by Facetorch. It samples eight
+frames, crops the face YuNet finds in each, and returns the mean probability of
+manipulation. Both weights are pinned by revision and verified by SHA-256 at load, so a
+run's numbers trace to exact bytes; the module docstring carries the provenance table.
+
+The exported artifact is published for torch >=2.11,<2.12 and the wrapper refuses any
+other version, so it runs from its own virtualenv rather than against whatever torch
+the machine happens to carry:
+
+```bash
+python3 -m venv ~/.venvs/deepguard-benchmark
+~/.venvs/deepguard-benchmark/bin/pip install \
+    --index-url https://download.pytorch.org/whl/cpu "torch==2.11.*"
+~/.venvs/deepguard-benchmark/bin/pip install numpy opencv-python-headless
+```
+
+Fetch the pinned weights once. They live outside the repository — `$DEEPGUARD_FACE_MODEL_DIR`,
+default `~/.cache/deepguard/face_manipulation` — because 273 MiB of weights do not
+belong in git:
+
+```bash
+DIR=~/.cache/deepguard/face_manipulation
+REV=4acc494f37eb63d7457166eff2acb45c5b04b9a6
+mkdir -p "$DIR/facetorch-b7-$REV" "$DIR/yunet"
+curl -L -o "$DIR/facetorch-b7-$REV/model-torch2.11.pt2" \
+  "https://huggingface.co/tomas-gajarsky/facetorch-deepfake-efficientnet-b7/resolve/$REV/model-torch2.11.pt2"
+curl -L -o "$DIR/yunet/face_detection_yunet_2023mar.onnx" \
+  "https://media.githubusercontent.com/media/opencv/opencv_zoo/47534e27c9851bb1128ccc0102f1145e27f23f98/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+```
+
+```bash
+~/.venvs/deepguard-benchmark/bin/python scripts/benchmark/cli.py \
+    --manifest ../deepguard-corpus/ff++_c23_test_r3t1/manifest.csv \
+    --model benchmark.models.face_manipulation:detect \
+    --output-dir ../deepguard-corpus/runs/2026-09-02-face-b7
+```
+
+`DEEPGUARD_FACE_FRAMES` sets the number of sampled frames (default 8). A clip in which
+no frame yields a face is raised as an error and excluded, not scored as genuine.
+
 A model that raises on a clip does not end the run. That clip is recorded with its
 error, excluded from the confusion matrix and from the latency figures, and counted in
 the artifact — a crash is not scored as a wrong answer.
