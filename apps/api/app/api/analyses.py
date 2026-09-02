@@ -32,6 +32,8 @@ from app.detection import (
     ACTIVE_SPEAKER_SIGNAL,
     AUDIO_AUTHENTICITY_SIGNAL,
     C2PA_PROVIDER,
+    EFFICIENTNET_B7_PROVIDER,
+    FACE_MANIPULATION_SIGNAL,
     NVIDIA_PROVIDER,
     PROVENANCE_SIGNAL,
     SYNTHETIC_VIDEO_SIGNAL,
@@ -269,6 +271,47 @@ class AudioAuthenticitySignal(BaseModel):
     windows: list[AudioWindowEvidence]
 
 
+class FaceManipulationSignal(BaseModel):
+    """The persisted local face-manipulation signal, as the dashboard may see it.
+
+    A raw reading and nothing else. `score` is the probability EfficientNet-B7 emitted for
+    this clip, on the model's own scale, passed through exactly as stored — not rescaled, not
+    banded, and not compared against anything. R3-T1 benchmarked that model at an operating
+    point of `0.8` over one corpus; that figure is a property of the benchmark, it is not a
+    production threshold, and it appears nowhere in this payload or in what renders it.
+
+    This signal is independent forensic evidence and is not eligible for risk in R3. Nothing
+    here relates it to `risk_level`, which is decided from NVIDIA's synthetic-video signal
+    alone under a named ruleset (`app.risk_engine`).
+
+    `score` is null for every non-SUCCESS status, including the ordinary case of a clip with
+    no face in it: the classifier was never asked, so there is no number, and `0.0` would be a
+    fabricated answer about media nothing looked at. The four states a reader has to keep
+    apart are the same four the other signals keep apart — no signal at all, a reading that
+    could not run, a reading that ran, and the figure it produced.
+
+    The stored metadata document is not passed through as it stands; on a failure it holds the
+    exception's class name, which is internal diagnostic detail.
+    """
+
+    provider: str
+    signal_type: str
+    status: str
+    # The model's own probability for the clip, exactly as stored. Null unless the reading
+    # succeeded.
+    score: float | None
+    # The repository and revision of the classifier that produced it. A different revision is
+    # a different measurement, not a refinement of this one.
+    provider_version: str | None
+    # What the sampling covered: how many frames were asked for, how many decoded, and how
+    # many yielded a face the classifier was actually given. All absent unless the reading
+    # succeeded and recorded them — without them, a score taken over one usable frame would
+    # read exactly like one taken over eight.
+    frames_requested: int | None
+    frames_decoded: int | None
+    frames_scored: int | None
+
+
 class ProvenanceSignal(BaseModel):
     """The persisted C2PA provenance signal, as the dashboard may see it.
 
@@ -390,6 +433,10 @@ class AnalysisSummary(BaseModel):
     # the local checkpoint was wired in. Not the same as a reading that ran and persisted no
     # windows, and not the same as one that could not run.
     audio_authenticity: AudioAuthenticitySignal | None
+    # Null for an analysis carrying no face-manipulation signal — everything stored before
+    # R3-T2 wired the local classifier in. Not the same as a reading that could not run, and
+    # not the same as a clip the classifier found no face in.
+    face_manipulation: FaceManipulationSignal | None
 
 
 @dataclass(frozen=True)
@@ -970,6 +1017,30 @@ def audio_authenticity_signal(
     )
 
 
+def face_manipulation_signal(row: Any) -> FaceManipulationSignal | None:
+    """Turn the joined face-manipulation columns into the response's signal, or nothing.
+
+    Same rule as the other four joins: every column is null when an analysis carries no such
+    signal, and `status` is the one a real row cannot have null.
+
+    The score is read off the column and handed on untouched. Nothing here compares it to a
+    threshold, derives a band from it or relates it to the analysis's risk level.
+    """
+    if row.face_status is None:
+        return None
+
+    return FaceManipulationSignal(
+        provider=row.face_provider,
+        signal_type=row.face_signal_type,
+        status=row.face_status,
+        score=row.face_score,
+        provider_version=row.face_provider_version,
+        frames_requested=signal_figure(row.face_metadata, "frames_requested", int),
+        frames_decoded=signal_figure(row.face_metadata, "frames_decoded", int),
+        frames_scored=signal_figure(row.face_metadata, "frames_scored", int),
+    )
+
+
 def audio_windows(
     session: Session, signal_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, list[AudioWindowEvidence]]:
@@ -1138,6 +1209,7 @@ def analysis_evidence_select():
     provenance = aliased(AnalysisSignal)
     active_speaker = aliased(AnalysisSignal)
     audio = aliased(AnalysisSignal)
+    face = aliased(AnalysisSignal)
 
     return (
         select(
@@ -1191,6 +1263,12 @@ def analysis_evidence_select():
                 audio.status.label("audio_status"),
                 audio.provider_version.label("audio_provider_version"),
                 audio.signal_metadata.label("audio_metadata"),
+                face.provider.label("face_provider"),
+                face.signal_type.label("face_signal_type"),
+                face.status.label("face_status"),
+                face.score.label("face_score"),
+                face.provider_version.label("face_provider_version"),
+                face.signal_metadata.label("face_metadata"),
             )
             .join(MediaFile, MediaFile.analysis_id == Analysis.id)
             .outerjoin(
@@ -1223,6 +1301,14 @@ def analysis_evidence_select():
                 audio.analysis_id == Analysis.id,
                 audio.provider == AASIST_PROVIDER,
                 audio.signal_type == AUDIO_AUTHENTICITY_SIGNAL,
+            ),
+        )
+        .outerjoin(
+            face,
+            and_(
+                face.analysis_id == Analysis.id,
+                face.provider == EFFICIENTNET_B7_PROVIDER,
+                face.signal_type == FACE_MANIPULATION_SIGNAL,
             ),
         )
     )
@@ -1284,6 +1370,10 @@ def analysis_payloads(session: Session, rows: list[Any]) -> list[AnalysisSummary
             audio_authenticity=audio_authenticity_signal(
                 row, windows.get(row.audio_id, [])
             ),
+            # No fourth evidence statement: R3-T1's contract is one clip to one score, so
+            # this signal owns no segment rows and everything it carries is on the joined
+            # row already.
+            face_manipulation=face_manipulation_signal(row),
         )
         for row in rows
     ]

@@ -194,6 +194,18 @@ services:
       DEEPGUARD_NVIDIA_SVD_TIMEOUT_SECONDS:
       DEEPGUARD_NVIDIA_ASD_TIMEOUT_SECONDS:
       DEEPGUARD_DOWNLOAD_SOCKET_TIMEOUT_SECONDS:
+      # How many frames the face-manipulation classifier samples per clip (R3-T2). Eight is
+      # what R3-T1 benchmarked at and what `app/face_detector.py` defaults to, so an unset
+      # variable changes nothing; it is listed here because it is the one knob that trades
+      # this detector's coverage against its runtime, and the value actually used is recorded
+      # on every signal rather than inferred from this file.
+      #
+      # There is deliberately no timeout beside the ones above. Every bound there guards an
+      # external operation that can be stopped cleanly — a subprocess, a socket, an RPC — and
+      # this is in-process inference holding a model in memory, which `app/limits.py` explains
+      # is exactly what a deadline here could not close cleanly. The lease in `app/worker.py`
+      # is what bounds a job that stops making progress.
+      DEEPGUARD_FACE_FRAMES:
     depends_on:
       postgres:
         condition: service_healthy
@@ -204,11 +216,18 @@ services:
     # memory for the length of a job, so it is the one process here that can plausibly eat a
     # host.
     #
-    # 4 GB against the API's 2 GB is sized for that pipeline plus one transcode, with room
-    # for the ONNX runtime AASIST runs on. It is a ceiling rather than a reservation: a job
-    # that stays inside it sees no difference, and one that does not is OOM-killed as this
-    # container, which the lease in `app/worker.py` then recovers as a stale claim — a failed
-    # analysis with a reason, instead of a host that started swapping.
+    # 6 GB against the API's 2 GB is sized for that pipeline plus one transcode, with room
+    # for the ONNX runtime AASIST runs on and for the EfficientNet-B7 the face-manipulation
+    # signal loads (R3-T2). It was 4 GB before that detector was wired in, and the extra 2 GB
+    # is the measurement rather than a round number: the classifier peaks at ~1.1 GB resident
+    # in this container for a default eight-frame batch, and the artifact is dropped again
+    # between jobs — `app/face_detector.py` is stateless on purpose — so the ceiling has to
+    # cover the peak without the process holding it.
+    #
+    # It is a ceiling rather than a reservation: a job that stays inside it sees no difference,
+    # and one that does not is OOM-killed as this container, which the lease in
+    # `app/worker.py` then recovers as a stale claim — a failed analysis with a reason,
+    # instead of a host that started swapping.
     #
     # `cpus` is a quota, not a pinning, and it bounds ffmpeg specifically: libx264 will use
     # every core it is offered, and an unbounded transcode is what starves PostgreSQL on a
@@ -217,7 +236,7 @@ services:
       resources:
         limits:
           cpus: "4.0"
-          memory: 4G
+          memory: 6G
 
   web:
     build:

@@ -37,6 +37,12 @@ from app.audio_detector import (
     WindowEvidence,
 )
 from app.c2pa_extractor import C2paEvidence
+from app.face_detector import (
+    FaceDetectorModelUnavailable,
+    FaceDetectorNoFaceFound,
+    FaceManipulationEvidence,
+    FrameScore,
+)
 from app.api.analyses import active_analyses
 from app.auth import generate_api_key
 from app.db.models import (
@@ -78,6 +84,27 @@ AASIST_REVISION = "16774d458d86d2a021ae31646c1bf66a5331b53e"
 AASIST_SHA256 = "130e536266b7c537f9a13029e1612a9f392fd1cc827783683b6d1c062a3db5e1"
 AASIST_WINDOW_SAMPLES = 64600
 AASIST_SAMPLE_RATE = 16000
+
+# The pinned face-manipulation artifacts, restated for the same reason the AASIST ones are:
+# a classifier or locator revision changed without anyone noticing must show up here as a
+# failing test rather than as a silently different measurement.
+FACETORCH_REPOSITORY = "tomas-gajarsky/facetorch-deepfake-efficientnet-b7"
+FACETORCH_REVISION = "4acc494f37eb63d7457166eff2acb45c5b04b9a6"
+FACETORCH_SHA256 = "97b49a70174c0d4f72d9d510d817bdc49a907af9af0242a6a1ba934a7cc9e4b7"
+YUNET_REPOSITORY = "opencv/opencv_zoo"
+YUNET_REVISION = "47534e27c9851bb1128ccc0102f1145e27f23f98"
+YUNET_SHA256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+FACETORCH_CHECKPOINT = f"{FACETORCH_REPOSITORY}@{FACETORCH_REVISION}"
+
+# The classifier's figure for the scripted clip. Above `T_HIGH` on purpose: the analyses
+# below must still classify on NVIDIA's score alone, and a face score that would be HIGH if
+# anything read it is what makes that demonstration worth anything.
+FACE_SCORE = 0.9931
+
+# The operating point R3-T1 ran its confusion matrix at. Named here only so the tests can
+# assert it never reaches production evidence or a decision: it is a property of that
+# benchmark, not a threshold this pipeline holds, and calibrating one is R4's work.
+R3_T1_BENCHMARK_THRESHOLD = 0.8
 # The rate every queued upload below is probed at, and therefore the rate NVIDIA's frame
 # indices are read against.
 QUEUED_FRAME_RATE = 30.0
@@ -429,6 +456,55 @@ def fake_aasist(monkeypatch):
 
     recorder = Recorder()
     monkeypatch.setattr(detection, "analyze_audio_authenticity", recorder.analyze)
+    return recorder
+
+
+@pytest.fixture(autouse=True)
+def fake_face_detector(monkeypatch):
+    """Stand in for the local EfficientNet-B7, so no test here loads torch or 273 MiB of weights.
+
+    One clip, one score — R3-T1's contract — over a scripted eight-frame sample where two
+    frames yielded no face, which is the ordinary shape of a real reading and keeps the three
+    frame counts from being interchangeable in the assertions below.
+    """
+
+    class Recorder:
+        def __init__(self):
+            self.error = None
+            self.video_paths = []
+            self.analysed_bytes = []
+            self.evidence = FaceManipulationEvidence(
+                classifier_repository=FACETORCH_REPOSITORY,
+                classifier_revision=FACETORCH_REVISION,
+                classifier_sha256=FACETORCH_SHA256,
+                locator_repository=YUNET_REPOSITORY,
+                locator_revision=YUNET_REVISION,
+                locator_sha256=YUNET_SHA256,
+                torch_version="2.13.0+cpu",
+                input_size=380,
+                crop_margin=1 / 3,
+                face_score_threshold=0.6,
+                frames_requested=8,
+                frames_decoded=8,
+                frames_scored=6,
+                score=FACE_SCORE,
+                frame_scores=tuple(
+                    FrameScore(frame_index=index, probability=probability)
+                    for index, probability in enumerate([0.91, 0.88, 0.95, 0.72, 0.99, 0.83])
+                ),
+            )
+
+        def analyze(self, video_path, **kwargs):
+            # The bytes, not only the path: the artifact is a temp file that has been
+            # cleaned up by the time any assertion below runs.
+            self.video_paths.append(Path(video_path))
+            self.analysed_bytes.append(Path(video_path).read_bytes())
+            if self.error:
+                raise self.error
+            return self.evidence
+
+    recorder = Recorder()
+    monkeypatch.setattr(detection, "analyze_face_manipulation", recorder.analyze)
     return recorder
 
 
@@ -785,6 +861,7 @@ def test_both_evidence_sources_are_persisted_as_independent_signals(queue, fake_
     assert sorted(signals) == [
         "active_speaker",
         "audio_authenticity",
+        "face_manipulation",
         "provenance",
         "synthetic_video",
     ]
@@ -1198,10 +1275,13 @@ def test_audio_extraction_that_ran_out_of_time_fails_the_job(
     assert read_analysis(analysis_id).status == "failed"
 
     signals = read_signals(analysis_id)
-    # But the two readings taken before the extraction was attempted are complete and
-    # independent of it, so they are kept rather than discarded with the job. Only the two
-    # signals the timeout actually prevented are absent.
-    assert set(signals) == {"provenance", "synthetic_video"}
+    # But the readings taken before the extraction was attempted are complete and independent
+    # of it, so they are kept rather than discarded with the job. Only the two signals the
+    # timeout actually prevented are absent.
+    #
+    # The face-manipulation reading is among the survivors because it runs before the audio
+    # chain and needs nothing from it — which is the whole reason it was placed there.
+    assert set(signals) == {"provenance", "synthetic_video", "face_manipulation"}
     assert "active_speaker" not in signals
     assert "audio_authenticity" not in signals
 
@@ -1321,7 +1401,7 @@ def test_a_derivative_upload_failure_leaves_nothing_on_disk(
 
 
 @pytest.mark.integration
-def test_all_four_evidence_sources_are_persisted_as_independent_signals(
+def test_all_five_evidence_sources_are_persisted_as_independent_signals(
     queue, fake_storage
 ):
     analysis_id, job_id = queue()
@@ -1335,9 +1415,42 @@ def test_all_four_evidence_sources_are_persisted_as_independent_signals(
     assert sorted(signals) == [
         "active_speaker",
         "audio_authenticity",
+        "face_manipulation",
         "provenance",
         "synthetic_video",
     ]
+
+    face = signals["face_manipulation"]
+    # A fifth row, not a field on somebody else's. It reads the same artifact NVIDIA's
+    # synthetic-video detector does and shares nothing else with it: a different provider, a
+    # different question, a different unit, its own status and its own id.
+    assert face.provider == "efficientnet-b7"
+    assert face.id != signals["synthetic_video"].id
+    assert face.status == "SUCCESS"
+    assert face.provider_version == FACETORCH_CHECKPOINT
+    # The model's own probability, stored untransformed.
+    assert face.score == FACE_SCORE
+    # And no verdict beside it. Risk is a decision about the analysis under a named ruleset,
+    # never a label per provider.
+    assert face.risk_level is None
+    # It owns no segments: R3-T1's contract is one clip to one score, and the per-frame
+    # probabilities the mean was taken over are metadata that documents the score rather
+    # than a timeline of detections.
+    assert read_segments(face.id) == []
+    assert face.signal_metadata["classifier_revision"] == FACETORCH_REVISION
+    assert face.signal_metadata["classifier_sha256"] == FACETORCH_SHA256
+    assert face.signal_metadata["locator_revision"] == YUNET_REVISION
+    assert face.signal_metadata["frames_requested"] == 8
+    assert face.signal_metadata["frames_decoded"] == 8
+    assert face.signal_metadata["frames_scored"] == 6
+    assert len(face.signal_metadata["frame_scores"]) == 6
+    # The R3-T1 benchmark operating point is nowhere in the stored evidence, under any name.
+    # It was a property of that measurement over 40 clips of one corpus, and persisting it
+    # beside the score is how it would quietly become the production threshold this task
+    # exists to not have. `face_score_threshold` is the locator's confidence floor — how
+    # sure YuNet has to be that it found a face — and is unrelated to the classifier's scale.
+    assert R3_T1_BENCHMARK_THRESHOLD not in face.signal_metadata.values()
+    assert face.signal_metadata["face_score_threshold"] == 0.6
 
     speaker = signals["active_speaker"]
     # NVIDIA answers two questions about one analysis, and they are two rows: the provider
@@ -1815,6 +1928,168 @@ def test_a_truncated_audio_sweep_says_so_on_the_signal(queue, fake_storage, fake
 
 
 @pytest.mark.integration
+def test_a_clip_with_no_face_is_a_failed_signal_and_not_a_score(
+    queue, fake_storage, fake_face_detector
+):
+    """The abstention, persisted as one.
+
+    A clip the locator found no face in is an ordinary property of an upload — a landscape,
+    a screen recording, a wide crowd shot. The classifier was never asked, so the row carries
+    no number: a low score here would be a fabricated finding about media nothing looked at,
+    and it would read as evidence of authenticity.
+    """
+    analysis_id, job_id = queue()
+    fake_face_detector.error = FaceDetectorNoFaceFound("no face in any sampled frame")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+    face = signals["face_manipulation"]
+
+    assert face.status == "FAILED"
+    assert face.score is None
+    assert face.provider_version is None
+    # The failure kind and nothing else — never the message, which quotes the local path.
+    assert face.signal_metadata == {"error": "FaceDetectorNoFaceFound"}
+
+    # And the job still finished, with every other reading intact.
+    assert read_job(job_id).status == "completed"
+    assert signals["synthetic_video"].status == "SUCCESS"
+    assert signals["provenance"].status == "SUCCESS"
+    assert signals["audio_authenticity"].status == "SUCCESS"
+
+
+@pytest.mark.integration
+def test_a_broken_face_classifier_costs_only_the_face_signal(
+    queue, fake_storage, fake_face_detector
+):
+    """One detector failing must never destroy the analysis (AGENTS.md, error-handling rule)."""
+    analysis_id, job_id = queue()
+    fake_face_detector.error = FaceDetectorModelUnavailable("weights are missing")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert signals["face_manipulation"].status == "FAILED"
+    assert signals["face_manipulation"].signal_metadata == {
+        "error": "FaceDetectorModelUnavailable"
+    }
+    assert signals["synthetic_video"].status == "SUCCESS"
+    assert signals["synthetic_video"].score == NVIDIA_PROBABILITY
+    assert signals["audio_authenticity"].status == "SUCCESS"
+    assert signals["provenance"].status == "SUCCESS"
+
+
+@pytest.mark.integration
+def test_the_face_classifier_reads_the_same_artifact_the_video_detector_does(
+    queue, fake_storage, fake_face_detector, fake_nvidia
+):
+    """One preparation serves them both, and neither transcodes a second copy for itself."""
+    queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    assert fake_face_detector.analysed_bytes == [ORIGINAL_BYTES]
+    # The same artifact NVIDIA was handed, not a second copy prepared for this detector.
+    assert fake_face_detector.analysed_bytes == fake_nvidia.analysed_bytes
+
+
+@pytest.mark.integration
+def test_the_face_score_does_not_move_the_risk_decision(queue, fake_storage, fake_nvidia):
+    """The R3 constraint, at the level the decision is actually taken.
+
+    NVIDIA's score is held at a value that bands MEDIUM while the face classifier reports
+    0.9931 — comfortably above `T_HIGH`, the boundary the calibrated signal is banded on. The
+    analysis must still be MEDIUM by `R200`: the face score is raw evidence in R3, the engine
+    reads one provider and one signal type, and calibrating this one is R4's work.
+    """
+    analysis_id, _ = queue()
+    fake_nvidia.probability = 0.4646
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    analysis = read_analysis(analysis_id)
+    signals = read_signals(analysis_id)
+
+    assert signals["face_manipulation"].score == FACE_SCORE
+    assert signals["face_manipulation"].score > 0.98
+    assert analysis.risk_level == "MEDIUM"
+    assert analysis.risk_rule_id == "R200"
+
+
+@pytest.mark.integration
+def test_media_that_cannot_be_transcoded_leaves_no_face_signal_at_all(
+    queue, fake_storage, fake_ffmpeg, fake_face_detector
+):
+    """A detector that was never invoked leaves no row — not a `FAILED` one.
+
+    The two states must not be merged. A `FAILED` face-manipulation signal is a finding:
+    the classifier ran and could not produce evidence, which is what a missing checkpoint,
+    an unverified torch or a clip with no face in it each record. Nothing of the sort
+    happened here — the transcode raised before the call that runs the classifier was ever
+    reached — so writing a failure would be recording a finding nobody made, and would put
+    this detector's name on a gap it had no part in.
+
+    The other three artifact-dependent signals *are* written as `FAILED` on this path, and
+    that asymmetry is the point rather than an inconsistency: each of those sources was
+    genuinely asked about this media and had no answer, because NVIDIA takes MP4 and
+    nothing else and the audio is demuxed from the same derivative that never existed.
+    """
+    analysis_id, job_id = queue(was_normalized=True)
+    fake_ffmpeg.error = normalization.NormalizationError("ffmpeg refused the source")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    # The row is absent, and the classifier is what was never invoked to produce it.
+    assert "face_manipulation" not in signals
+    assert fake_face_detector.video_paths == []
+
+    # The sources that *were* asked keep their failures, and the provenance read off the
+    # forensic original before any of this survives untouched.
+    assert signals["synthetic_video"].status == "FAILED"
+    assert signals["active_speaker"].status == "FAILED"
+    assert signals["audio_authenticity"].status == "FAILED"
+    assert signals["provenance"].status == "SUCCESS"
+
+
+@pytest.mark.integration
+def test_a_failed_face_signal_always_means_the_classifier_ran(
+    queue, fake_storage, fake_face_detector
+):
+    """The other half of the rule above, so the two cannot drift into meaning one thing.
+
+    Same media, same job, and this time the classifier is reached and fails. Here a row is
+    exactly what must appear — the reading was attempted and produced no evidence — which is
+    what makes its absence above a statement about reachability rather than about failure.
+    """
+    analysis_id, job_id = queue()
+    fake_face_detector.error = FaceDetectorModelUnavailable("weights are missing")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert fake_face_detector.video_paths != []
+    assert signals["face_manipulation"].status == "FAILED"
+    assert signals["face_manipulation"].score is None
+    assert signals["face_manipulation"].signal_metadata == {
+        "error": "FaceDetectorModelUnavailable"
+    }
+
+
+@pytest.mark.integration
 def test_a_broken_checkpoint_costs_only_the_audio_signal(queue, fake_storage, fake_aasist):
     """A model this container never received says nothing about the media."""
     analysis_id, job_id = queue()
@@ -2055,6 +2330,7 @@ def test_a_classification_that_breaks_fails_the_job_but_keeps_the_evidence(
         "synthetic_video",
         "active_speaker",
         "audio_authenticity",
+        "face_manipulation",
     }
     assert signals["synthetic_video"].score == NVIDIA_PROBABILITY
     assert len(read_segments(signals["synthetic_video"].id)) == 2

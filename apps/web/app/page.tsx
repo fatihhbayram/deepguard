@@ -9,6 +9,8 @@ import {
   ANALYSIS_STATUS_FAILED,
   apiUrl,
   AUDIO_UNAVAILABLE,
+  FACE_SCORE_UNAVAILABLE,
+  FaceManipulationSignal,
   ActiveSpeakerSignal,
   AnalysisSummary,
   AudioAuthenticitySignal,
@@ -431,6 +433,48 @@ function AudioEvidence({ signal }: { signal: AudioAuthenticitySignal | null }) {
   );
 }
 
+/**
+ * The face-manipulation classifier's own score, shown exactly as it was stored.
+ *
+ * Three outcomes and no fourth: no signal at all, a reading that produced no score, and a
+ * score. The middle one covers the ordinary case of a clip with no face in it — the
+ * classifier was never asked, which is not a finding that the media is genuine — and it is
+ * never rendered as a low score.
+ *
+ * The number is printed and nothing is done to it. It is not compared against a threshold,
+ * not turned into a percentage, not banded and not coloured by value: the model ships no
+ * calibration, R3 applies none, and a figure styled by how high it is would be this page
+ * inventing the operating point the product deliberately does not have.
+ */
+function FaceManipulation({ signal }: { signal: FaceManipulationSignal | null }) {
+  if (signal === null) {
+    return <>{ABSENT}</>;
+  }
+
+  if (signal.status !== SIGNAL_STATUS_SUCCESS || signal.score === null) {
+    return (
+      <span title={`Face manipulation: ${signal.status}`}>{FACE_SCORE_UNAVAILABLE}</span>
+    );
+  }
+
+  const frames =
+    signal.frames_scored === null || signal.frames_requested === null
+      ? null
+      : `${signal.frames_scored} of ${signal.frames_requested} sampled frames`;
+
+  return (
+    <span title={faceModelTitle(signal)}>
+      {signal.score.toFixed(4)}
+      {frames === null ? null : <span className="text-muted"> · {frames}</span>}
+    </span>
+  );
+}
+
+/** Which checkpoint produced this score. A different revision is a different reading. */
+function faceModelTitle(signal: FaceManipulationSignal): string | undefined {
+  return signal.provider_version ? `Checkpoint: ${signal.provider_version}` : undefined;
+}
+
 /** Which checkpoint produced these figures. A different revision is a different reading. */
 function audioModelTitle(signal: AudioAuthenticitySignal): string | undefined {
   return signal.provider_version ? `Checkpoint: ${signal.provider_version}` : undefined;
@@ -813,6 +857,12 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
             <AudioEvidence signal={analysis.audio_authenticity} />
           </Field>
 
+          {/* The local face classifier's own score for the clip, uncalibrated and outside
+              the risk classification entirely. Shown as stored and never thresholded. */}
+          <Field term="FACE MANIPULATION">
+            <FaceManipulation signal={analysis.face_manipulation} />
+          </Field>
+
           {/* What the file itself claims, read from the forensic original. A missing or
               invalid manifest is never rendered as a verdict about the media. */}
           <Field term="PROVENANCE (C2PA)">
@@ -1077,6 +1127,17 @@ function Methodology() {
           <span className="font-mono">{NO_AUDIO_WINDOWS}</span> means the reading ran and
           stored none, which is not proof the file carries no audio, and{" "}
           <span className="font-mono">{AUDIO_UNAVAILABLE}</span> means it did not get to run.
+        </Note>
+
+        <Note term="FACE MANIPULATION">
+          Face manipulation is the score a local EfficientNet-B7 gave the face it found in
+          evenly sampled frames of the video, averaged over those frames and shown as the
+          model produced it. It is <strong>uncalibrated</strong>: no threshold is applied to
+          it anywhere in InspectRoot, it is not a probability that this media is manipulated,
+          and it does not affect the risk classification.{" "}
+          <span className="font-mono">{FACE_SCORE_UNAVAILABLE}</span> means the reading did
+          not produce a score — most often because no face was found, in which case the model
+          was never asked and nothing was established either way.
         </Note>
 
         <Note term="STRONGEST CLIPS (LOGIT)">

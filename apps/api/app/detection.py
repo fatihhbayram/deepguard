@@ -4,13 +4,17 @@ This is what the worker runs. It sits beside `media.py` and `normalization.py` a
 step that takes a local artifact and describes it — it opens no transaction, writes no
 row, and does not know a job exists.
 
-Four sources are wired in and they answer different questions about different artifacts:
+Five sources are wired in and they answer different questions about different artifacts:
 NVIDIA's synthetic-video detector is asked whether the canonical derivative looks
 generated, NVIDIA's Active Speaker NIM is asked which visible face is speaking when in
-that same derivative, the local AASIST checkpoint is run over the audio prepared from it,
-and C2PA is read off the forensic original to see what provenance travels with the bytes
-as uploaded. Each becomes its own signal row and none is ever folded into another
-(rule 11).
+that same derivative, the local EfficientNet-B7 checkpoint is asked how manipulated the
+face in that derivative looks, the local AASIST checkpoint is run over the audio prepared
+from it, and C2PA is read off the forensic original to see what provenance travels with
+the bytes as uploaded. Each becomes its own signal row and none is ever folded into
+another (rule 11).
+
+The fifth arrived in R3-T2 and is independent evidence only: the risk engine does not read
+it, and calibrating it into a decision is R4's work.
 
 It lived in the upload route until P3-T2, back when detection happened on the request.
 """
@@ -27,6 +31,11 @@ from app.audio_detector import (
     analyze_audio_authenticity,
 )
 from app.c2pa_extractor import C2paEvidence, extract_c2pa_evidence
+from app.face_detector import (
+    FaceDetectorError,
+    FaceManipulationEvidence,
+    analyze_face_manipulation,
+)
 from app.db.models import (
     SIGNAL_STATUS_FAILED,
     SIGNAL_STATUS_SUCCESS,
@@ -80,6 +89,18 @@ PROVENANCE_SIGNAL = "provenance"
 # speaker and shares nothing else, least of all a conclusion (rule 11).
 AASIST_PROVIDER = "aasist"
 AUDIO_AUTHENTICITY_SIGNAL = "audio_authenticity"
+
+# Identity of the local face-manipulation evidence (R3-T2). Named for the architecture of the
+# checkpoint that produced it, the way "aasist" is, and for the same reason: nothing leaves
+# this machine to obtain it, so there is no company to name, and the exact artifact behind a
+# stored signal is recorded in that signal's metadata rather than implied by this string.
+#
+# A fifth, wholly independent signal. It reads the same prepared artifact NVIDIA's
+# synthetic-video detector is given and shares nothing else with it — a different model asking
+# a different question in a different unit — and the two are never combined (rule 11). In
+# particular this one is not eligible for risk in R3: see `app.risk_engine`.
+EFFICIENTNET_B7_PROVIDER = "efficientnet-b7"
+FACE_MANIPULATION_SIGNAL = "face_manipulation"
 
 # How many clip results one detection may leave behind. NVIDIA scores a clip every few
 # frames, so a long video produces thousands and persisting all of them would let one
@@ -621,6 +642,112 @@ def unanalysable_audio(error: Exception) -> AnalysisSignal:
         # The failure kind, never the message: it can quote the local artifact's path.
         signal_metadata={"error": type(error).__name__},
     )
+
+
+def face_manipulation_metadata(evidence: FaceManipulationEvidence) -> dict:
+    """The supporting figures behind one face-manipulation score, as the signal stores them.
+
+    Everything a reader needs to know what the score describes and nothing that interprets it.
+    The two artifacts are named by revision and digest because a different classifier or a
+    different locator is a different measurement; the sampling and preprocessing are recorded
+    because the same clip sampled at a different frame count, crop margin or input size is a
+    different number; and the per-frame probabilities are kept because they are what the mean
+    was taken over, so a stored score stays auditable rather than merely asserted.
+
+    There is deliberately no threshold, class, verdict or band here. R3-T1 ran its confusion
+    matrix at 0.8 over one corpus, which is a property of that benchmark and not an operating
+    point this pipeline holds — calibrating one is R4's work.
+    """
+    return {
+        "classifier_repository": evidence.classifier_repository,
+        "classifier_revision": evidence.classifier_revision,
+        "classifier_sha256": evidence.classifier_sha256,
+        "locator_repository": evidence.locator_repository,
+        "locator_revision": evidence.locator_revision,
+        "locator_sha256": evidence.locator_sha256,
+        # Which torch ran the exported artifact. It is part of the identity of the number:
+        # the artifact is published for one cohort and this codebase allows a second only
+        # because the two were compared (see `app.face_detector`), so a stored signal says
+        # which one it was rather than leaving it to be inferred from an image tag.
+        "torch_version": evidence.torch_version,
+        # The input contract every probability above was produced under.
+        "input_size": evidence.input_size,
+        "crop_margin": evidence.crop_margin,
+        "face_score_threshold": evidence.face_score_threshold,
+        # What the sampling covered. The three counts differ on ordinary media — a frame that
+        # would not decode, a frame with no face in it — and the gaps between them are what
+        # keep the score from reading as a statement about the whole clip.
+        "frames_requested": evidence.frames_requested,
+        "frames_decoded": evidence.frames_decoded,
+        "frames_scored": evidence.frames_scored,
+        # The probabilities the mean was taken over, in the order the frames were sampled.
+        # Capped where they were produced (`MAX_PERSISTED_FRAME_SCORES`), so a raised frame
+        # count cannot grow this document without limit; `frames_scored` above says how many
+        # there really were.
+        "frame_scores": [
+            {"frame_index": frame.frame_index, "probability": frame.probability}
+            for frame in evidence.frame_scores
+        ],
+    }
+
+
+def detect_face_manipulation(file_path: Path) -> AnalysisSignal:
+    """Run the local EfficientNet-B7 over the prepared artifact and record what it emitted.
+
+    `file_path` is the artifact NVIDIA's synthetic-video detector is given, read a second time
+    by a different model asking a different question. Nothing is shared between the two beyond
+    that file, and neither answer informs the other (rule 11).
+
+    `score` is the model's own probability for the clip, stored exactly as it came back and on
+    the model's own scale. It is not a verdict and nothing here compares it against anything:
+    this signal is independent forensic evidence in R3 and is not eligible for risk — the
+    engine does not read it, and `app.risk_engine` says why.
+
+    No segments. R3-T1's contract is one analyzed clip to one raw score, and that is preserved
+    unchanged; the per-frame probabilities the mean was taken over are recorded in the
+    metadata, where they document the score rather than claiming to be temporal detections of
+    manipulation.
+
+    Nothing raises. Every `FaceDetectorError` — a missing or swapped artifact, an unverified
+    torch, media that will not decode, no face anywhere in the sample, torch itself breaking —
+    becomes a `FAILED` signal carrying the failure kind and nothing else, so one source going
+    wrong costs this signal and no other.
+
+    A `FAILED` row therefore always means the same thing: this function ran and the classifier
+    could not produce evidence. It never means the classifier was not reached — media whose
+    transcode failed produces no row here at all, because this function is never called for
+    it, and `app.worker.Evidence` says why that distinction is kept.
+
+    A clip with no face in it deserves a word of its own, because it is the one failure here
+    that is an ordinary property of an upload rather than a fault, and because it must never be
+    read as a genuine verdict: `FaceDetectorNoFaceFound` is what the metadata records, and the
+    absence of a score beside it says the classifier was never asked.
+
+    Blocking CPU work, and called synchronously from the worker.
+    """
+    signal = AnalysisSignal(
+        provider=EFFICIENTNET_B7_PROVIDER, signal_type=FACE_MANIPULATION_SIGNAL
+    )
+
+    try:
+        evidence = analyze_face_manipulation(file_path)
+    except FaceDetectorError as error:
+        # The failure kind, never the message: it quotes the local artifact's path.
+        logger.warning("Local face manipulation detection failed.", exc_info=True)
+        signal.status = SIGNAL_STATUS_FAILED
+        signal.signal_metadata = {"error": type(error).__name__}
+        return signal
+
+    signal.status = SIGNAL_STATUS_SUCCESS
+    # Which artifact produced this, exactly. A different revision is a different measurement,
+    # and the digest is what lets a stored signal be checked against the model that made it.
+    signal.provider_version = (
+        f"{evidence.classifier_repository}@{evidence.classifier_revision}"
+    )
+    signal.score = evidence.score
+    signal.signal_metadata = face_manipulation_metadata(evidence)
+
+    return signal
 
 
 async def analyse_audio(

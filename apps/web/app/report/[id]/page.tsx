@@ -6,6 +6,7 @@ import {
   ActiveSpeakerSignal,
   AnalysisSummary,
   AudioAuthenticitySignal,
+  FaceManipulationSignal,
   MediaFacts,
   ProvenanceSignal,
   RISK_LABELS,
@@ -530,6 +531,72 @@ function AudioSection({ signal }: { signal: AudioAuthenticitySignal | null }) {
   );
 }
 
+function FaceManipulationSection({ signal }: { signal: FaceManipulationSignal | null }) {
+  return (
+    <Section
+      title="EfficientNet-B7 face manipulation detector"
+      subtitle="Independent evidence. The score below is the model's own output and is not part of the risk classification."
+    >
+      {signal === null ? (
+        <NoSignal what="face-manipulation" />
+      ) : (
+        <>
+          <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="Provider" value={signal.provider} />
+            <Field label="Signal type" value={signal.signal_type} />
+            <Field label="Status" value={<SignalState status={signal.status} />} />
+            <Field label="Checkpoint" value={signal.provider_version ?? ABSENT} />
+            <Field
+              label="Model score"
+              value={signal.score === null ? ABSENT : signal.score.toString()}
+            />
+            <Field
+              label="Frames sampled"
+              value={
+                signal.frames_requested === null
+                  ? ABSENT
+                  : signal.frames_requested.toString()
+              }
+            />
+            <Field
+              label="Frames decoded"
+              value={
+                signal.frames_decoded === null ? ABSENT : signal.frames_decoded.toString()
+              }
+            />
+            <Field
+              label="Frames with a detected face"
+              value={
+                signal.frames_scored === null ? ABSENT : signal.frames_scored.toString()
+              }
+            />
+          </dl>
+
+          {signal.status !== "SUCCESS" && (
+            <p className="mt-3 text-xs opacity-70">
+              This reading did not produce a score. A clip in which no face was found is the
+              ordinary case, and it means the classifier was never asked — it is not a finding
+              that the media is genuine.
+            </p>
+          )}
+
+          <p className="mt-3 text-xs opacity-80">
+            The score is the mean of the model&apos;s per-frame output over the frames above,
+            shown exactly as the model produced it. It is <strong>not calibrated</strong>,{" "}
+            <strong>not a probability that this media is manipulated</strong>, and{" "}
+            <strong>not a Fake/Real decision</strong>. No threshold is applied to it anywhere
+            in InspectRoot.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            It does not contribute to the risk classification above and cannot change it. This
+            signal is recorded as an independent forensic fact only.
+          </p>
+        </>
+      )}
+    </Section>
+  );
+}
+
 export default async function Report({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const result = await fetchAnalysis(id);
@@ -622,13 +689,14 @@ export default async function Report({ params }: { params: Promise<{ id: string 
       <p className="mt-1 text-xs opacity-70">
         Each source is recorded separately and none of them is combined into the other. Only
         the synthetic-video detector contributes to the risk classification above; provenance,
-        speaking evidence and audio evidence are recorded as independent forensic facts and
-        cannot change that classification.
+        speaking evidence, face-manipulation evidence and audio evidence are recorded as
+        independent forensic facts and cannot change that classification.
       </p>
 
       <SyntheticVideoSection signal={analysis.synthetic_video} />
       <ProvenanceSection signal={analysis.provenance} />
       <ActiveSpeakerSection signal={analysis.active_speaker} />
+      <FaceManipulationSection signal={analysis.face_manipulation} />
       <AudioSection signal={analysis.audio_authenticity} />
 
       <footer className="mt-8 break-inside-avoid border-t border-black/15 pt-4 text-xs opacity-70 dark:border-white/20">

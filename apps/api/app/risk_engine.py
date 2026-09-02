@@ -12,12 +12,23 @@ clock and holds nothing between calls: the same evidence always yields the same 
 which is what makes a persisted decision reproducible from the persisted evidence.
 
 **One signal decides, and only one.** The v1 rules read NVIDIA's `synthetic_video` score
-and nothing else. C2PA provenance, the active-speaker timeline and AASIST's audio windows
-are all persisted as independent forensic evidence and none of them can move this
-classification by a single band — they are not averaged in, not weighted, not used as a
-tie-break, not even read. That is rule 11 of AGENTS.md applied to the one place where the
-temptation to combine is strongest, and it is what keeps HIGH meaning "a validated
-direct-risk rule fired" rather than "several unrelated numbers looked bad together".
+and nothing else. C2PA provenance, the active-speaker timeline, AASIST's audio windows and
+EfficientNet-B7's face-manipulation score are all persisted as independent forensic
+evidence and none of them can move this classification by a single band — they are not
+averaged in, not weighted, not used as a tie-break, not even read. That is rule 11 of
+AGENTS.md applied to the one place where the temptation to combine is strongest, and it is
+what keeps HIGH meaning "a validated direct-risk rule fired" rather than "several unrelated
+numbers looked bad together".
+
+The face-manipulation signal is the newest of those and the one that most looks like it
+belongs here, because unlike the other three it carries a probability in [0, 1] on the same
+nominal scale as the score that does decide. It is still not read, and the reason is that a
+scale is not a calibration: R3-T1 measured that model against 40 clips of one corpus at a
+benchmark operating point of 0.8, which establishes nothing about where a band boundary
+falls on the media this service actually receives. `CALIBRATED_PROVIDER` and
+`CALIBRATED_SIGNAL_TYPE` below are what enforce that — evidence from any other provider
+cannot reach a rule — and measuring this one properly is R4's work, not a threshold to be
+guessed at here.
 
 **LOW does not exist in v1.** P7-T2 measured `T_LOW = 0.05` and it is part of the
 calibration artifact, but it is deliberately not activated as a boundary here: at that

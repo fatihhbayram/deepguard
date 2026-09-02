@@ -48,6 +48,7 @@ EXPECTED_FIELDS = {
     "provenance",
     "active_speaker",
     "audio_authenticity",
+    "face_manipulation",
 }
 
 # What ffprobe established about the original, as the database kept it. `major_brand` is
@@ -155,6 +156,15 @@ C2PA_SDK_VERSION = "0.90.14"
 AASIST_CHECKPOINT = (
     "SpeechAntiSpoofingBenchmarks/AASIST@16774d458d86d2a021ae31646c1bf66a5331b53e"
 )
+FACETORCH_CHECKPOINT = (
+    "tomas-gajarsky/facetorch-deepfake-efficientnet-b7"
+    "@4acc494f37eb63d7457166eff2acb45c5b04b9a6"
+)
+
+# The face classifier's own figure for the clip. Deliberately above `T_HIGH`, the boundary
+# the *calibrated* signal is banded on: the listing must hand this number back untouched
+# beside a MEDIUM decision, which is what proves it is not being read as a risk input.
+FACE_SCORE = 0.9931
 
 
 def listing_row(**overrides):
@@ -243,6 +253,30 @@ def listing_row(**overrides):
             "window_bounds": "deepguard_preprocessing",
             "bona_fide_logit_index": 1,
         },
+        "face_provider": "efficientnet-b7",
+        "face_signal_type": "face_manipulation",
+        "face_status": "SUCCESS",
+        "face_score": FACE_SCORE,
+        "face_provider_version": FACETORCH_CHECKPOINT,
+        "face_metadata": {
+            "classifier_repository": "tomas-gajarsky/facetorch-deepfake-efficientnet-b7",
+            "classifier_revision": "4acc494f37eb63d7457166eff2acb45c5b04b9a6",
+            "classifier_sha256": "97b49a70" + "0" * 56,
+            "locator_repository": "opencv/opencv_zoo",
+            "locator_revision": "47534e27c9851bb1128ccc0102f1145e27f23f98",
+            "locator_sha256": "8f2383e4" + "0" * 56,
+            "torch_version": "2.13.0+cpu",
+            "input_size": 380,
+            "crop_margin": 1 / 3,
+            "face_score_threshold": 0.6,
+            "frames_requested": 8,
+            "frames_decoded": 8,
+            "frames_scored": 6,
+            "frame_scores": [
+                {"frame_index": 0, "probability": 0.91},
+                {"frame_index": 14, "probability": 0.88},
+            ],
+        },
     }
 
     return SimpleNamespace(**{**values, **overrides})
@@ -281,6 +315,12 @@ def unsignalled_row(**overrides):
         audio_status=None,
         audio_provider_version=None,
         audio_metadata=None,
+        face_provider=None,
+        face_signal_type=None,
+        face_status=None,
+        face_score=None,
+        face_provider_version=None,
+        face_metadata=None,
         **overrides,
     )
 
@@ -321,6 +361,21 @@ def failed_audio_row(status: str, **overrides):
         audio_status=status,
         audio_provider_version=None,
         audio_metadata={"error": "AudioDetectorModelUnavailable"},
+        **overrides,
+    )
+
+
+def failed_face_row(status: str, **overrides):
+    """A row whose face-manipulation reading did not produce a score.
+
+    `FaceDetectorNoFaceFound` is the ordinary case rather than a fault: the classifier was
+    never asked, so there is no number, and the absent score is the whole point.
+    """
+    return listing_row(
+        face_status=status,
+        face_score=None,
+        face_provider_version=None,
+        face_metadata={"error": "FaceDetectorNoFaceFound"},
         **overrides,
     )
 
@@ -604,6 +659,19 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
                 "persisted_audio_windows": 2,
                 "windows_truncated": False,
                 "windows": [],
+            },
+            # The face classifier's own figure, handed back exactly as the row holds it —
+            # beside a MEDIUM decision, which is what a score above `T_HIGH` looks like when
+            # nothing is reading it as risk.
+            "face_manipulation": {
+                "provider": "efficientnet-b7",
+                "signal_type": "face_manipulation",
+                "status": "SUCCESS",
+                "score": FACE_SCORE,
+                "provider_version": FACETORCH_CHECKPOINT,
+                "frames_requested": 8,
+                "frames_decoded": 8,
+                "frames_scored": 6,
             },
         }
     ]
@@ -1183,7 +1251,7 @@ def test_the_provenance_join_is_restricted_to_the_c2pa_provenance_signal(client,
     assert "signal_type = 'provenance'" in sql
     # Each further signal joins the table again under its own alias, so no two of them
     # can multiply each other.
-    assert sql.count("LEFT OUTER JOIN analysis_signals") == 4
+    assert sql.count("LEFT OUTER JOIN analysis_signals") == 5
 
 
 def test_both_signals_ride_the_same_statement(client, fake_session):

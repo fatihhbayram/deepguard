@@ -171,6 +171,29 @@ export type AudioAuthenticitySignal = {
   windows: AudioWindow[];
 };
 
+// The local face-manipulation signal the API joined onto the analysis. `score` is the
+// probability EfficientNet-B7 emitted for the clip, on the model's own scale and passed
+// through exactly as stored — null for every status but SUCCESS, including the ordinary case
+// of a clip with no face in it, where the classifier was never asked.
+//
+// It is independent forensic evidence and is not part of the risk classification. R3 does not
+// calibrate it: there is no threshold in this codebase to compare the score against, nothing
+// here derives a band from it, and the benchmark operating point R3-T1 measured at is a
+// property of that benchmark rather than an operating point this product holds.
+export type FaceManipulationSignal = {
+  provider: string;
+  signal_type: string;
+  status: string;
+  score: number | null;
+  provider_version: string | null;
+  // What the sample covered: frames asked for, frames decoded, and frames that yielded a face
+  // the classifier was given. All null unless the reading succeeded. They are shown with the
+  // score because a score over one usable frame and one over eight are different statements.
+  frames_requested: number | null;
+  frames_decoded: number | null;
+  frames_scored: number | null;
+};
+
 // What ffprobe established about the forensic original, as the database kept it. These
 // are facts about the bytes, unlike `declared_content_type`, which is only what the client
 // said about them. `format_name` is ffprobe's own name for the demuxer family — one string
@@ -228,6 +251,10 @@ export type AnalysisSummary = {
   // before the local checkpoint was wired in. Not the same as a reading that ran and stored
   // no windows, and not the same as one that could not run.
   audio_authenticity: AudioAuthenticitySignal | null;
+  // Null when the analysis carries no face-manipulation signal at all — everything stored
+  // before R3-T2 wired the local classifier in. Not the same as a reading that could not run,
+  // and not the same as a clip it found no face in.
+  face_manipulation: FaceManipulationSignal | null;
 };
 export const SIGNAL_STATUS_SUCCESS = "SUCCESS";
 
@@ -334,6 +361,12 @@ export const UNMATCHED_VOICE = "no matched voice";
 // established that a file carries no audio, only that no windows were persisted for it.
 export const AUDIO_UNAVAILABLE = "Unavailable";
 export const NO_AUDIO_WINDOWS = "No audio evidence windows";
+
+// The face-manipulation outcome that is not a score: the reading did not happen. Kept apart
+// from an absent signal for the same reason as the pairs above, and phrased about the
+// evidence rather than the media — a clip the classifier found no face in lands here, and
+// that establishes nothing at all about whether the media is genuine.
+export const FACE_SCORE_UNAVAILABLE = "Unavailable";
 
 export const NO_PROVENANCE = "No provenance";
 export const REMOTE_PROVENANCE = "Remote provenance (not fetched)";
@@ -655,6 +688,68 @@ export function parseAudioAuthenticity(
 }
 
 /**
+ * The face-manipulation signal on one analysis, with the same three-way result as
+ * `parseSignal`: `null` for an analysis that carries none, `undefined` for a payload that is
+ * not one.
+ *
+ * `score` is parsed as an optional number and nothing more. It is not range-checked, not
+ * rounded and not compared against anything here — this function reads a stored figure, and
+ * deciding what a figure means is not a thing the browser is entitled to do.
+ */
+export function parseFaceManipulation(
+  payload: unknown,
+): FaceManipulationSignal | null | undefined {
+  if (payload === null) {
+    return null;
+  }
+
+  if (typeof payload !== "object") {
+    return undefined;
+  }
+
+  const {
+    provider,
+    signal_type,
+    status,
+    score,
+    provider_version,
+    frames_requested,
+    frames_decoded,
+    frames_scored,
+  } = payload as Record<string, unknown>;
+
+  const parsedScore = parseOptionalNumber(score);
+  const parsedVersion = parseOptionalString(provider_version);
+  const parsedRequested = parseOptionalNumber(frames_requested);
+  const parsedDecoded = parseOptionalNumber(frames_decoded);
+  const parsedScored = parseOptionalNumber(frames_scored);
+
+  if (
+    typeof provider !== "string" ||
+    typeof signal_type !== "string" ||
+    typeof status !== "string" ||
+    parsedScore === undefined ||
+    parsedVersion === undefined ||
+    parsedRequested === undefined ||
+    parsedDecoded === undefined ||
+    parsedScored === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    provider,
+    signal_type,
+    status,
+    score: parsedScore,
+    provider_version: parsedVersion,
+    frames_requested: parsedRequested,
+    frames_decoded: parsedDecoded,
+    frames_scored: parsedScored,
+  };
+}
+
+/**
  * The provenance signal on one analysis, with the same three-way result as `parseSignal`:
  * `null` for an analysis that carries none, `undefined` for a payload that is not one.
  */
@@ -788,6 +883,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     provenance,
     active_speaker,
     audio_authenticity,
+    face_manipulation,
   } = payload as Record<string, unknown>;
 
   // Each parsed on its own three-way rule: a real value, a legitimate null, or `undefined`
@@ -804,6 +900,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
   const provenanceSignal = parseProvenance(provenance);
   const activeSpeaker = parseActiveSpeaker(active_speaker);
   const audioAuthenticity = parseAudioAuthenticity(audio_authenticity);
+  const faceManipulation = parseFaceManipulation(face_manipulation);
   const mediaFacts = parseMedia(media);
 
   if (
@@ -822,6 +919,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     provenanceSignal === undefined ||
     activeSpeaker === undefined ||
     audioAuthenticity === undefined ||
+    faceManipulation === undefined ||
     mediaFacts === undefined ||
     !(typeof original_filename === "string" || original_filename === null)
   ) {
@@ -846,6 +944,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     provenance: provenanceSignal,
     active_speaker: activeSpeaker,
     audio_authenticity: audioAuthenticity,
+    face_manipulation: faceManipulation,
   };
 }
 /**

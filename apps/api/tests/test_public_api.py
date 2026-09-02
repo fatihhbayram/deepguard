@@ -55,6 +55,8 @@ from app.detection import (
     AASIST_PROVIDER,
     AUDIO_AUTHENTICITY_SIGNAL,
     C2PA_PROVIDER,
+    EFFICIENTNET_B7_PROVIDER,
+    FACE_MANIPULATION_SIGNAL,
     NVIDIA_PROVIDER,
     PROVENANCE_SIGNAL,
     SYNTHETIC_VIDEO_SIGNAL,
@@ -748,6 +750,16 @@ def test_a_completed_analysis_reports_the_stored_decision_and_signals(reader, se
         provider_version="rev-abc",
         signal_metadata={"error": "RuntimeError"},
     )
+    store_signal(
+        session,
+        analysis,
+        provider=EFFICIENTNET_B7_PROVIDER,
+        signal_type=FACE_MANIPULATION_SIGNAL,
+        status=SIGNAL_STATUS_SUCCESS,
+        score=0.77,
+        provider_version="repo@rev",
+        signal_metadata={"frames_scored": 8},
+    )
 
     body = reader.get(read_url(analysis.id), headers=authorization(plaintext)).json()
 
@@ -762,6 +774,7 @@ def test_a_completed_analysis_reports_the_stored_decision_and_signals(reader, se
         SYNTHETIC_VIDEO_SIGNAL,
         PROVENANCE_SIGNAL,
         AUDIO_AUTHENTICITY_SIGNAL,
+        FACE_MANIPULATION_SIGNAL,
     }
     assert signals[SYNTHETIC_VIDEO_SIGNAL]["score"] == pytest.approx(0.91)
     assert signals[SYNTHETIC_VIDEO_SIGNAL]["provider"] == NVIDIA_PROVIDER
@@ -771,6 +784,12 @@ def test_a_completed_analysis_reports_the_stored_decision_and_signals(reader, se
     assert signals[AUDIO_AUTHENTICITY_SIGNAL]["score"] is None
     # Provenance reports no figure at all; null here is "no such measurement", not zero.
     assert signals[PROVENANCE_SIGNAL]["score"] is None
+    # The face classifier is the second signal that carries a score, and it crosses the
+    # boundary as its own raw figure — not rescaled, and not comparable with NVIDIA's above.
+    # It sits beside a HIGH decision it had no part in: only the calibrated signal is read.
+    assert signals[FACE_MANIPULATION_SIGNAL]["score"] == pytest.approx(0.77)
+    assert signals[FACE_MANIPULATION_SIGNAL]["provider"] == EFFICIENTNET_B7_PROVIDER
+    assert signals[FACE_MANIPULATION_SIGNAL]["provider_version"] == "repo@rev"
 
 
 @integration

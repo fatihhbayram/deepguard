@@ -21,6 +21,11 @@ minio==7.2.20
 # checkpoint and ~60 MiB resident at inference. Pinned to the version P6-T1 benchmarked on,
 # so the numbers in that report describe the same runtime that ships.
 onnxruntime==1.23.2
+# Decodes the frames the face-manipulation classifier is scored on, and runs the YuNet locator
+# that finds the face in each (R3-T2). The headless wheel: this process has no display and the
+# GUI build pulls in an X11 stack it would never call. Pinned to the version R3-T1 benchmarked
+# the detector on, so the numbers in that report describe the same preprocessing that ships.
+opencv-python-headless==5.0.0.93
 protobuf==6.33.6
 psycopg2-binary==2.9.12
 pyannote.audio==4.0.7

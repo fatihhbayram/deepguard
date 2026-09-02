@@ -8,7 +8,7 @@ Four transactions per job, never one:
 
 1. claim — take a `queued` job, mark it `processing`, commit, release the lock;
 2. nothing — the download, provenance, transcoding, diarization, both NVIDIA inferences
-   and the local audio checkpoint all happen with no transaction open at all;
+   and the two local checkpoints all happen with no transaction open at all;
 3. persist — write the derivative's identity and every evidence row, and commit them;
 4. conclude — classify the analysis from the evidence just committed, record the decision
    and close the job out.
@@ -100,6 +100,7 @@ from app.detection import (
     NVIDIA_PROVIDER,
     SYNTHETIC_VIDEO_SIGNAL,
     analyse_audio,
+    detect_face_manipulation,
     detect_synthetic_video,
     extract_provenance,
     unanalysable_audio,
@@ -561,20 +562,44 @@ class Evidence:
     """
 
     detection: SignalEvidence
+    # None when the face classifier was never invoked, which is exactly the case where the
+    # transcode failed: it is the one artifact-dependent reading that is not attempted at
+    # all when there is no artifact. The other three are recorded as `FAILED` there because
+    # each is a source that was asked about this media and had no answer — NVIDIA takes MP4
+    # and nothing else, and the audio is demuxed from the same missing derivative — whereas
+    # nothing ever asked this classifier anything.
+    #
+    # The distinction is the same one `AnalysisTimedOut` draws and for the same reason: a
+    # `FAILED` row is a finding ("this source was asked and could not answer"), and writing
+    # one for a detector that was never reached would be recording a finding nobody made.
+    # Absence is the honest record, and it is not the same fact as a failed reading.
+    face_manipulation: SignalEvidence | None
     active_speaker: SignalEvidence
     audio_authenticity: SignalEvidence
     derivative_storage_key: str | None = None
     derivative_sha256: str | None = None
 
     def entries(self) -> tuple[SignalEvidence, ...]:
-        """The three artifact-dependent findings, in the order they are written.
+        """The artifact-dependent findings that exist, in the order they are written.
 
         Named rather than unpacked at the call site so the partial path below and the
         complete one persist through the same code: a signal added to this class and not to
         this tuple would be a visible omission, and one written on one path but not the
         other is exactly the drift the two paths must not have.
+
+        The face-manipulation entry is dropped when it is absent rather than being written
+        as an empty or failed row — see the field above. Every other entry is required, so
+        an omission there is a `TypeError` at construction rather than a silently missing
+        signal.
         """
-        return (self.detection, self.active_speaker, self.audio_authenticity)
+        found = (
+            self.detection,
+            self.face_manipulation,
+            self.active_speaker,
+            self.audio_authenticity,
+        )
+
+        return tuple(entry for entry in found if entry is not None)
 
 
 class AnalysisTimedOut(Exception):
@@ -635,9 +660,15 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
     Media that cannot be transcoded is a fact about the media, so it becomes a failed
     signal rather than a failed job — the same treatment a provider that refuses gets, and
     for the same reason: the provenance already read off this file must not be thrown away
-    because ffmpeg could not produce an MP4. All three artifact-dependent signals record
-    it, because none of them was reachable without the artifact — the audio the local
-    checkpoint reads is extracted from it too.
+    because ffmpeg could not produce an MP4. Three of the four artifact-dependent signals
+    record it, because each of those sources was asked about this media and had no answer —
+    NVIDIA takes MP4 and nothing else, and the audio the local checkpoint reads is extracted
+    from the same derivative that was never produced.
+
+    The face-manipulation reading is the exception, and deliberately: it is never invoked at
+    all on this path, so it produces no row rather than a `FAILED` one. Recording a failure
+    for a detector nothing ran would be a finding nobody made — the same distinction
+    `AnalysisTimedOut` draws for the signals a timeout never reached.
 
     `NormalizationUnavailable` is deliberately not caught. ffmpeg missing from the image is
     a broken container, not broken media, and recording it as evidence about the video
@@ -662,6 +693,15 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
             signal, segments = run_detection(artifact.path)
             detected = SignalEvidence(signal=signal, segments=segments)
 
+            # Second, and before the audio chain, so that an audio extraction which runs out
+            # of time costs neither this reading nor the one above it. It is local, blocking
+            # CPU work with no socket and no deadline of its own — `app.limits` says why the
+            # bounds there do not cover in-process inference — and it records its own
+            # failures, so nothing it does can fail this job.
+            face = SignalEvidence(
+                signal=detect_face_manipulation(artifact.path), segments=[]
+            )
+
             try:
                 # The rate NVIDIA's frame indices have to be read against. It is the rate of
                 # the artifact just handed over: a derivative was transcoded to hold exactly
@@ -678,13 +718,14 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
                 # reader.
                 raise AnalysisTimedOut(
                     error,
-                    produced=(detected,),
+                    produced=(detected, face),
                     derivative_storage_key=artifact.storage_key,
                     derivative_sha256=artifact.sha256,
                 ) from error
 
             return Evidence(
                 detection=detected,
+                face_manipulation=face,
                 active_speaker=SignalEvidence(
                     signal=speaker_signal, segments=speaker_segments
                 ),
@@ -708,6 +749,11 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
             detection=SignalEvidence(
                 signal=undetectable_media(error, SYNTHETIC_VIDEO_SIGNAL), segments=[]
             ),
+            # Explicitly nothing. The classifier is never invoked on this path — the call
+            # that would have run it is inside the `with` block above, past the transcode
+            # that raised — so there is no reading to record, failed or otherwise. Stated
+            # here rather than left to a default so the omission is deliberate and visible.
+            face_manipulation=None,
             active_speaker=SignalEvidence(
                 signal=undetectable_media(error, ACTIVE_SPEAKER_SIGNAL), segments=[]
             ),
@@ -755,11 +801,13 @@ def persist_evidence(
     name an object no analysis had used, and a key committed after would leave a completed
     analysis unable to say what was detected.
 
-    All four signals are written as separate rows and none waits on another: they are
+    Every signal that exists is written as its own row and none waits on another: they are
     independent evidence, and an analysis that got provenance and a speaker timeline but
-    no synthetic-video verdict — or any other combination — records exactly that.
-    Provenance is the one that never owns segments; it produces no evidence rows at all,
-    while the other three each own their own and never share a row.
+    no synthetic-video verdict — or any other combination — records exactly that. An
+    analysis carries at most five, and fewer when a source was never reached.
+    Provenance and face manipulation are the two that never own segments — the first
+    because a signature is not a timeline, the second because R3-T1's contract is one clip
+    to one score — while the other three each own their own and never share a row.
 
     The job stays `processing` across this commit, and deliberately so. Nothing can pick it
     up in the gap — `claim_job` only ever takes `queued` rows — and leaving the status for
@@ -881,10 +929,11 @@ def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision | None:
     analysis nobody classified, and a decision written without the job moving on would leave
     the classification invisible behind a job still in progress.
 
-    Only the direct-risk signal is read. The provenance, speaker-timeline and audio rows
-    committed moments ago are not fetched, not passed in and cannot reach this decision —
-    they remain forensic evidence in their own right and none of them is entitled to move a
-    band (rule 11, and `app.risk_engine`).
+    Only the direct-risk signal is read. The provenance, face-manipulation, speaker-timeline
+    and audio rows committed moments ago are not fetched, not passed in and cannot reach this
+    decision — they remain forensic evidence in their own right and none of them is entitled
+    to move a band (rule 11, and `app.risk_engine`). `persisted_svd_evidence` names one
+    provider and one signal type, so the query cannot see them even by accident.
 
     Nothing here catches anything. The engine is total over the evidence it is given: a
     missing signal, a failed one, an uncalibrated deployment and unusable figures are each

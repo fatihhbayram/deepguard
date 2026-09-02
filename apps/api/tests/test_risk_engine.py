@@ -512,8 +512,23 @@ def persisted_signal(
     )
 
 
-def context_signals(*, provenance=True, active_speaker=True, audio=True, failed=False):
-    """The three signals that must never touch a classification, in a stated arrangement."""
+def context_signals(
+    *,
+    provenance=True,
+    active_speaker=True,
+    audio=True,
+    face=True,
+    face_score=0.9993,
+    failed=False,
+):
+    """The four signals that must never touch a classification, in a stated arrangement.
+
+    `face_score` defaults deliberately high — above `T_HIGH`, the boundary the *calibrated*
+    signal is banded on. The face-manipulation signal is the only context signal carrying a
+    figure on the same nominal [0, 1] scale as the one that decides, so it is the one whose
+    isolation is worth demonstrating with a number that would be HIGH if anything here ever
+    started reading it.
+    """
     status = "FAILED" if failed else "SUCCESS"
     signals = []
 
@@ -549,6 +564,22 @@ def context_signals(*, provenance=True, active_speaker=True, audio=True, failed=
                 status=status,
                 provider_version="SpeechAntiSpoofingBenchmarks/AASIST@16774d45",
                 signal_metadata={"total_audio_windows": 0 if failed else 3},
+            )
+        )
+    if face:
+        signals.append(
+            AnalysisSignal(
+                provider="efficientnet-b7",
+                signal_type="face_manipulation",
+                status=status,
+                # No score on a failed reading, exactly as `detect_face_manipulation` writes
+                # it: the classifier was never asked, and 0.0 would be a fabricated answer.
+                score=None if failed else face_score,
+                provider_version=(
+                    "tomas-gajarsky/facetorch-deepfake-efficientnet-b7"
+                    "@4acc494f37eb63d7457166eff2acb45c5b04b9a6"
+                ),
+                signal_metadata={"frames_scored": 0 if failed else 8},
             )
         )
 
@@ -712,8 +743,29 @@ CONTEXT_ARRANGEMENTS = {
     "provenance failed": context_signals(active_speaker=False, audio=False, failed=True),
     "active speaker only": context_signals(provenance=False, audio=False),
     "active speaker failed": context_signals(provenance=False, audio=False, failed=True),
-    "audio only": context_signals(provenance=False, active_speaker=False),
-    "audio failed": context_signals(provenance=False, active_speaker=False, failed=True),
+    "audio only": context_signals(provenance=False, active_speaker=False, face=False),
+    "audio failed": context_signals(
+        provenance=False, active_speaker=False, face=False, failed=True
+    ),
+    # The face-manipulation signal (R3-T2) on its own, at the extremes of its own scale.
+    # None of these may move a band: the score is raw, uncalibrated evidence in R3, the
+    # engine's query names one provider and one signal type, and calibrating this one is R4.
+    "no face manipulation": context_signals(face=False),
+    "face manipulation only": context_signals(
+        provenance=False, active_speaker=False, audio=False
+    ),
+    "face manipulation failed": context_signals(
+        provenance=False, active_speaker=False, audio=False, failed=True
+    ),
+    "face manipulation at 1.0": context_signals(
+        provenance=False, active_speaker=False, audio=False, face_score=1.0
+    ),
+    "face manipulation at 0.0": context_signals(
+        provenance=False, active_speaker=False, audio=False, face_score=0.0
+    ),
+    "face manipulation above T_HIGH with everything else absent": context_signals(
+        provenance=False, active_speaker=False, audio=False, face_score=0.9999
+    ),
 }
 
 
@@ -727,10 +779,16 @@ def test_no_arrangement_of_the_context_signals_changes_the_classification(
 ):
     """The isolation requirement, checked exhaustively against stored evidence.
 
-    Twelve arrangements of C2PA, active speaker and AASIST — present, absent, successful,
-    failed — over one unchanged synthetic-video score. All twelve must land on the same
-    band by the same rule. Nothing here is averaged, voted on, weighted or combined, and
-    this test is what would fail the moment something started to be.
+    Every arrangement of C2PA, active speaker, AASIST and EfficientNet-B7 — present, absent,
+    successful, failed — over one unchanged synthetic-video score. All of them must land on
+    the same band by the same rule. Nothing here is averaged, voted on, weighted or combined,
+    and this test is what would fail the moment something started to be.
+
+    The face-manipulation arrangements are the ones R3-T2 added, and they are the sharpest
+    case in the table: that signal carries a probability in [0, 1], so an implementation that
+    quietly began reading "the score" rather than *the calibrated provider's* score would
+    classify `face manipulation at 1.0` differently from `face manipulation at 0.0`. Both
+    must come back identical to an analysis carrying no face signal at all.
     """
     decisions = {}
 
@@ -743,6 +801,10 @@ def test_no_arrangement_of_the_context_signals_changes_the_classification(
                     provider=signal.provider,
                     signal_type=signal.signal_type,
                     status=signal.status,
+                    # Carried through: the face-manipulation signal has one, and an
+                    # arrangement that dropped it would prove isolation against a column
+                    # that was never populated.
+                    score=signal.score,
                     provider_version=signal.provider_version,
                     signal_metadata=signal.signal_metadata,
                 )
