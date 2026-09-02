@@ -1239,10 +1239,20 @@ def process_one(session: Session) -> bool:
             return True
 
         logger.info(
-            "Completed job %s with a %s detection signal, a %s active-speaker signal, a %s "
-            "audio-authenticity signal and a %s provenance signal%s. Risk %s by %s under %s.",
+            "Completed job %s with a %s detection signal, a %s face-manipulation signal, a "
+            "%s active-speaker signal, a %s audio-authenticity signal and a %s provenance "
+            "signal%s. Risk %s by %s under %s.",
             claimed.job_id,
             evidence.detection.signal.status,
+            # `no` rather than a status, because absence here is not a status: the classifier
+            # is the one reading that is never invoked when the transcode failed, and the
+            # `Evidence` field says at length why that is recorded as no row rather than a
+            # `FAILED` one. The line enumerates the signals this job wrote, so it has to be
+            # able to say that this one was not written — printing `None` would read as a
+            # status the database can hold.
+            evidence.face_manipulation.signal.status
+            if evidence.face_manipulation is not None
+            else "no",
             evidence.active_speaker.signal.status,
             evidence.audio_authenticity.signal.status,
             provenance_signal.status,
