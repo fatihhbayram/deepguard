@@ -181,6 +181,39 @@ def _crop_face(
     return cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
 
 
+def provenance() -> dict:
+    """Identity of the weights this run scored with, verified rather than asserted.
+
+    `_verify` re-reads and re-digests both files here, so what the artifact records is
+    what was on disk for the run — not a constant copied out of the table above. Loading
+    already checked them; checking again costs one read of each and removes the case where
+    a docstring and the bytes have drifted apart.
+    """
+    return {
+        "detector": "efficientnet-b7-dfdc",
+        "classifier": {
+            "artifact": "tomas-gajarsky/facetorch-deepfake-efficientnet-b7"
+                        "/model-torch2.11.pt2",
+            "revision": CLASSIFIER_REVISION,
+            "sha256": hashlib.sha256(
+                _verify(CLASSIFIER_PATH, CLASSIFIER_SHA256).read_bytes()
+            ).hexdigest(),
+        },
+        "face_locator": {
+            "artifact": "opencv/opencv_zoo/face_detection_yunet_2023mar.onnx",
+            "sha256": hashlib.sha256(
+                _verify(YUNET_PATH, YUNET_SHA256).read_bytes()
+            ).hexdigest(),
+        },
+        "upstream": "selimsef/dfdc_deepfake_challenge @ 89c62904 (MIT)",
+        "frame_samples": FRAME_SAMPLES,
+        "face_score_threshold": FACE_SCORE_THRESHOLD,
+        "input_size": INPUT_SIZE,
+        "crop_margin": CROP_MARGIN,
+        "score_semantics": "mean sigmoid(logit) over sampled face crops",
+    }
+
+
 def detect(clip: Clip) -> float:
     """Probability that `clip` carries a manipulated face, in `[0, 1]`.
 

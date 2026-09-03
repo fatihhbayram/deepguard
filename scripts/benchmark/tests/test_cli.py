@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import sys
+import types
 from datetime import datetime, timezone
 
 import pytest
@@ -9,6 +11,7 @@ import pytest
 from benchmark.cli import (
     build_results,
     main,
+    model_provenance,
     mock_model,
     per_label_breakdown,
     resolve_model,
@@ -51,6 +54,32 @@ def test_mock_model_is_deterministic_and_in_range(tmp_path):
     # Label-blind: the score follows the id and nothing else.
     relabelled = Clip(clip_id="clip_a", path=clip.path, label="face_swap")
     assert mock_model(relabelled) == mock_model(clip)
+
+
+def test_model_provenance_is_optional_and_never_loses_a_run():
+    """A model that declares nothing, one that declares, and one whose metadata breaks."""
+    assert model_provenance("mock") is None
+    # `benchmark.cli` itself defines no `provenance`, so a model living in it declares none.
+    assert model_provenance("benchmark.cli:mock_model") is None
+
+    module = types.ModuleType("provenance_probe")
+    module.detect = lambda clip: 0.5
+    module.provenance = lambda: {"weights": "abc123"}
+    sys.modules["provenance_probe"] = module
+    try:
+        assert model_provenance("provenance_probe:detect") == {"weights": "abc123"}
+
+        def explode():
+            raise RuntimeError("weights file vanished")
+
+        module.provenance = explode
+        # Recorded, not raised: this is called after a run that may have cost half an hour
+        # of provider time, and the scores must survive broken metadata.
+        assert model_provenance("provenance_probe:detect") == {
+            "error": "RuntimeError: weights file vanished"
+        }
+    finally:
+        del sys.modules["provenance_probe"]
 
 
 def test_resolve_model_accepts_mock_and_a_dotted_reference():
@@ -96,6 +125,7 @@ def test_a_clip_the_model_crashes_on_is_recorded_and_excluded(tmp_path):
     results = build_results(
         dataset=dataset,
         model_reference="flaky",
+        provenance=None,
         threshold=0.5,
         records=records,
         latencies_ms=latencies,
@@ -175,7 +205,7 @@ def test_main_writes_the_artifacts(tmp_path, capsys):
 
     assert exit_code == 0
     results = json.loads((output / "results.json").read_text(encoding="utf-8"))
-    assert results["schema_version"] == "r2-benchmark-1"
+    assert results["schema_version"] == "r2-benchmark-2"
     assert results["metrics"] == {
         "accuracy": 1.0,
         "precision": 1.0,
@@ -266,6 +296,7 @@ def test_fingerprint_is_the_manifest_that_produced_the_records(tmp_path):
     results = build_results(
         dataset=dataset,
         model_reference="test",
+        provenance=None,
         threshold=0.5,
         records=records,
         latencies_ms=latencies,

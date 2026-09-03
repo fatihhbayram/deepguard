@@ -59,6 +59,12 @@ def detect(clip):
 PYTHONPATH=. python3 scripts/benchmark/cli.py --model my_detector:detect ...
 ```
 
+A model module may also define a zero-argument `provenance()` returning a JSON-serializable
+dict. It is called after scoring and recorded in `results.json` under `run.model_provenance`,
+so a run's numbers can be traced to the weights or the provider deployment that produced
+them rather than only to the dotted reference that named the code. It is optional, and a
+`provenance()` that raises is recorded as an error rather than losing the run's scores.
+
 `mock` is the built-in stand-in: a deterministic, label-blind score derived from the
 clip id. It exists to exercise the harness and its accuracy means nothing.
 
@@ -109,9 +115,33 @@ A model that raises on a clip does not end the run. That clip is recorded with i
 error, excluded from the confusion matrix and from the latency figures, and counted in
 the artifact — a crash is not scored as a wrong answer.
 
+### The NVIDIA synthetic-video detector (R4)
+
+`benchmark.models.synthetic_video:detect` runs the provider DeepGuard already has in
+production, through DeepGuard's own preparation path — probe, then transcode only when the
+probe says a derivative is owed, then the gRPC call — because production almost never
+sends NVIDIA the uploaded bytes and a run over raw source files would measure a pipeline
+this service does not operate.
+
+It is therefore the one model that imports from `apps/api`, and it runs **inside the api
+container**, where those modules and the credentials live. It opens no database session,
+writes no row and stores no object; the derivative it creates is deleted after each call.
+Every response's function id is checked against the configured one and a mismatch raises
+rather than being scored — a threshold is only valid for the deployment it was measured
+against.
+
+```bash
+docker cp scripts/benchmark deepguard-api-1:/app/benchmark
+docker cp ../deepguard-corpus/r4t1_calibration deepguard-api-1:/tmp/r4t1_calibration
+docker exec -w /app deepguard-api-1 python benchmark/cli.py \
+    --manifest /tmp/r4t1_calibration/manifest.csv \
+    --model benchmark.models.synthetic_video:detect \
+    --output-dir /tmp/r4t1-svd
+```
+
 ## Artifacts
 
-`results.json` carries the run identity (model, threshold, manifest path and SHA-256,
+`results.json` carries the run identity (model, model provenance, threshold, manifest path and SHA-256,
 interpreter and platform), the dataset composition, the confusion matrix, accuracy /
 precision / recall / FPR / FNR, a per-label breakdown, latency and peak-RSS figures,
 and one record per clip. `report.md` is the same run as a readable summary.

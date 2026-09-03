@@ -16,6 +16,11 @@ float score, where higher means *more likely manipulated*. That is the entire co
 — no base class, no registry, no factory. When R3 brings a real face-manipulation
 detector it supplies one function, and the framework is unchanged.
 
+**What a model may say about itself.** Optionally, one more function: a module defining
+`provenance()` has it called after scoring and its dict recorded in `results.json`. The
+dotted reference names code, not bytes, and a run whose weights or provider deployment
+cannot be named afterwards cannot be the basis of a threshold (R4-T1).
+
 **What a per-clip failure does.** It is recorded and the run continues. A model that
 crashes on three clips out of two hundred still yields a measurement over the other
 hundred and ninety-seven, and the artifact says plainly how many were excluded and why.
@@ -55,7 +60,7 @@ from benchmark.dataset import (
 
 # Bumped when the shape of `results.json` changes, so a later reader can tell whether it
 # understands an artifact it did not produce.
-SCHEMA_VERSION = "r2-benchmark-1"
+SCHEMA_VERSION = "r2-benchmark-2"
 
 Model = Callable[[Clip], float]
 
@@ -71,6 +76,33 @@ def mock_model(clip: Clip) -> float:
     """
     digest = hashlib.sha256(clip.clip_id.encode("utf-8")).digest()
     return int.from_bytes(digest[:4], "big") / 2**32
+
+
+def model_provenance(reference: str) -> dict | None:
+    """Whatever the model's module says identifies it, or `None` if it says nothing.
+
+    A model module may define a zero-argument `provenance()` returning a JSON-serializable
+    dict. It is called *after* scoring, so a wrapper can report what actually answered —
+    the provider deployment that served the calls, the digests of the weights it loaded —
+    rather than what its configuration hoped for. `--model` names a dotted reference and
+    nothing else, and that string does not pin bytes: R4 binds thresholds to a specific
+    detector build, and a threshold whose model cannot be named is not traceable.
+
+    Optional, because `mock` and any one-function detector have nothing to declare. A
+    failure to produce it is recorded rather than raised: it arrives at the end of a run
+    that may have taken half an hour on a paid provider, and losing those measurements to
+    a broken metadata call would be the more expensive mistake.
+    """
+    if ":" not in reference:
+        return None
+    module_name, _, _ = reference.partition(":")
+    describe = getattr(sys.modules.get(module_name), "provenance", None)
+    if not callable(describe):
+        return None
+    try:
+        return describe()
+    except Exception as error:  # noqa: BLE001 - metadata must never lose a run
+        return {"error": f"{type(error).__name__}: {error}"}
 
 
 def resolve_model(reference: str) -> Model:
@@ -196,6 +228,7 @@ def build_results(
     *,
     dataset: Dataset,
     model_reference: str,
+    provenance: dict | None,
     threshold: float,
     records: list[dict],
     latencies_ms: list[float],
@@ -215,6 +248,7 @@ def build_results(
         "schema_version": SCHEMA_VERSION,
         "run": {
             "model": model_reference,
+            "model_provenance": provenance,
             "threshold": threshold,
             "started_at": started_at.isoformat(),
             "finished_at": finished_at.isoformat(),
@@ -271,6 +305,7 @@ def render_report(results: dict) -> str:
         "# Detector benchmark run",
         "",
         f"- Model: `{run['model']}`",
+        f"- Model provenance: `{json.dumps(run.get('model_provenance'))}`",
         f"- Threshold: `{run['threshold']}` (score >= threshold means manipulated)",
         f"- Manifest: `{dataset['manifest']}`",
         f"- Manifest SHA-256: `{dataset['manifest_sha256']}`",
@@ -399,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
     results = build_results(
         dataset=dataset,
         model_reference=args.model,
+        provenance=model_provenance(args.model),
         threshold=args.threshold,
         records=records,
         latencies_ms=latencies_ms,
