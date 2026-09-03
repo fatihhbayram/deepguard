@@ -183,7 +183,7 @@ const CONTRIBUTION_LABELS: Record<RiskRationale["syntheticVideo"]["role"], strin
   unreadable: "Answered, but unreadable",
   unavailable: "No usable reading",
   unread: "Not read by this ruleset",
-  unclear: "Reported below — the rule that fired does not name which detector this was",
+  unclear: "Not named by the rule — see this detector's own panel below",
 };
 
 /**
