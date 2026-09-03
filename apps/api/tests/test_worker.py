@@ -9,6 +9,7 @@ The loop tests at the bottom need no database — what they check is when the wo
 for work again, not what it finds.
 """
 
+import dataclasses
 import hashlib
 import threading
 import time
@@ -96,10 +97,16 @@ YUNET_REVISION = "47534e27c9851bb1128ccc0102f1145e27f23f98"
 YUNET_SHA256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
 FACETORCH_CHECKPOINT = f"{FACETORCH_REPOSITORY}@{FACETORCH_REVISION}"
 
-# The classifier's figure for the scripted clip. Above `T_HIGH` on purpose: the analyses
-# below must still classify on NVIDIA's score alone, and a face score that would be HIGH if
-# anything read it is what makes that demonstration worth anything.
-FACE_SCORE = 0.9931
+# The classifier's figure for the scripted clip. Below the face model's calibrated
+# threshold (0.9868), so the default job in this module is not classified by this detector
+# and the tests that are about NVIDIA's banding stay about NVIDIA's banding. It is the
+# median score genuine media earned on this detector in R4-T1.
+FACE_SCORE = 0.1274
+
+# A face score above that threshold, from `ffpp_dev_Deepfakes_106_198` in the R4-T1 corpus —
+# a real face swap NVIDIA's detector scored 0.1648 on and missed entirely. Used by the tests
+# that are about the face model deciding on its own.
+FACE_SCORE_HIGH = 0.9943
 
 # The operating point R3-T1 ran its confusion matrix at. Named here only so the tests can
 # assert it never reaches production evidence or a decision: it is a property of that
@@ -2000,13 +2007,14 @@ def test_the_face_classifier_reads_the_same_artifact_the_video_detector_does(
 
 
 @pytest.mark.integration
-def test_the_face_score_does_not_move_the_risk_decision(queue, fake_storage, fake_nvidia):
-    """The R3 constraint, at the level the decision is actually taken.
+def test_a_face_score_below_its_threshold_does_not_move_the_band(
+    queue, fake_storage, fake_nvidia
+):
+    """Two readable signals, neither above its own threshold: the indeterminate band.
 
-    NVIDIA's score is held at a value that bands MEDIUM while the face classifier reports
-    0.9931 — comfortably above `T_HIGH`, the boundary the calibrated signal is banded on. The
-    analysis must still be MEDIUM by `R200`: the face score is raw evidence in R3, the engine
-    reads one provider and one signal type, and calibrating this one is R4's work.
+    `R200` rather than `R201` is the point — both detectors read this media and neither
+    found anything, which is a materially better-covered MEDIUM than one detector reporting
+    alone.
     """
     analysis_id, _ = queue()
     fake_nvidia.probability = 0.4646
@@ -2018,9 +2026,57 @@ def test_the_face_score_does_not_move_the_risk_decision(queue, fake_storage, fak
     signals = read_signals(analysis_id)
 
     assert signals["face_manipulation"].score == FACE_SCORE
-    assert signals["face_manipulation"].score > 0.98
+    assert signals["face_manipulation"].score < 0.9868
     assert analysis.risk_level == "MEDIUM"
     assert analysis.risk_rule_id == "R200"
+
+
+@pytest.mark.integration
+def test_a_face_finding_alone_completes_high(queue, fake_storage, fake_nvidia, fake_face_detector):
+    """The detection capability ruleset v2 added, driven end to end through the worker.
+
+    NVIDIA is held at 0.1648 — what it actually scored on this clip in R4-T1, well under its
+    own threshold — while the face classifier reports 0.9943. A face swap NVIDIA cannot see
+    is exactly the media the second detector was calibrated for, so the analysis is HIGH by
+    `R101` and the trace names the detector that concluded it.
+    """
+    fake_nvidia.probability = 0.1648
+    fake_face_detector.evidence = dataclasses.replace(
+        fake_face_detector.evidence, score=FACE_SCORE_HIGH
+    )
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    analysis = read_analysis(analysis_id)
+    signals = read_signals(analysis_id)
+
+    assert analysis.risk_level == "HIGH"
+    assert analysis.risk_rule_id == "R101"
+    # The synthetic-video evidence is stored unchanged and is not what decided this.
+    assert signals["synthetic_video"].score == 0.1648
+    assert signals["face_manipulation"].score == FACE_SCORE_HIGH
+
+
+@pytest.mark.integration
+def test_both_detectors_flagging_completes_high_by_its_own_rule(
+    queue, fake_storage, fake_nvidia, fake_face_detector
+):
+    """R4-T1 never observed this on 159 clips. The trace still has to name it honestly."""
+    fake_nvidia.probability = 0.9931
+    fake_face_detector.evidence = dataclasses.replace(
+        fake_face_detector.evidence, score=FACE_SCORE_HIGH
+    )
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    analysis = read_analysis(analysis_id)
+
+    assert analysis.risk_level == "HIGH"
+    assert analysis.risk_rule_id == "R102"
 
 
 @pytest.mark.integration
@@ -2171,12 +2227,13 @@ def test_a_completed_job_carries_a_risk_decision_and_its_trace(queue, fake_stora
 
     assert read_job(job_id).status == "completed"
     assert analysis.status == "completed"
-    # The scripted detection is 0.8735, below the calibrated threshold.
+    # The scripted detections are 0.8735 and 0.1274, each below its own calibrated
+    # threshold, and both detectors read the media — the two-source indeterminate band.
     assert analysis.risk_level == "MEDIUM"
     assert analysis.risk_rule_id == "R200"
-    assert analysis.risk_rules_version == "p7-v1.0.0"
+    assert analysis.risk_rules_version == "r4-v2.0.0"
     assert analysis.risk_calibration_id == (
-        "3e362e8edfe253437234e3c291230a2921a6344555ab0861ee5871c53d20949c"
+        "cab2ea262bb7e41cb87e49bdb3dad53ecd0f02248035a993f9fcb033363afd1e"
     )
 
 
@@ -2184,7 +2241,8 @@ def test_a_completed_job_carries_a_risk_decision_and_its_trace(queue, fake_stora
 def test_a_detection_at_or_above_the_threshold_completes_high(
     queue, fake_storage, fake_nvidia
 ):
-    """The provider's number is what moves the band — nothing else in the job does."""
+    """NVIDIA's number moves the band on its own, with the face classifier below its own
+    threshold and therefore not part of the finding."""
     fake_nvidia.probability = 0.9931
     analysis_id, _ = queue()
 
@@ -2200,11 +2258,14 @@ def test_a_detection_at_or_above_the_threshold_completes_high(
 
 
 @pytest.mark.integration
-def test_an_uncalibrated_deployment_completes_unknown(queue, fake_storage, fake_nvidia):
+def test_an_uncalibrated_deployment_cannot_reach_a_band(queue, fake_storage, fake_nvidia):
     """A function id that merely contains the validated one is a different deployment.
 
-    The job still completes and the evidence is still stored — the analysis simply says
-    that no validated rule could be applied to it.
+    Its 0.9999 is discarded: no threshold was ever measured against that deployment. What is
+    left is the face classifier, which did read the media and scored below its own threshold,
+    so the analysis lands on the single-source indeterminate band rather than UNKNOWN. That
+    is the multi-source ruleset doing what it exists for — one detector going uncalibrated no
+    longer costs the analysis its whole classification.
     """
     fake_nvidia.probability = 0.9999
     fake_nvidia.function_id = f"{NVIDIA_FUNCTION_ID}-preview"
@@ -2216,17 +2277,49 @@ def test_an_uncalibrated_deployment_completes_unknown(queue, fake_storage, fake_
     analysis = read_analysis(analysis_id)
 
     assert read_job(job_id).status == "completed"
-    assert analysis.risk_level == "UNKNOWN"
-    assert analysis.risk_rule_id == "R010"
+    assert analysis.risk_level == "MEDIUM"
+    assert analysis.risk_rule_id == "R201"
     signal = read_signals(analysis_id)["synthetic_video"]
     assert signal.status == "SUCCESS"
     assert signal.provider_version == f"{NVIDIA_FUNCTION_ID}-preview"
 
 
 @pytest.mark.integration
-def test_a_provider_failure_completes_unknown_without_losing_the_other_evidence(
+def test_both_detectors_uncalibrated_completes_unknown(
+    queue, fake_storage, fake_nvidia, fake_face_detector
+):
+    """UNKNOWN now requires *both* deployments to be unrecognised.
+
+    Neither score may be compared against a threshold that was never measured for it, so no
+    validated rule can be applied to this analysis at all — which is what `R010` says.
+    """
+    fake_nvidia.probability = 0.9999
+    fake_nvidia.function_id = f"{NVIDIA_FUNCTION_ID}-preview"
+    fake_face_detector.evidence = dataclasses.replace(
+        fake_face_detector.evidence, classifier_revision="0000000000000000000000000000000000000000"
+    )
+    analysis_id, job_id = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    analysis = read_analysis(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert analysis.risk_level == "UNKNOWN"
+    assert analysis.risk_rule_id == "R010"
+
+
+@pytest.mark.integration
+def test_a_provider_failure_falls_back_to_the_other_detector(
     queue, fake_storage, fake_nvidia
 ):
+    """One detector refusing no longer costs the analysis its classification.
+
+    NVIDIA produced no reading at all, so nothing of its can be banded. The face classifier
+    did read the media and scored below its own threshold, which is a single-source MEDIUM —
+    and the trace says `R201` so nobody mistakes it for the two-source kind.
+    """
     fake_nvidia.error = nvidia_video.NvidiaProviderError("nvidia refused")
     analysis_id, _ = queue()
 
@@ -2236,9 +2329,10 @@ def test_a_provider_failure_completes_unknown_without_losing_the_other_evidence(
     analysis = read_analysis(analysis_id)
     signals = read_signals(analysis_id)
 
-    assert analysis.risk_level == "UNKNOWN"
-    assert analysis.risk_rule_id == "R010"
-    # UNKNOWN is about the direct-risk signal alone. Everything else survives intact.
+    assert analysis.risk_level == "MEDIUM"
+    assert analysis.risk_rule_id == "R201"
+    assert signals["synthetic_video"].status == "FAILED"
+    # Every other signal survives intact.
     assert signals["provenance"].status == "SUCCESS"
     assert signals["active_speaker"].status == "SUCCESS"
     assert signals["audio_authenticity"].status == "SUCCESS"
@@ -2272,16 +2366,22 @@ def test_the_engine_is_run_against_the_evidence_that_was_committed(
     """
     seen = {}
 
-    def spy(evidence):
+    def spy(svd_evidence, face_evidence):
         with SessionLocal() as reader:
             seen["committed"] = (
                 reader.query(AnalysisSignal)
                 .filter_by(analysis_id=analysis_id, signal_type="synthetic_video")
                 .one()
             )
-        seen["evidence"] = evidence
+            seen["committed_face"] = (
+                reader.query(AnalysisSignal)
+                .filter_by(analysis_id=analysis_id, signal_type="face_manipulation")
+                .one()
+            )
+        seen["evidence"] = svd_evidence
+        seen["face_evidence"] = face_evidence
         # The real rules, reached through the module rather than the patched name.
-        return risk_engine.evaluate(evidence)
+        return risk_engine.evaluate(svd_evidence, face_evidence)
 
     analysis_id, _ = queue()
     monkeypatch.setattr(worker, "evaluate", spy)
@@ -2294,6 +2394,11 @@ def test_the_engine_is_run_against_the_evidence_that_was_committed(
     assert seen["evidence"].score == NVIDIA_PROBABILITY
     assert seen["evidence"].provider_version == NVIDIA_FUNCTION_ID
     assert seen["evidence"].total_clips == 7
+    # Both calibrated signals are read back from the committed rows, not carried over.
+    assert seen["committed_face"].score == FACE_SCORE
+    assert seen["face_evidence"].score == FACE_SCORE
+    assert seen["face_evidence"].provider_version == FACETORCH_CHECKPOINT
+    assert seen["face_evidence"].frames_scored == 6
 
 
 @pytest.mark.integration
@@ -2307,7 +2412,7 @@ def test_a_classification_that_breaks_fails_the_job_but_keeps_the_evidence(
     """
     analysis_id, job_id = queue()
 
-    def broken(evidence):
+    def broken(*evidence):
         raise RuntimeError("the rules are broken")
 
     monkeypatch.setattr(worker, "evaluate", broken)

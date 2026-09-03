@@ -25,6 +25,7 @@ import {
   REMOTE_PROVENANCE,
   RISK_LABELS,
   RISK_STYLES,
+  RULES_VERSION_V2,
   RISK_UNSUPPORTED_STYLE,
   SIGNAL_STATUS_SUCCESS,
   SPEAKER_UNAVAILABLE,
@@ -35,6 +36,7 @@ import {
   fetchAnalyses,
   fetchSession,
   isSupportedRiskLevel,
+  riskRationale,
 } from "./analysis";
 
 
@@ -610,6 +612,10 @@ function shortCalibration(id: string): string {
  */
 function Risk({ analysis }: { analysis: AnalysisSummary }) {
   const level = analysis.risk_level;
+  const rationale = riskRationale(
+    analysis.risk_rules_version,
+    analysis.risk_rule_id,
+  );
 
   if (level === null) {
     return isDecided(analysis.status) ? (
@@ -672,6 +678,14 @@ function Risk({ analysis }: { analysis: AnalysisSummary }) {
               : ABSENT}
           </li>
         </ul>
+        {/* The rule in words. Derived from the persisted rule and ruleset — never from the
+            detector scores — so the row explains the decision that was taken rather than one
+            recomputed here. A ruleset this build does not know shows the trace alone. */}
+        {rationale !== null && (
+          <p className="mt-1.5 max-w-prose text-[10px] leading-relaxed text-muted">
+            {rationale.summary}
+          </p>
+        )}
       </details>
     </div>
   );
@@ -1073,8 +1087,13 @@ function Methodology() {
           evidence. It is not a Fake/Real determination.{" "}
           <span className="font-mono">{RISK_LABELS.MEDIUM}</span> is the indeterminate band
           — evidence that settles nothing either way — and the absence of{" "}
-          <span className="font-mono">{RISK_LABELS.HIGH}</span> does not rule out face
-          manipulation. <span className="font-mono">{RISK_LABELS.UNKNOWN}</span> means the
+          <span className="font-mono">{RISK_LABELS.HIGH}</span> does not mean the media is
+          genuine. Under ruleset{" "}
+          <span className="font-mono">{RULES_VERSION_V2}</span> two detectors are read, one
+          calibrated for generated video and one for face swaps, each against its own
+          measured threshold; the scores are never averaged or combined, and the rule in the
+          trace names which detector reached its threshold.{" "}
+          <span className="font-mono">{RISK_LABELS.UNKNOWN}</span> means the
           engine ran and could not classify, which is not the same as{" "}
           <span className="font-mono">{PENDING}</span>, where no decision has been taken
           yet, or <span className="font-mono">{ABSENT}</span>, where an analysis finished

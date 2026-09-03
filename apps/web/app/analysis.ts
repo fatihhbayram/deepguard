@@ -341,6 +341,231 @@ export type ExcludedRiskStates = Excluded<"LOW" | "CRITICAL" | "FAKE" | "REAL">;
 export const _EXCLUDED_RISK_STATES: ExcludedRiskStates[] = ["LOW", "CRITICAL", "FAKE", "REAL"];
 void _EXCLUDED_RISK_STATES;
 
+// --------------------------------------------------------------------------------------
+// Explaining a stored decision
+// --------------------------------------------------------------------------------------
+
+// The two rulesets whose decisions can be sitting in the database. A row is only readable
+// through the version it names: `R200` means "NVIDIA's score was below 0.98" under v1 and
+// "both detectors read the media and neither reached its own threshold" under v2, and those
+// are different sentences about different evidence.
+export const RULES_VERSION_V1 = "p7-v1.0.0";
+export const RULES_VERSION_V2 = "r4-v2.0.0";
+
+// The operating points R4-T1 selected, shown to four decimal places wherever the rationale
+// quotes a boundary. Display values only: nothing on the client compares anything against
+// them, and the decision they explain was taken by the API when the analysis ran.
+export const SVD_T_HIGH_DISPLAY = "0.9551";
+export const FACE_T_HIGH_DISPLAY = "0.9868";
+
+// What one detector did in the decision being explained.
+//
+//   decided     — this detector's score reached its own calibrated threshold, and that is
+//                 what produced the risk level
+//   below       — this detector produced a usable calibrated reading under its threshold
+//   unreadable  — the calibrated detector answered and its figures could not be used
+//   unavailable — no usable reading: missing, failed, abstained, or an uncalibrated build
+//   unread      — this ruleset did not read this detector at all
+//   unclear     — the rule that fired does not, on its own, say which of the two this was
+export type ContributionRole =
+  | "decided"
+  | "below"
+  | "unreadable"
+  | "unavailable"
+  | "unread"
+  | "unclear";
+
+export type RiskRationale = {
+  // One sentence naming what actually produced the level.
+  summary: string;
+  // What each detector contributed, so a reader can see that the level came from a named
+  // source rather than from the two numbers being pooled.
+  syntheticVideo: { role: ContributionRole; detail: string };
+  faceManipulation: { role: ContributionRole; detail: string };
+  // What the decision does and does not cover. The honest limits belong beside the level,
+  // not in a footnote — an `R201` MEDIUM was reached with half the coverage of an `R200`.
+  coverage: string;
+};
+
+const NOT_READ_BY_V1 =
+  "Not read by this ruleset. Under p7-v1.0.0 the face-manipulation score was stored as independent forensic evidence and was not eligible to move the risk level.";
+
+// Ruleset v2 (R4-T1 calibration): two detectors, each banded on its own measured threshold.
+const V2_RATIONALES: Record<string, RiskRationale> = {
+  R102: {
+    summary:
+      "Both calibrated detectors independently reached their own thresholds on this media.",
+    syntheticVideo: {
+      role: "decided",
+      detail: `Scored at or above ${SVD_T_HIGH_DISPLAY}, the threshold measured for it.`,
+    },
+    faceManipulation: {
+      role: "decided",
+      detail: `Scored at or above ${FACE_T_HIGH_DISPLAY}, the threshold measured for it.`,
+    },
+    coverage:
+      "Two independent findings, reached separately. The scores were not combined, averaged or weighted against each other; each was compared only to its own threshold.",
+  },
+  R100: {
+    summary:
+      "NVIDIA's synthetic-video detector reached its calibrated threshold. That finding alone produced this level.",
+    syntheticVideo: {
+      role: "decided",
+      detail: `Scored at or above ${SVD_T_HIGH_DISPLAY}, the threshold measured for it. This detector separates generated video well and is the one calibrated for it.`,
+    },
+    faceManipulation: {
+      role: "below",
+      detail: `Scored below ${FACE_T_HIGH_DISPLAY} and did not contribute. This detector is calibrated for face swaps and performs worse than chance on generated video, so a low score from it is not evidence against the finding above and was not allowed to reduce the level.`,
+    },
+    coverage:
+      "The level rests on one detector's evidence. The other detector's low score is not a second opinion — in the calibration study the two detectors never once agreed, and requiring agreement would have detected nothing at all.",
+  },
+  R101: {
+    summary:
+      "The EfficientNet-B7 face-manipulation classifier reached its calibrated threshold. That finding alone produced this level.",
+    syntheticVideo: {
+      role: "below",
+      detail: `Scored below ${SVD_T_HIGH_DISPLAY} and did not contribute. This detector is near-blind to face swaps — it flagged none of the 50 in the calibration corpus — so a low score from it is not evidence against the finding above and was not allowed to reduce the level.`,
+    },
+    faceManipulation: {
+      role: "decided",
+      detail: `Scored at or above ${FACE_T_HIGH_DISPLAY}, the threshold measured for it. This detector separates face swaps well and is the one calibrated for them.`,
+    },
+    coverage:
+      "The level rests on one detector's evidence. This is the finding the previous ruleset could not make: face manipulation was not covered by any calibrated rule before R4-T1.",
+  },
+  R200: {
+    summary:
+      "Both detectors read this media and neither reached its own threshold.",
+    syntheticVideo: {
+      role: "below",
+      detail: `Produced a usable calibrated reading below ${SVD_T_HIGH_DISPLAY}.`,
+    },
+    faceManipulation: {
+      role: "below",
+      detail: `Produced a usable calibrated reading below ${FACE_T_HIGH_DISPLAY}.`,
+    },
+    coverage:
+      "Both a generated-video and a face-manipulation question were asked of this media, and neither was answered above its threshold. That is not a finding that the media is genuine: each detector is deliberately set to a point that almost never flags legitimate footage, which means a great deal of manipulated media also falls below it.",
+  },
+  R201: {
+    summary:
+      "Only one of the two calibrated detectors produced a usable reading, and it did not reach its threshold.",
+    syntheticVideo: {
+      role: "unclear",
+      detail: "See this detector's own panel below for whether it produced a reading.",
+    },
+    faceManipulation: {
+      role: "unclear",
+      detail: "See this detector's own panel below for whether it produced a reading.",
+    },
+    coverage:
+      "This level was reached with half the coverage of a two-detector result: one of the two questions was never answered for this media. It is a weaker basis than it looks, and it is reported separately for exactly that reason.",
+  },
+  R012: {
+    summary:
+      "A calibrated detector answered, but its figures could not be read, so no rule could be applied.",
+    syntheticVideo: {
+      role: "unreadable",
+      detail: "No usable reading. See this detector's own panel below.",
+    },
+    faceManipulation: {
+      role: "unreadable",
+      detail: "No usable reading. See this detector's own panel below.",
+    },
+    coverage:
+      "This is a statement about the evidence, not about the media. Nothing here suggests the media is either genuine or manipulated.",
+  },
+  R010: {
+    summary:
+      "Neither calibrated detector produced a reading that any rule could be applied to.",
+    syntheticVideo: {
+      role: "unavailable",
+      detail:
+        "No usable calibrated reading — missing, failed, or produced by a build the thresholds were never measured against.",
+    },
+    faceManipulation: {
+      role: "unavailable",
+      detail:
+        "No usable calibrated reading — missing, failed, abstained because no face was found, or produced by a build the thresholds were never measured against.",
+    },
+    coverage:
+      "This is a statement about the evidence, not about the media. Nothing here suggests the media is either genuine or manipulated.",
+  },
+};
+
+// Ruleset v1 (P7-T2 calibration): NVIDIA's synthetic-video score alone, against 0.98.
+// Kept so decisions taken before R4-T2 stay readable as what they actually were. A v1 row
+// explained in v2's words would claim a face-manipulation question was asked of media
+// nothing ever asked it of.
+const V1_RATIONALES: Record<string, RiskRationale> = {
+  R100: {
+    summary:
+      "NVIDIA's synthetic-video detector scored at or above 0.98, the threshold this ruleset banded on.",
+    syntheticVideo: { role: "decided", detail: "Scored at or above 0.98." },
+    faceManipulation: { role: "unread", detail: NOT_READ_BY_V1 },
+    coverage:
+      "This ruleset read one detector. It was validated for generated video and was not validated for face-swap detection, so this result does not cover face manipulation either way.",
+  },
+  R200: {
+    summary:
+      "NVIDIA's synthetic-video detector produced a usable reading below 0.98.",
+    syntheticVideo: { role: "below", detail: "Scored below 0.98." },
+    faceManipulation: { role: "unread", detail: NOT_READ_BY_V1 },
+    coverage:
+      "This ruleset read one detector and was not validated for face-swap detection. Absence of a high-risk finding here does not rule out face manipulation.",
+  },
+  R012: {
+    summary:
+      "NVIDIA's synthetic-video detector answered, but its figures could not be read.",
+    syntheticVideo: { role: "unreadable", detail: "No usable reading." },
+    faceManipulation: { role: "unread", detail: NOT_READ_BY_V1 },
+    coverage:
+      "This is a statement about the evidence, not about the media.",
+  },
+  R010: {
+    summary:
+      "No usable synthetic-video reading was available from the calibrated deployment.",
+    syntheticVideo: {
+      role: "unavailable",
+      detail:
+        "No usable calibrated reading — missing, failed, or produced by a deployment the threshold was never measured against.",
+    },
+    faceManipulation: { role: "unread", detail: NOT_READ_BY_V1 },
+    coverage:
+      "This is a statement about the evidence, not about the media.",
+  },
+};
+
+const RATIONALES_BY_RULESET: Record<string, Record<string, RiskRationale>> = {
+  [RULES_VERSION_V1]: V1_RATIONALES,
+  [RULES_VERSION_V2]: V2_RATIONALES,
+};
+
+/**
+ * The stored decision's rationale, derived from its trace and from nothing else.
+ *
+ * Keyed on the ruleset *and* the rule, because a rule id only means something inside the
+ * version that defined it. A row from a ruleset this build does not know, or a rule id that
+ * version never defined, returns null — the caller then shows the raw trace without putting
+ * an explanation next to it that may not be the one that actually fired.
+ *
+ * Deliberately a pure function of the two persisted strings. It does not read the detector
+ * scores rendered elsewhere on the page: the decision was taken by the API when the analysis
+ * ran, and re-deriving it here from the evidence could disagree with what was stored and
+ * quietly present the client's answer as the record.
+ */
+export function riskRationale(
+  rulesVersion: string | null,
+  ruleId: string | null,
+): RiskRationale | null {
+  if (rulesVersion === null || ruleId === null) {
+    return null;
+  }
+
+  return RATIONALES_BY_RULESET[rulesVersion]?.[ruleId] ?? null;
+}
+
 // The three provenance outcomes that are not a C2PA state: the file was read and carries
 // no credentials, the file names a manifest kept somewhere else, and the file could not be
 // read. Kept apart on purpose — "we looked and found nothing", "provenance was claimed but

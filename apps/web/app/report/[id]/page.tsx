@@ -9,11 +9,15 @@ import {
   FaceManipulationSignal,
   MediaFacts,
   ProvenanceSignal,
+  FACE_T_HIGH_DISPLAY,
   RISK_LABELS,
+  RULES_VERSION_V2,
+  RiskRationale,
   SyntheticVideoSignal,
   UNSUPPORTED,
   fetchAnalysis,
   isSupportedRiskLevel,
+  riskRationale,
 } from "../../analysis";
 
 import { PrintButton } from "./print-button";
@@ -165,13 +169,89 @@ function MediaSection({
 }
 
 /**
+ * How each detector contributed, in the words the rationale table gives.
+ *
+ * The label is fixed per role and the detail comes from the stored rule, so a reader can see
+ * at a glance which source produced the level and which merely did not object. That
+ * distinction is the whole point of a multi-source ruleset: a detector that scored below its
+ * threshold is not a second opinion agreeing that the media is fine, and this row must never
+ * let it read as one.
+ */
+const CONTRIBUTION_LABELS: Record<RiskRationale["syntheticVideo"]["role"], string> = {
+  decided: "Reached its threshold — this is what decided",
+  below: "Below its threshold — did not contribute",
+  unreadable: "Answered, but unreadable",
+  unavailable: "No usable reading",
+  unread: "Not read by this ruleset",
+  unclear: "Reported below — the rule that fired does not name which detector this was",
+};
+
+/**
+ * What this detector's own signal row says about itself, for the one rule that cannot say.
+ *
+ * `R201` means exactly one of the two detectors produced a usable reading, and the rule id
+ * alone does not record which — so the rationale table marks both `unclear` rather than
+ * guessing. Reporting each detector's *stored status* closes that gap without re-deriving
+ * anything: presence and status are persisted facts about the signal row, read straight out
+ * of the record, and no score is compared against any threshold here. A successful reading is
+ * still only reported as a reading — whether it was the one a rule could be applied to also
+ * depends on the build that produced it, which its own section below states in full.
+ */
+function storedStatusNote(status: string | null | undefined): string {
+  if (status === undefined || status === null) {
+    return "No signal from this detector is recorded for this analysis.";
+  }
+
+  if (status !== "SUCCESS") {
+    return `This detector returned no reading — its signal is stored as ${status}.`;
+  }
+
+  return "This detector returned a reading; its section below gives the figures and the build that produced them.";
+}
+
+function Contribution({
+  detector,
+  contribution,
+  status,
+}: {
+  detector: string;
+  contribution: RiskRationale["syntheticVideo"];
+  status?: string | null;
+}) {
+  return (
+    <div className="border-t border-black/10 pt-2 dark:border-white/15">
+      <p className="text-sm font-medium">{detector}</p>
+      <p className="mt-0.5 text-xs font-medium opacity-90">
+        {CONTRIBUTION_LABELS[contribution.role]}
+      </p>
+      <p className="mt-1 text-xs opacity-70">
+        {contribution.role === "unclear"
+          ? storedStatusNote(status)
+          : contribution.detail}
+      </p>
+    </div>
+  );
+}
+
+/**
  * The persisted product-level risk classification, with the trace that makes it explainable.
  *
- * Read from the analysis row exactly as stored. Nothing on this page looks at the NVIDIA
- * score below to decide what to print here.
+ * Read from the analysis row exactly as stored. Nothing on this page looks at the detector
+ * scores below to decide what to print here: the rationale is derived from `risk_rule_id` and
+ * `risk_rules_version` — the two strings the worker committed alongside the level — so the
+ * explanation is always the rule that actually fired rather than a fresh conclusion this page
+ * reached about the same evidence.
+ *
+ * A row whose ruleset this build does not recognise gets the trace with no explanation beside
+ * it, which is the honest rendering: a rule id only means something inside the version that
+ * defined it, and borrowing another version's wording would describe a decision nobody took.
  */
 function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
   const level = analysis.risk_level;
+  const rationale = riskRationale(
+    analysis.risk_rules_version,
+    analysis.risk_rule_id,
+  );
 
   return (
     <section
@@ -202,17 +282,56 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
         </p>
       ) : null}
 
+      {rationale !== null && (
+        <div className="mt-4">
+          <h3 className="text-sm font-semibold">Why this classification</h3>
+          <p className="mt-1 text-sm">{rationale.summary}</p>
+
+          <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide opacity-70">
+            How each detector contributed
+          </h4>
+          <div className="mt-2 space-y-2">
+            <Contribution
+              detector="NVIDIA synthetic-video detector"
+              contribution={rationale.syntheticVideo}
+              status={analysis.synthetic_video?.status ?? null}
+            />
+            <Contribution
+              detector="EfficientNet-B7 face-manipulation classifier"
+              contribution={rationale.faceManipulation}
+              status={analysis.face_manipulation?.status ?? null}
+            />
+          </div>
+
+          <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide opacity-70">
+            What this covers
+          </h4>
+          <p className="mt-1 text-xs opacity-80">{rationale.coverage}</p>
+        </div>
+      )}
+
       <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Field label="Rule fired" value={analysis.risk_rule_id ?? ABSENT} />
         <Field label="Ruleset version" value={analysis.risk_rules_version ?? ABSENT} />
         <Field label="Calibration ID" value={analysis.risk_calibration_id ?? ABSENT} />
       </dl>
 
+      {analysis.risk_rule_id !== null && rationale === null && (
+        <p className="mt-2 text-xs opacity-70">
+          This build has no description for rule{" "}
+          <span className="font-mono">{analysis.risk_rule_id}</span> under ruleset{" "}
+          <span className="font-mono">{analysis.risk_rules_version ?? ABSENT}</span>, so the
+          trace above is shown without one. The decision itself is reproduced exactly as it
+          was stored.
+        </p>
+      )}
+
       <p className="mt-4 text-xs opacity-80">
         Risk is a deterministic InspectRoot classification based on calibrated forensic
-        evidence. It is not a Fake/Real determination. This classification was recorded when
-        the analysis ran and is reproduced here unchanged; it is not recalculated by this
-        report.
+        evidence. It is not a Fake/Real determination. Each detector was compared only against
+        the threshold measured for it; the scores were never averaged, weighted or combined
+        into a single number. This classification was recorded when the analysis ran and is
+        reproduced here unchanged; it is not recalculated by this report.
       </p>
     </section>
   );
@@ -225,16 +344,45 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
  * single most important thing a reader of this report needs to know, and burying them would
  * let the document imply a coverage it does not have.
  */
-function ScopeDisclosure() {
+function ScopeDisclosure({ analysis }: { analysis: AnalysisSummary }) {
+  // Scope is a property of the ruleset the decision was taken under, not of this build. A
+  // decision taken under p7-v1.0.0 really did read one detector and really was not validated
+  // for face swaps, and saying otherwise on an old report would overstate what was checked.
+  const multiSource = analysis.risk_rules_version === RULES_VERSION_V2;
+
   return (
     <section className="mt-4 break-inside-avoid rounded border-2 border-amber-500/60 p-4">
       <h2 className="text-sm font-semibold uppercase tracking-wide">
         Scope of this risk model
       </h2>
-      <p className="mt-2 text-sm font-medium">
-        This risk model is validated for generated video and is not validated for face-swap
-        detection. Absence of HIGH risk does not rule out face manipulation.
-      </p>
+      {multiSource ? (
+        <>
+          <p className="mt-2 text-sm font-medium">
+            This risk model is validated for generated video and for face swaps, by two
+            separate detectors with separate thresholds. Absence of HIGH risk does not mean
+            the media is genuine.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            Both thresholds were set to almost never flag legitimate footage: neither detector
+            flagged any of the 54 genuine clips in the calibration corpus. That choice is paid
+            for in detection rate. At these operating points the synthetic-video detector
+            flagged 54.6% of generated video and the face classifier flagged 44% of face
+            swaps, so a great deal of manipulated media is correctly not flagged as HIGH.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            The two detectors cover different things and are read independently. Neither one
+            scoring low is evidence against the other: in the calibration study the two never
+            agreed on a single clip, and each was blind to the manipulation family the other
+            was calibrated for.
+          </p>
+        </>
+      ) : (
+        <p className="mt-2 text-sm font-medium">
+          This decision was taken under a single-detector ruleset that is validated for
+          generated video and is not validated for face-swap detection. Absence of HIGH risk
+          does not rule out face manipulation.
+        </p>
+      )}
       <p className="mt-2 text-xs opacity-80">
         Risk is a deterministic InspectRoot classification based on calibrated forensic
         evidence. It is not a Fake/Real determination.
@@ -531,11 +679,26 @@ function AudioSection({ signal }: { signal: AudioAuthenticitySignal | null }) {
   );
 }
 
-function FaceManipulationSection({ signal }: { signal: FaceManipulationSignal | null }) {
+function FaceManipulationSection({
+  signal,
+  analysis,
+}: {
+  signal: FaceManipulationSignal | null;
+  analysis: AnalysisSummary;
+}) {
+  // Whether this detector was eligible to decide is a property of the ruleset the decision
+  // was taken under. R4-T2 promoted it from independent evidence to a calibrated decider, and
+  // a report on an older decision must keep saying what was true of that decision.
+  const decides = analysis.risk_rules_version === RULES_VERSION_V2;
+
   return (
     <Section
       title="EfficientNet-B7 face manipulation detector"
-      subtitle="Independent evidence. The score below is the model's own output and is not part of the risk classification."
+      subtitle={
+        decides
+          ? "Calibrated evidence. The score below is the model's own output, banded against a threshold measured for it in R4-T1."
+          : "Independent evidence. The score below is the model's own output and is not part of the risk classification."
+      }
     >
       {signal === null ? (
         <NoSignal what="face-manipulation" />
@@ -582,15 +745,25 @@ function FaceManipulationSection({ signal }: { signal: FaceManipulationSignal | 
 
           <p className="mt-3 text-xs opacity-80">
             The score is the mean of the model&apos;s per-frame output over the frames above,
-            shown exactly as the model produced it. It is <strong>not calibrated</strong>,{" "}
-            <strong>not a probability that this media is manipulated</strong>, and{" "}
-            <strong>not a Fake/Real decision</strong>. No threshold is applied to it anywhere
-            in InspectRoot.
+            shown exactly as the model produced it. It is{" "}
+            <strong>not a probability that this media is manipulated</strong> and{" "}
+            <strong>not a Fake/Real decision</strong>.
           </p>
-          <p className="mt-2 text-xs opacity-80">
-            It does not contribute to the risk classification above and cannot change it. This
-            signal is recorded as an independent forensic fact only.
-          </p>
+          {decides ? (
+            <p className="mt-2 text-xs opacity-80">
+              Under this ruleset the score is compared against{" "}
+              <span className="font-mono">{FACE_T_HIGH_DISPLAY}</span> — the threshold measured
+              for this detector in R4-T1, and for this detector only. It is never averaged or
+              combined with the synthetic-video score above; the two are separate questions
+              with separate answers, and the risk classification names which of them decided.
+            </p>
+          ) : (
+            <p className="mt-2 text-xs opacity-80">
+              It is <strong>not calibrated</strong> under this ruleset, no threshold is applied
+              to it, and it does not contribute to the risk classification above and cannot
+              change it. This signal is recorded as an independent forensic fact only.
+            </p>
+          )}
         </>
       )}
     </Section>
@@ -677,7 +850,7 @@ export default async function Report({ params }: { params: Promise<{ id: string 
         />
       </dl>
 
-      <ScopeDisclosure />
+      <ScopeDisclosure analysis={analysis} />
 
       <RiskSection analysis={analysis} />
 
@@ -687,16 +860,16 @@ export default async function Report({ params }: { params: Promise<{ id: string 
         Independent forensic evidence
       </h2>
       <p className="mt-1 text-xs opacity-70">
-        Each source is recorded separately and none of them is combined into the other. Only
-        the synthetic-video detector contributes to the risk classification above; provenance,
-        speaking evidence, face-manipulation evidence and audio evidence are recorded as
-        independent forensic facts and cannot change that classification.
+        Each source is recorded separately and none of them is combined into the other.
+        {analysis.risk_rules_version === RULES_VERSION_V2
+          ? " Two of them are calibrated and can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence and audio evidence have no calibrated threshold and cannot change that classification."
+          : " Only the synthetic-video detector contributes to the risk classification above; provenance, speaking evidence, face-manipulation evidence and audio evidence are recorded as independent forensic facts and cannot change that classification."}
       </p>
 
       <SyntheticVideoSection signal={analysis.synthetic_video} />
       <ProvenanceSection signal={analysis.provenance} />
       <ActiveSpeakerSection signal={analysis.active_speaker} />
-      <FaceManipulationSection signal={analysis.face_manipulation} />
+      <FaceManipulationSection signal={analysis.face_manipulation} analysis={analysis} />
       <AudioSection signal={analysis.audio_authenticity} />
 
       <footer className="mt-8 break-inside-avoid border-t border-black/15 pt-4 text-xs opacity-70 dark:border-white/20">

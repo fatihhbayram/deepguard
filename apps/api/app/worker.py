@@ -97,6 +97,8 @@ from app.db.session import SessionLocal, engine
 from app.limits import InvalidTimeout, validate as validate_limits
 from app.detection import (
     ACTIVE_SPEAKER_SIGNAL,
+    EFFICIENTNET_B7_PROVIDER,
+    FACE_MANIPULATION_SIGNAL,
     NVIDIA_PROVIDER,
     SYNTHETIC_VIDEO_SIGNAL,
     analyse_audio,
@@ -109,7 +111,7 @@ from app.detection import (
 from app.normalization import NormalizationError, NormalizationTimeout, normalize_to_mp4
 from app.observability import bind_request_id, configure_logging, reset_request_id
 from app.speaker_diarization import SpeakerDiarizationTimeout
-from app.risk_engine import RiskDecision, SvdEvidence, evaluate
+from app.risk_engine import FaceEvidence, RiskDecision, SvdEvidence, evaluate
 from app.storage import fetch_object, store_derivative
 
 logger = logging.getLogger(__name__)
@@ -866,27 +868,26 @@ def write_evidence(
     session.commit()
 
 
-def persisted_svd_evidence(session: Session, analysis_id: uuid.UUID) -> SvdEvidence | None:
-    """Read this analysis's synthetic-video signal back out of the database.
+def _persisted_signal(
+    session: Session, analysis_id: uuid.UUID, provider: str, signal_type: str
+):
+    """Read one of this analysis's detector signals back out of the database.
 
-    Read back rather than carried over. The values that reach the risk engine are the ones
-    a reader of `analysis_signals` will find behind the decision, which is the only way a
-    stored classification can be re-derived from stored evidence — an in-memory score that
-    differed from the committed row, for any reason, would leave the two disagreeing with
-    nothing to say so.
+    Read back rather than carried over. The values that reach the risk engine are the ones a
+    reader of `analysis_signals` will find behind the decision, which is the only way a stored
+    classification can be re-derived from stored evidence — an in-memory score that differed
+    from the committed row, for any reason, would leave the two disagreeing with nothing to
+    say so.
 
     The lookup names the row; it does not decide eligibility. Provider and signal type are
-    what identify *which* signal is the direct-risk one, and the risk engine checks them
-    again along with the status and the exact function id, so the calibration binding is
-    enforced by the rules rather than assumed from a query.
-
-    `total_clips` comes out of the signal's JSON metadata, where the provider's aggregate
-    figures live. It has no column of its own and is absent on every signal that failed.
+    what identify *which* signal this is, and the risk engine checks them again along with the
+    status and the exact deployment identifier, so each calibration binding is enforced by the
+    rules rather than assumed from a query.
 
     Returns nothing when there is no such signal at all. That absence is evidence in its own
     right, and the engine has a rule for it rather than this function having a default.
     """
-    row = session.execute(
+    return session.execute(
         select(
             AnalysisSignal.provider,
             AnalysisSignal.signal_type,
@@ -896,12 +897,24 @@ def persisted_svd_evidence(session: Session, analysis_id: uuid.UUID) -> SvdEvide
             AnalysisSignal.signal_metadata,
         ).where(
             AnalysisSignal.analysis_id == analysis_id,
-            AnalysisSignal.provider == NVIDIA_PROVIDER,
-            AnalysisSignal.signal_type == SYNTHETIC_VIDEO_SIGNAL,
+            AnalysisSignal.provider == provider,
+            AnalysisSignal.signal_type == signal_type,
         )
-        # Two direct-risk signals on one analysis is a defect in how evidence was written,
-        # not a case to pick a winner from. It raises rather than classifying half of it.
+        # Two rows for one provider and signal type on one analysis is a defect in how
+        # evidence was written, not a case to pick a winner from. It raises rather than
+        # classifying half of it.
     ).one_or_none()
+
+
+def persisted_svd_evidence(session: Session, analysis_id: uuid.UUID) -> SvdEvidence | None:
+    """This analysis's NVIDIA synthetic-video signal, shaped for the rules.
+
+    `total_clips` comes out of the signal's JSON metadata, where the provider's aggregate
+    figures live. It has no column of its own and is absent on every signal that failed.
+    """
+    row = _persisted_signal(
+        session, analysis_id, NVIDIA_PROVIDER, SYNTHETIC_VIDEO_SIGNAL
+    )
 
     if row is None:
         return None
@@ -918,22 +931,55 @@ def persisted_svd_evidence(session: Session, analysis_id: uuid.UUID) -> SvdEvide
     )
 
 
+def persisted_face_evidence(session: Session, analysis_id: uuid.UUID) -> FaceEvidence | None:
+    """This analysis's EfficientNet-B7 face-manipulation signal, shaped for the rules.
+
+    `frames_scored` comes out of the signal's JSON metadata, where `app.detection` records how
+    many face crops the stored mean was actually taken over. Absent on every signal that
+    failed, including the abstention this detector reports for a clip with no face in it —
+    which the engine treats as no reading rather than as a finding of no manipulation.
+    """
+    row = _persisted_signal(
+        session, analysis_id, EFFICIENTNET_B7_PROVIDER, FACE_MANIPULATION_SIGNAL
+    )
+
+    if row is None:
+        return None
+
+    metadata = row.signal_metadata or {}
+
+    return FaceEvidence(
+        provider=row.provider,
+        signal_type=row.signal_type,
+        status=row.status,
+        provider_version=row.provider_version,
+        score=row.score,
+        frames_scored=metadata.get("frames_scored"),
+    )
+
+
 def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision | None:
     """Classify the analysis from its committed evidence and close the job out.
 
     Returns nothing when the job stopped being this worker's — see `_set_status`.
 
     The final analysis step, and it runs after persistence rather than before it for the
-    reason `persisted_svd_evidence` gives. The decision and the statuses that publish it go
+    reason the evidence readers above give. The decision and the statuses that publish it go
     in together: an analysis marked `completed` without a decision would show a finished
     analysis nobody classified, and a decision written without the job moving on would leave
     the classification invisible behind a job still in progress.
 
-    Only the direct-risk signal is read. The provenance, face-manipulation, speaker-timeline
-    and audio rows committed moments ago are not fetched, not passed in and cannot reach this
-    decision — they remain forensic evidence in their own right and none of them is entitled
-    to move a band (rule 11, and `app.risk_engine`). `persisted_svd_evidence` names one
-    provider and one signal type, so the query cannot see them even by accident.
+    Two signals are read, and only two: NVIDIA's synthetic-video score and EfficientNet-B7's
+    face-manipulation score, each of which R4-T1 calibrated an operating point for. The
+    provenance, speaker-timeline and audio rows committed moments ago are not fetched, not
+    passed in and cannot reach this decision — they remain forensic evidence in their own
+    right and none of them is entitled to move a band (rule 11, and `app.risk_engine`). Each
+    reader above names one provider and one signal type, so the queries cannot see them even
+    by accident.
+
+    The two are fetched separately and handed over separately. Nothing here compares, combines
+    or reconciles them: the engine holds the rules, and this function's whole responsibility is
+    that the evidence it passes is the evidence the database holds.
 
     Nothing here catches anything. The engine is total over the evidence it is given: a
     missing signal, a failed one, an uncalibrated deployment and unusable figures are each
@@ -944,7 +990,10 @@ def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision | None:
     Swallowing it as `UNKNOWN` would publish a classification nobody made and hide the
     defect behind it; the evidence is already committed and survives the failure either way.
     """
-    decision = evaluate(persisted_svd_evidence(session, claimed.analysis_id))
+    decision = evaluate(
+        persisted_svd_evidence(session, claimed.analysis_id),
+        persisted_face_evidence(session, claimed.analysis_id),
+    )
 
     if not _set_status(
         session,
