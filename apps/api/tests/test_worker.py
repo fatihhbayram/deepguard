@@ -126,10 +126,16 @@ LIPFORENSICS_MODEL = (
     f"{LIPFORENSICS_REPOSITORY}@{LIPFORENSICS_REVISION}+{LIPFORENSICS_WEIGHTS_SHA256}"
 )
 
-# The mouth-dynamics model's figure for the scripted clip. High on its own scale, and chosen that
-# way deliberately: no rule reads this signal, so a job whose mouth-dynamics score is emphatic must
-# still be classified exactly as one whose score is not, and several tests below turn on that.
-LIP_FORENSICS_SCORE = 0.9612
+# The mouth-dynamics model's figure for the scripted clip. Below this detector's calibrated
+# threshold (0.2296), for the same reason the face score above is below its own: the default job
+# in this module is not classified by this detector, so the tests that are about NVIDIA's banding
+# stay about NVIDIA's banding. It is the median score genuine media earned in R5-T3.
+LIP_FORENSICS_SCORE = 0.00011039116361644119
+
+# A mouth-dynamics score above that threshold, from `Deepfakes_220_219` in the R5-T3 corpus — the
+# lowest-scoring face swap of the 20, and the one the R5-T1 harness's 0.5 reporting convention
+# would have missed. Used by the tests that are about this model deciding on its own.
+LIP_FORENSICS_SCORE_HIGH = 0.4424368441104889
 
 # The operating point R3-T1 ran its confusion matrix at. Named here only so the tests can
 # assert it never reaches production evidence or a decision: it is a property of that
@@ -2166,17 +2172,16 @@ def test_the_lip_forensics_model_reads_the_same_artifact_the_others_do(
 
 
 @pytest.mark.integration
-def test_the_lip_forensics_signal_cannot_change_the_risk_decision(
+def test_the_lip_forensics_signal_changes_the_coverage_of_a_medium(
     queue, fake_storage, fake_nvidia, fake_lip_forensics
 ):
-    """R5-T2's central constraint, asserted against the decision the worker actually stored.
+    """What R5-T4 changed, asserted against the decision the worker actually stored.
 
-    The same job is run twice — once with the mouth-dynamics model answering emphatically, once with
-    it failing outright — and every field of the stored decision has to match. A signal that
-    could move a band would show up here as a different level, a different rule id, or a
-    different calibration identity; there is no arrangement of this evidence under which the
-    engine reads it, because `conclude_job` never fetches it and `evaluate` takes no argument
-    for it.
+    The same job is run twice — once with the mouth-dynamics model answering below its own
+    threshold, once with it failing outright. Under `r4-v2.0.0` both were `R200`, because the
+    row was fetched by nothing. Under `r5-v3.0.0` the first is `R200` on three readings and the
+    second is `R201` on two, and the band is the same in both: a missing reading costs coverage,
+    never a level.
     """
     fake_nvidia.probability = 0.4646
 
@@ -2198,20 +2203,21 @@ def test_the_lip_forensics_signal_cannot_change_the_risk_decision(
     assert read_signals(without_signal)["lip_forensics"].score is None
 
     assert scored.risk_level == unscored.risk_level == "MEDIUM"
-    assert scored.risk_rule_id == unscored.risk_rule_id == "R200"
+    assert scored.risk_rule_id == "R200"
+    assert unscored.risk_rule_id == "R201"
     assert scored.risk_rules_version == unscored.risk_rules_version
     assert scored.risk_calibration_id == unscored.risk_calibration_id
 
 
 @pytest.mark.integration
-def test_an_emphatic_lip_forensics_score_cannot_raise_the_band_on_its_own(
+def test_an_emphatic_lip_forensics_score_raises_the_band_on_its_own(
     queue, fake_storage, fake_nvidia, fake_face_detector, fake_lip_forensics
 ):
-    """Both calibrated detectors silent, the uncalibrated one at its ceiling: still UNKNOWN.
+    """Both R4-T1 detectors silent, the third above its own threshold: HIGH by `R103`.
 
-    The case that would be a HIGH if this signal were eligible, and the case R5-T3 will have
-    to decide deliberately rather than inherit. Until then a score of 1.0 from a detector with
-    no measured operating point is evidence on the record and nothing more.
+    Under `r4-v2.0.0` this exact analysis was `R010` — an honest UNKNOWN, because nothing had
+    measured what the score meant. R5-T3 measured it, and this is the detection capability the
+    new ruleset adds: media neither of the other two could read at all.
     """
     analysis_id, _ = queue()
     fake_nvidia.error = nvidia_video.NvidiaProviderError("provider refused")
@@ -2227,8 +2233,30 @@ def test_an_emphatic_lip_forensics_score_cannot_raise_the_band_on_its_own(
     signals = read_signals(analysis_id)
 
     assert signals["lip_forensics"].score == 1.0
-    assert analysis.risk_level == "UNKNOWN"
-    assert analysis.risk_rule_id == "R010"
+    assert analysis.risk_level == "HIGH"
+    assert analysis.risk_rule_id == "R103"
+
+
+@pytest.mark.integration
+def test_a_quiet_mouth_dynamics_score_cannot_hold_back_another_detectors_finding(
+    queue, fake_storage, fake_nvidia, fake_lip_forensics
+):
+    """Silence from one detector never softens another's flag, and the third is no exception.
+
+    NVIDIA reaches its own threshold while the mouth-dynamics model reports the score genuine
+    media earned in R5-T3. The analysis is HIGH by `R100`, on NVIDIA's evidence alone.
+    """
+    fake_nvidia.probability = 0.9931
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    analysis = read_analysis(analysis_id)
+
+    assert read_signals(analysis_id)["lip_forensics"].score == LIP_FORENSICS_SCORE
+    assert analysis.risk_level == "HIGH"
+    assert analysis.risk_rule_id == "R100"
 
 
 @pytest.mark.integration
@@ -2250,11 +2278,10 @@ def test_the_face_classifier_reads_the_same_artifact_the_video_detector_does(
 def test_a_face_score_below_its_threshold_does_not_move_the_band(
     queue, fake_storage, fake_nvidia
 ):
-    """Two readable signals, neither above its own threshold: the indeterminate band.
+    """Three readable signals, none above its own threshold: the indeterminate band.
 
-    `R200` rather than `R201` is the point — both detectors read this media and neither
-    found anything, which is a materially better-covered MEDIUM than one detector reporting
-    alone.
+    `R200` rather than `R201` is the point — every detector read this media and none found
+    anything, which is a materially better-covered MEDIUM than one or two reporting alone.
     """
     analysis_id, _ = queue()
     fake_nvidia.probability = 0.4646
@@ -2267,6 +2294,8 @@ def test_a_face_score_below_its_threshold_does_not_move_the_band(
 
     assert signals["face_manipulation"].score == FACE_SCORE
     assert signals["face_manipulation"].score < 0.9868
+    assert signals["lip_forensics"].score == LIP_FORENSICS_SCORE
+    assert signals["lip_forensics"].score < 0.2296
     assert analysis.risk_level == "MEDIUM"
     assert analysis.risk_rule_id == "R200"
 
@@ -2276,9 +2305,10 @@ def test_a_face_finding_alone_completes_high(queue, fake_storage, fake_nvidia, f
     """The detection capability ruleset v2 added, driven end to end through the worker.
 
     NVIDIA is held at 0.1648 — what it actually scored on this clip in R4-T1, well under its
-    own threshold — while the face classifier reports 0.9943. A face swap NVIDIA cannot see
-    is exactly the media the second detector was calibrated for, so the analysis is HIGH by
-    `R101` and the trace names the detector that concluded it.
+    own threshold — while the face classifier reports 0.9943 and the mouth-dynamics model
+    reports the score genuine media earned in R5-T3. A face swap NVIDIA cannot see is exactly
+    the media the second detector was calibrated for, so the analysis is HIGH by `R101` and the
+    trace names the detector that concluded it — not `R102`, because only one detector flagged.
     """
     fake_nvidia.probability = 0.1648
     fake_face_detector.evidence = dataclasses.replace(
@@ -2303,7 +2333,12 @@ def test_a_face_finding_alone_completes_high(queue, fake_storage, fake_nvidia, f
 def test_both_detectors_flagging_completes_high_by_its_own_rule(
     queue, fake_storage, fake_nvidia, fake_face_detector
 ):
-    """R4-T1 never observed this on 159 clips. The trace still has to name it honestly."""
+    """R4-T1 never observed this on 159 clips. The trace still has to name it honestly.
+
+    `R102` names that more than one detector reached its own threshold and deliberately does
+    not say which: here it is NVIDIA and the face classifier, with the mouth-dynamics model
+    quiet, and the signal rows below are where a reader finds that out.
+    """
     fake_nvidia.probability = 0.9931
     fake_face_detector.evidence = dataclasses.replace(
         fake_face_detector.evidence, score=FACE_SCORE_HIGH
@@ -2470,13 +2505,13 @@ def test_a_completed_job_carries_a_risk_decision_and_its_trace(queue, fake_stora
 
     assert read_job(job_id).status == "completed"
     assert analysis.status == "completed"
-    # The scripted detections are 0.8735 and 0.1274, each below its own calibrated
-    # threshold, and both detectors read the media — the two-source indeterminate band.
+    # The scripted detections are 0.8735, 0.1274 and 0.00011, each below its own calibrated
+    # threshold, and all three detectors read the media — the full-coverage indeterminate band.
     assert analysis.risk_level == "MEDIUM"
     assert analysis.risk_rule_id == "R200"
-    assert analysis.risk_rules_version == "r4-v2.0.0"
+    assert analysis.risk_rules_version == "r5-v3.0.0"
     assert analysis.risk_calibration_id == (
-        "cab2ea262bb7e41cb87e49bdb3dad53ecd0f02248035a993f9fcb033363afd1e"
+        "a74f6b9dbc64cead34cb8e31a03791228cdeb19497e8e5e0bc1a67c0337fc5f7"
     )
 
 
@@ -2505,10 +2540,11 @@ def test_an_uncalibrated_deployment_cannot_reach_a_band(queue, fake_storage, fak
     """A function id that merely contains the validated one is a different deployment.
 
     Its 0.9999 is discarded: no threshold was ever measured against that deployment. What is
-    left is the face classifier, which did read the media and scored below its own threshold,
-    so the analysis lands on the single-source indeterminate band rather than UNKNOWN. That
-    is the multi-source ruleset doing what it exists for — one detector going uncalibrated no
-    longer costs the analysis its whole classification.
+    left is the face classifier and the mouth-dynamics model, both of which read the media and
+    scored below their own thresholds, so the analysis lands on the partial-coverage
+    indeterminate band rather than UNKNOWN. That is the multi-source ruleset doing what it
+    exists for — one detector going uncalibrated no longer costs the analysis its whole
+    classification.
     """
     fake_nvidia.probability = 0.9999
     fake_nvidia.function_id = f"{NVIDIA_FUNCTION_ID}-preview"
@@ -2528,18 +2564,22 @@ def test_an_uncalibrated_deployment_cannot_reach_a_band(queue, fake_storage, fak
 
 
 @pytest.mark.integration
-def test_both_detectors_uncalibrated_completes_unknown(
-    queue, fake_storage, fake_nvidia, fake_face_detector
+def test_every_detector_uncalibrated_completes_unknown(
+    queue, fake_storage, fake_nvidia, fake_face_detector, fake_lip_forensics
 ):
-    """UNKNOWN now requires *both* deployments to be unrecognised.
+    """UNKNOWN now requires *all three* deployments to be unrecognised.
 
-    Neither score may be compared against a threshold that was never measured for it, so no
+    No score may be compared against a threshold that was never measured for it, so no
     validated rule can be applied to this analysis at all — which is what `R010` says.
     """
     fake_nvidia.probability = 0.9999
     fake_nvidia.function_id = f"{NVIDIA_FUNCTION_ID}-preview"
     fake_face_detector.evidence = dataclasses.replace(
         fake_face_detector.evidence, classifier_revision="0000000000000000000000000000000000000000"
+    )
+    fake_lip_forensics.evidence = dataclasses.replace(
+        fake_lip_forensics.evidence,
+        upstream_revision="0000000000000000000000000000000000000000",
     )
     analysis_id, job_id = queue()
 
@@ -2559,9 +2599,10 @@ def test_a_provider_failure_falls_back_to_the_other_detector(
 ):
     """One detector refusing no longer costs the analysis its classification.
 
-    NVIDIA produced no reading at all, so nothing of its can be banded. The face classifier
-    did read the media and scored below its own threshold, which is a single-source MEDIUM —
-    and the trace says `R201` so nobody mistakes it for the two-source kind.
+    NVIDIA produced no reading at all, so nothing of its can be banded. The face classifier and
+    the mouth-dynamics model did read the media and scored below their own thresholds, which is
+    a partial-coverage MEDIUM — and the trace says `R201` so nobody mistakes it for the kind
+    where every detector reported.
     """
     fake_nvidia.error = nvidia_video.NvidiaProviderError("nvidia refused")
     analysis_id, _ = queue()
@@ -2609,7 +2650,7 @@ def test_the_engine_is_run_against_the_evidence_that_was_committed(
     """
     seen = {}
 
-    def spy(svd_evidence, face_evidence):
+    def spy(svd_evidence, face_evidence, lip_evidence):
         with SessionLocal() as reader:
             seen["committed"] = (
                 reader.query(AnalysisSignal)
@@ -2621,10 +2662,16 @@ def test_the_engine_is_run_against_the_evidence_that_was_committed(
                 .filter_by(analysis_id=analysis_id, signal_type="face_manipulation")
                 .one()
             )
+            seen["committed_lip"] = (
+                reader.query(AnalysisSignal)
+                .filter_by(analysis_id=analysis_id, signal_type="lip_forensics")
+                .one()
+            )
         seen["evidence"] = svd_evidence
         seen["face_evidence"] = face_evidence
+        seen["lip_evidence"] = lip_evidence
         # The real rules, reached through the module rather than the patched name.
-        return risk_engine.evaluate(svd_evidence, face_evidence)
+        return risk_engine.evaluate(svd_evidence, face_evidence, lip_evidence)
 
     analysis_id, _ = queue()
     monkeypatch.setattr(worker, "evaluate", spy)
@@ -2637,11 +2684,15 @@ def test_the_engine_is_run_against_the_evidence_that_was_committed(
     assert seen["evidence"].score == NVIDIA_PROBABILITY
     assert seen["evidence"].provider_version == NVIDIA_FUNCTION_ID
     assert seen["evidence"].total_clips == 7
-    # Both calibrated signals are read back from the committed rows, not carried over.
+    # All three calibrated signals are read back from the committed rows, not carried over.
     assert seen["committed_face"].score == FACE_SCORE
     assert seen["face_evidence"].score == FACE_SCORE
     assert seen["face_evidence"].provider_version == FACETORCH_CHECKPOINT
     assert seen["face_evidence"].frames_scored == 6
+    assert seen["committed_lip"].score == LIP_FORENSICS_SCORE
+    assert seen["lip_evidence"].score == LIP_FORENSICS_SCORE
+    assert seen["lip_evidence"].provider_version == LIPFORENSICS_MODEL
+    assert seen["lip_evidence"].windows_scored == 3
 
 
 @pytest.mark.integration

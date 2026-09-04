@@ -321,12 +321,13 @@ class LipForensicsSignal(BaseModel):
     — `sigmoid` of the mean logit over the sampled runs — on the model's own scale, passed
     through exactly as stored: not rescaled, not banded, and not compared against anything.
     R5-T1 reported its confusion matrix at `0.5`, which is the benchmark harness's default and
-    not a production threshold, and that figure appears nowhere in this payload or in what
-    renders it.
+    not the production threshold, and neither that figure nor the one R5-T3 measured appears in
+    this payload or in what renders it.
 
-    This signal is independent forensic evidence and is not eligible for risk in R5-T2. Nothing
-    here relates it to `risk_level`, which is decided from the synthetic-video and
-    face-manipulation signals under a named ruleset (`app.risk_engine`).
+    Since R5-T4 this signal is risk-eligible: under ruleset `r5-v3.0.0` it is one of the three
+    scores the engine bands, each against a threshold measured for it alone. Nothing here
+    relates it to `risk_level` even so — the decision was taken when the analysis ran, and the
+    rule that fired is what says which detector concluded it (`app.risk_engine`).
 
     It is emphatically not a second reading of the face-manipulation score beside it. That
     model judges the appearance of a face crop; this one judges how a mouth moves across 25

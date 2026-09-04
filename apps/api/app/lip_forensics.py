@@ -27,10 +27,12 @@ What this module produces is the model's own figure and nothing else:
   the contract R5-T1 measured. Averaging in logit space rather than after squashing is part of
   that contract: the sigmoid saturates, and a mean of saturated probabilities is dominated by
   whichever run reached the ceiling first.
-- **the score is not a verdict, and in R5-T2 it is not even risk-eligible.** No threshold is
-  applied to it anywhere in this codebase. R5-T1 ran its confusion matrix at `0.5`, which is
-  the harness default over 40 clips of one corpus, not an operating point anybody measured;
-  calibrating one is R5-T3's work. `app.risk_engine` does not read this signal at all.
+- **the score is not a verdict, and no threshold is applied to it here.** R5-T1 ran its
+  confusion matrix at `0.5`, which is the harness default over 40 clips of one corpus and not
+  an operating point anybody measured; R5-T3 rejected it by measurement and placed one of its
+  own. That threshold lives in `app.risk_engine`, which since R5-T4 reads this signal as a
+  calibrated decider. Nothing in this module knows what the number will be compared against,
+  which is what keeps the reading and its interpretation separable.
 - **no tracked face is an abstention, not a negative.** A clip in which no sampled run yields
   a face tracked through all 25 frames raises. Returning a low score for it would be a
   fabricated finding about media the classifier never saw.

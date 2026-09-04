@@ -205,9 +205,10 @@ export type FaceManipulationSignal = {
 // mouth in the picture, and what it was trained to separate is forged facial motion from
 // genuine facial motion.
 //
-// It is independent forensic evidence and is not part of the risk classification. R5-T2 does
-// not calibrate it: there is no threshold in this codebase to compare the score against and
-// nothing here derives a band from it.
+// Since ruleset r5-v3.0.0 it is one of the three scores the risk engine bands, each against a
+// threshold measured for it alone (R5-T3). Nothing on the client compares it against anything:
+// the decision was taken by the API when the analysis ran, and a decision stored under an
+// earlier ruleset really did not read this signal at all.
 //
 // It is not a second opinion on the face-manipulation score above it either. That model reads
 // the appearance of a face crop, this one reads how a mouth moves; the two are different
@@ -383,31 +384,41 @@ void _EXCLUDED_RISK_STATES;
 // Explaining a stored decision
 // --------------------------------------------------------------------------------------
 
-// The two rulesets whose decisions can be sitting in the database. A row is only readable
-// through the version it names: `R200` means "NVIDIA's score was below 0.98" under v1 and
-// "both detectors read the media and neither reached its own threshold" under v2, and those
-// are different sentences about different evidence.
+// The three rulesets whose decisions can be sitting in the database. A row is only readable
+// through the version it names: `R200` means "NVIDIA's score was below 0.98" under v1, "both
+// detectors read the media and neither reached its own threshold" under v2, and "all three
+// did" under v3 — different sentences about different evidence. Only v3 is what the engine
+// writes now; the other two exist because decisions taken under them are still in the
+// database and must keep saying what they actually meant.
 export const RULES_VERSION_V1 = "p7-v1.0.0";
 export const RULES_VERSION_V2 = "r4-v2.0.0";
+export const RULES_VERSION_V3 = "r5-v3.0.0";
 
-// The operating points R4-T1 selected, shown to four decimal places wherever the rationale
-// quotes a boundary. Display values only: nothing on the client compares anything against
-// them, and the decision they explain was taken by the API when the analysis ran.
+// The operating points R4-T1 and R5-T3 selected, shown to four decimal places wherever the
+// rationale quotes a boundary. Display values only: nothing on the client compares anything
+// against them, and the decision they explain was taken by the API when the analysis ran.
 export const SVD_T_HIGH_DISPLAY = "0.9551";
 export const FACE_T_HIGH_DISPLAY = "0.9868";
+// Lower than the two above, and not because this detector is more easily convinced. Each
+// threshold is a point on its own model's scale and the three scales are unrelated; comparing
+// the numbers to each other is exactly the reasoning the rules refuse to do.
+export const LIP_T_HIGH_DISPLAY = "0.2296";
 
 // What one detector did in the decision being explained.
 //
 //   decided     — this detector's score reached its own calibrated threshold, and that is
 //                 what produced the risk level
 //   below       — this detector produced a usable calibrated reading under its threshold
+//   quiet       — this detector did not reach its threshold, and the rule that fired does not
+//                 record whether that was a reading under it or no reading at all
 //   unreadable  — the calibrated detector answered and its figures could not be used
 //   unavailable — no usable reading: missing, failed, abstained, or an uncalibrated build
 //   unread      — this ruleset did not read this detector at all
-//   unclear     — the rule that fired does not, on its own, say which of the two this was
+//   unclear     — the rule that fired does not, on its own, say which of the detectors this was
 export type ContributionRole =
   | "decided"
   | "below"
+  | "quiet"
   | "unreadable"
   | "unavailable"
   | "unread"
@@ -417,16 +428,31 @@ export type RiskRationale = {
   // One sentence naming what actually produced the level.
   summary: string;
   // What each detector contributed, so a reader can see that the level came from a named
-  // source rather than from the two numbers being pooled.
+  // source rather than from the numbers being pooled. All three are required, including on the
+  // older rulesets that read one or two of them: a detector left out of the table would read as
+  // an oversight rather than as the deliberate fact that this ruleset never asked it.
   syntheticVideo: { role: ContributionRole; detail: string };
   faceManipulation: { role: ContributionRole; detail: string };
+  mouthDynamics: { role: ContributionRole; detail: string };
   // What the decision does and does not cover. The honest limits belong beside the level,
-  // not in a footnote — an `R201` MEDIUM was reached with half the coverage of an `R200`.
+  // not in a footnote — an `R201` MEDIUM was reached with less coverage than an `R200`.
   coverage: string;
 };
 
 const NOT_READ_BY_V1 =
   "Not read by this ruleset. Under p7-v1.0.0 the face-manipulation score was stored as independent forensic evidence and was not eligible to move the risk level.";
+
+// True of every decision taken before r5-v3.0.0, and it has to keep being said on those
+// reports. The detector existed from R5-T2 and its score was recorded, but no ruleset had a
+// threshold to read it against until R5-T3 measured one.
+const MOUTH_DYNAMICS_NOT_READ =
+  "Not read by this ruleset. The mouth-dynamics score was stored as independent forensic evidence and had no measured threshold, so it was not eligible to move the risk level.";
+
+// Said wherever a v3 rule names one detector and leaves the others out of its condition. It is
+// the disagreement policy in a sentence: a detector under its own threshold is not a second
+// opinion, because on the manipulation family it is blind to that is what it reports anyway.
+const V3_QUIET_DETECTOR =
+  "Below its threshold, or without a usable reading, and did not contribute. Under this ruleset a detector that did not reach its own threshold is never allowed to reduce or veto another detector's finding: see this detector's own panel below for what it reported.";
 
 // Ruleset v2 (R4-T1 calibration): two detectors, each banded on its own measured threshold.
 const V2_RATIONALES: Record<string, RiskRationale> = {
@@ -441,6 +467,7 @@ const V2_RATIONALES: Record<string, RiskRationale> = {
       role: "decided",
       detail: `Scored at or above ${FACE_T_HIGH_DISPLAY}, the threshold measured for it.`,
     },
+    mouthDynamics: { role: "unread", detail: MOUTH_DYNAMICS_NOT_READ },
     coverage:
       "Two independent findings, reached separately. The scores were not combined, averaged or weighted against each other; each was compared only to its own threshold.",
   },
@@ -455,6 +482,7 @@ const V2_RATIONALES: Record<string, RiskRationale> = {
       role: "below",
       detail: `Scored below ${FACE_T_HIGH_DISPLAY} and did not contribute. This detector is calibrated for face swaps and performs worse than chance on generated video, so a low score from it is not evidence against the finding above and was not allowed to reduce the level.`,
     },
+    mouthDynamics: { role: "unread", detail: MOUTH_DYNAMICS_NOT_READ },
     coverage:
       "The level rests on one detector's evidence. The other detector's low score is not a second opinion — in the calibration study the two detectors never once agreed, and requiring agreement would have detected nothing at all.",
   },
@@ -469,6 +497,7 @@ const V2_RATIONALES: Record<string, RiskRationale> = {
       role: "decided",
       detail: `Scored at or above ${FACE_T_HIGH_DISPLAY}, the threshold measured for it. This detector separates face swaps well and is the one calibrated for them.`,
     },
+    mouthDynamics: { role: "unread", detail: MOUTH_DYNAMICS_NOT_READ },
     coverage:
       "The level rests on one detector's evidence. This is the finding the previous ruleset could not make: face manipulation was not covered by any calibrated rule before R4-T1.",
   },
@@ -483,6 +512,7 @@ const V2_RATIONALES: Record<string, RiskRationale> = {
       role: "below",
       detail: `Produced a usable calibrated reading below ${FACE_T_HIGH_DISPLAY}.`,
     },
+    mouthDynamics: { role: "unread", detail: MOUTH_DYNAMICS_NOT_READ },
     coverage:
       "Both a generated-video and a face-manipulation question were asked of this media, and neither was answered above its threshold. That is not a finding that the media is genuine: each detector is deliberately set to a point that almost never flags legitimate footage, which means a great deal of manipulated media also falls below it.",
   },
@@ -497,6 +527,7 @@ const V2_RATIONALES: Record<string, RiskRationale> = {
       role: "unclear",
       detail: "See this detector's own panel below for whether it produced a reading.",
     },
+    mouthDynamics: { role: "unread", detail: MOUTH_DYNAMICS_NOT_READ },
     coverage:
       "This level was reached with half the coverage of a two-detector result: one of the two questions was never answered for this media. It is a weaker basis than it looks, and it is reported separately for exactly that reason.",
   },
@@ -511,6 +542,7 @@ const V2_RATIONALES: Record<string, RiskRationale> = {
       role: "unreadable",
       detail: "No usable reading. See this detector's own panel below.",
     },
+    mouthDynamics: { role: "unread", detail: MOUTH_DYNAMICS_NOT_READ },
     coverage:
       "This is a statement about the evidence, not about the media. Nothing here suggests the media is either genuine or manipulated.",
   },
@@ -527,6 +559,7 @@ const V2_RATIONALES: Record<string, RiskRationale> = {
       detail:
         "No usable calibrated reading — missing, failed, abstained because no face was found, or produced by a build the thresholds were never measured against.",
     },
+    mouthDynamics: { role: "unread", detail: MOUTH_DYNAMICS_NOT_READ },
     coverage:
       "This is a statement about the evidence, not about the media. Nothing here suggests the media is either genuine or manipulated.",
   },
@@ -542,6 +575,7 @@ const V1_RATIONALES: Record<string, RiskRationale> = {
       "NVIDIA's synthetic-video detector scored at or above 0.98, the threshold this ruleset banded on.",
     syntheticVideo: { role: "decided", detail: "Scored at or above 0.98." },
     faceManipulation: { role: "unread", detail: NOT_READ_BY_V1 },
+    mouthDynamics: { role: "unread", detail: MOUTH_DYNAMICS_NOT_READ },
     coverage:
       "This ruleset read one detector. It was validated for generated video and was not validated for face-swap detection, so this result does not cover face manipulation either way.",
   },
@@ -550,6 +584,7 @@ const V1_RATIONALES: Record<string, RiskRationale> = {
       "NVIDIA's synthetic-video detector produced a usable reading below 0.98.",
     syntheticVideo: { role: "below", detail: "Scored below 0.98." },
     faceManipulation: { role: "unread", detail: NOT_READ_BY_V1 },
+    mouthDynamics: { role: "unread", detail: MOUTH_DYNAMICS_NOT_READ },
     coverage:
       "This ruleset read one detector and was not validated for face-swap detection. Absence of a high-risk finding here does not rule out face manipulation.",
   },
@@ -558,6 +593,7 @@ const V1_RATIONALES: Record<string, RiskRationale> = {
       "NVIDIA's synthetic-video detector answered, but its figures could not be read.",
     syntheticVideo: { role: "unreadable", detail: "No usable reading." },
     faceManipulation: { role: "unread", detail: NOT_READ_BY_V1 },
+    mouthDynamics: { role: "unread", detail: MOUTH_DYNAMICS_NOT_READ },
     coverage:
       "This is a statement about the evidence, not about the media.",
   },
@@ -570,14 +606,155 @@ const V1_RATIONALES: Record<string, RiskRationale> = {
         "No usable calibrated reading — missing, failed, or produced by a deployment the threshold was never measured against.",
     },
     faceManipulation: { role: "unread", detail: NOT_READ_BY_V1 },
+    mouthDynamics: { role: "unread", detail: MOUTH_DYNAMICS_NOT_READ },
     coverage:
       "This is a statement about the evidence, not about the media.",
+  },
+};
+
+// Ruleset v3 (R4-T1 and R5-T3 calibrations): three detectors, each banded on its own measured
+// threshold. The mouth-dynamics model is a decider here and was not one under any earlier
+// ruleset, so its rows say what it did rather than that it was ignored.
+//
+// Eight rules, not one per combination. Which single detector decided is a genuinely different
+// statement about coverage and earns an id; *which* detectors agreed, or *which* were readable,
+// is recorded in the signal rows and rendered in the panels below rather than in the rule table.
+const V3_RATIONALES: Record<string, RiskRationale> = {
+  R102: {
+    summary:
+      "More than one calibrated detector independently reached its own threshold on this media.",
+    syntheticVideo: {
+      role: "unclear",
+      detail: "See this detector's own panel below for its score and the threshold it was compared against.",
+    },
+    faceManipulation: {
+      role: "unclear",
+      detail: "See this detector's own panel below for its score and the threshold it was compared against.",
+    },
+    mouthDynamics: {
+      role: "unclear",
+      detail: "See this detector's own panel below for its score and the threshold it was compared against.",
+    },
+    coverage:
+      "Two or more independent findings, reached separately. The rule records that more than one detector reached its threshold and deliberately does not name which — each detector's own panel below shows its score and its threshold. The scores were not combined, averaged, weighted or voted on, and agreement did not raise the level: there is no band above HIGH, and no measurement says two findings mean more than one.",
+  },
+  R100: {
+    summary:
+      "NVIDIA's synthetic-video detector reached its calibrated threshold. That finding alone produced this level.",
+    syntheticVideo: {
+      role: "decided",
+      detail: `Scored at or above ${SVD_T_HIGH_DISPLAY}, the threshold measured for it. This detector separates generated video well and is the one calibrated for it.`,
+    },
+    faceManipulation: { role: "quiet", detail: V3_QUIET_DETECTOR },
+    mouthDynamics: { role: "quiet", detail: V3_QUIET_DETECTOR },
+    coverage:
+      "The level rests on one detector's evidence. The other two are calibrated for face swaps, which is not what this detector reports on, so their silence is not a second opinion — in the R4-T1 calibration study the synthetic-video and face-manipulation detectors never once agreed, and requiring agreement would have detected nothing at all.",
+  },
+  R101: {
+    summary:
+      "The EfficientNet-B7 face-manipulation classifier reached its calibrated threshold. That finding alone produced this level.",
+    syntheticVideo: { role: "quiet", detail: V3_QUIET_DETECTOR },
+    faceManipulation: {
+      role: "decided",
+      detail: `Scored at or above ${FACE_T_HIGH_DISPLAY}, the threshold measured for it. This classifier judges the appearance of sampled face crops and is calibrated for face swaps.`,
+    },
+    mouthDynamics: { role: "quiet", detail: V3_QUIET_DETECTOR },
+    coverage:
+      "The level rests on one detector's evidence. The mouth-dynamics model was calibrated for face swaps too, but it asks a different question — how a mouth moves over 25 consecutive frames, rather than how a face crop looks — and it abstains outright on media where no run holds a trackable face. Its silence therefore does not contradict this finding and was not allowed to reduce the level.",
+  },
+  R103: {
+    summary:
+      "The LipForensics mouth-dynamics model reached its calibrated threshold. That finding alone produced this level.",
+    syntheticVideo: { role: "quiet", detail: V3_QUIET_DETECTOR },
+    faceManipulation: { role: "quiet", detail: V3_QUIET_DETECTOR },
+    mouthDynamics: {
+      role: "decided",
+      detail: `Scored at or above ${LIP_T_HIGH_DISPLAY}, the threshold measured for it in R5-T3. That number is a point on this model's own scale and is not comparable with the other two thresholds; it reads how the mouth moves across runs of 25 consecutive frames, not how any single frame looks.`,
+    },
+    coverage:
+      "The level rests on one detector's evidence, and on the newest of the three calibrations. Its operating point was measured over 40 clips of one dataset — smaller than the 159-clip study behind the other two — so the bound on its false-positive rate is looser even though it flagged none of the 20 genuine clips in that corpus. The face classifier scoring below its own threshold is not evidence against this finding: it judges appearance and this model judges motion.",
+  },
+  R200: {
+    summary:
+      "All three detectors read this media and none reached its own threshold.",
+    syntheticVideo: {
+      role: "below",
+      detail: `Produced a usable calibrated reading below ${SVD_T_HIGH_DISPLAY}.`,
+    },
+    faceManipulation: {
+      role: "below",
+      detail: `Produced a usable calibrated reading below ${FACE_T_HIGH_DISPLAY}.`,
+    },
+    mouthDynamics: {
+      role: "below",
+      detail: `Produced a usable calibrated reading below ${LIP_T_HIGH_DISPLAY}.`,
+    },
+    coverage:
+      "A generated-video question, a face-appearance question and a mouth-motion question were all asked of this media, and none was answered above its threshold. That is not a finding that the media is genuine: each detector is deliberately set to a point that almost never flags legitimate footage, which means a great deal of manipulated media also falls below it.",
+  },
+  R201: {
+    summary:
+      "Only some of the three calibrated detectors produced a usable reading, and none of those reached its threshold.",
+    syntheticVideo: {
+      role: "unclear",
+      detail: "See this detector's own panel below for whether it produced a reading.",
+    },
+    faceManipulation: {
+      role: "unclear",
+      detail: "See this detector's own panel below for whether it produced a reading.",
+    },
+    mouthDynamics: {
+      role: "unclear",
+      detail: "See this detector's own panel below for whether it produced a reading.",
+    },
+    coverage:
+      "This level was reached with less coverage than a three-detector result: at least one of the three questions was never answered for this media. It is a weaker basis than it looks, and it is reported separately for exactly that reason. The panels below say which detectors reported and which did not.",
+  },
+  R012: {
+    summary:
+      "A calibrated detector answered, but its figures could not be read, so no rule could be applied.",
+    syntheticVideo: {
+      role: "unreadable",
+      detail: "No usable reading. See this detector's own panel below.",
+    },
+    faceManipulation: {
+      role: "unreadable",
+      detail: "No usable reading. See this detector's own panel below.",
+    },
+    mouthDynamics: {
+      role: "unreadable",
+      detail: "No usable reading. See this detector's own panel below.",
+    },
+    coverage:
+      "This is a statement about the evidence, not about the media. Nothing here suggests the media is either genuine or manipulated.",
+  },
+  R010: {
+    summary:
+      "No calibrated detector produced a reading that any rule could be applied to.",
+    syntheticVideo: {
+      role: "unavailable",
+      detail:
+        "No usable calibrated reading — missing, failed, or produced by a build the thresholds were never measured against.",
+    },
+    faceManipulation: {
+      role: "unavailable",
+      detail:
+        "No usable calibrated reading — missing, failed, abstained because no face was found, or produced by a build the thresholds were never measured against.",
+    },
+    mouthDynamics: {
+      role: "unavailable",
+      detail:
+        "No usable calibrated reading — missing, failed, abstained because no run of 25 frames held a trackable face, or produced by a build the threshold was never measured against.",
+    },
+    coverage:
+      "This is a statement about the evidence, not about the media. Nothing here suggests the media is either genuine or manipulated.",
   },
 };
 
 const RATIONALES_BY_RULESET: Record<string, Record<string, RiskRationale>> = {
   [RULES_VERSION_V1]: V1_RATIONALES,
   [RULES_VERSION_V2]: V2_RATIONALES,
+  [RULES_VERSION_V3]: V3_RATIONALES,
 };
 
 /**

@@ -11,8 +11,10 @@ import {
   MediaFacts,
   ProvenanceSignal,
   FACE_T_HIGH_DISPLAY,
+  LIP_T_HIGH_DISPLAY,
   RISK_LABELS,
   RULES_VERSION_V2,
+  RULES_VERSION_V3,
   RiskRationale,
   SyntheticVideoSignal,
   UNSUPPORTED,
@@ -181,6 +183,7 @@ function MediaSection({
 const CONTRIBUTION_LABELS: Record<RiskRationale["syntheticVideo"]["role"], string> = {
   decided: "Reached its threshold — this is what decided",
   below: "Below its threshold — did not contribute",
+  quiet: "Did not reach its threshold — did not contribute",
   unreadable: "Answered, but unreadable",
   unavailable: "No usable reading",
   unread: "Not read by this ruleset",
@@ -188,15 +191,16 @@ const CONTRIBUTION_LABELS: Record<RiskRationale["syntheticVideo"]["role"], strin
 };
 
 /**
- * What this detector's own signal row says about itself, for the one rule that cannot say.
+ * What this detector's own signal row says about itself, for the rules that cannot say.
  *
- * `R201` means exactly one of the two detectors produced a usable reading, and the rule id
- * alone does not record which — so the rationale table marks both `unclear` rather than
- * guessing. Reporting each detector's *stored status* closes that gap without re-deriving
- * anything: presence and status are persisted facts about the signal row, read straight out
- * of the record, and no score is compared against any threshold here. A successful reading is
- * still only reported as a reading — whether it was the one a rule could be applied to also
- * depends on the build that produced it, which its own section below states in full.
+ * `R201` means only some of the detectors produced a usable reading, and `R102` under v3 means
+ * more than one reached its threshold; neither rule id records *which*, so the rationale table
+ * marks each detector `unclear` rather than guessing. Reporting each detector's *stored status*
+ * closes that gap without re-deriving anything: presence and status are persisted facts about
+ * the signal row, read straight out of the record, and no score is compared against any
+ * threshold here. A successful reading is still only reported as a reading — whether it was the
+ * one a rule could be applied to also depends on the build that produced it, which its own
+ * section below states in full.
  */
 function storedStatusNote(status: string | null | undefined): string {
   if (status === undefined || status === null) {
@@ -302,11 +306,12 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
               contribution={rationale.faceManipulation}
               status={analysis.face_manipulation?.status ?? null}
             />
+            <Contribution
+              detector="LipForensics mouth-dynamics model"
+              contribution={rationale.mouthDynamics}
+              status={analysis.lip_forensics?.status ?? null}
+            />
           </div>
-          <p className="mt-2 text-xs opacity-70">
-            The mouth-dynamics model is not listed here because no ruleset reads it. Its score is
-            recorded below as independent evidence and took no part in this classification.
-          </p>
 
           <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide opacity-70">
             What this covers
@@ -334,9 +339,11 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
       <p className="mt-4 text-xs opacity-80">
         Risk is a deterministic InspectRoot classification based on calibrated forensic
         evidence. It is not a Fake/Real determination. Each detector was compared only against
-        the threshold measured for it; the scores were never averaged, weighted or combined
-        into a single number. This classification was recorded when the analysis ran and is
-        reproduced here unchanged; it is not recalculated by this report.
+        the threshold measured for it, and those thresholds are points on unrelated scales
+        that cannot be compared with each other; the scores were never averaged, weighted,
+        voted on or combined into a single number. This classification was recorded
+        when the analysis ran and is reproduced here unchanged; it is not recalculated by this
+        report.
       </p>
     </section>
   );
@@ -353,14 +360,46 @@ function ScopeDisclosure({ analysis }: { analysis: AnalysisSummary }) {
   // Scope is a property of the ruleset the decision was taken under, not of this build. A
   // decision taken under p7-v1.0.0 really did read one detector and really was not validated
   // for face swaps, and saying otherwise on an old report would overstate what was checked.
-  const multiSource = analysis.risk_rules_version === RULES_VERSION_V2;
+  const ruleset = analysis.risk_rules_version;
 
   return (
     <section className="mt-4 break-inside-avoid rounded border-2 border-amber-500/60 p-4">
       <h2 className="text-sm font-semibold uppercase tracking-wide">
         Scope of this risk model
       </h2>
-      {multiSource ? (
+      {ruleset === RULES_VERSION_V3 ? (
+        <>
+          <p className="mt-2 text-sm font-medium">
+            This risk model is validated for generated video and for face swaps, by three
+            separate detectors with separate thresholds. Absence of HIGH risk does not mean
+            the media is genuine.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            Every threshold was set to almost never flag legitimate footage: no detector
+            flagged any genuine clip in the corpus it was calibrated on. That choice is paid
+            for in detection rate. At these operating points the synthetic-video detector
+            flagged 54.6% of generated video and the face classifier flagged 44% of face
+            swaps, so a great deal of manipulated media is correctly not flagged as HIGH.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            The mouth-dynamics model was calibrated separately, over a smaller corpus: 40 clips
+            of one dataset, where it flagged all 20 face swaps and none of the 20 genuine
+            clips. That dataset lies inside the model&apos;s training distribution, so its
+            perfect separation there is a property of that corpus and not a claim about media
+            in general — and 20 genuine clips bound its false-positive rate more loosely than
+            the 54 behind the other two.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            The three detectors cover different things and are read independently. None
+            scoring low is evidence against another: in the R4-T1 study the first two never
+            agreed on a single clip, each was blind to the manipulation family the other was
+            calibrated for, and the third asks a question neither of them asks — how a mouth
+            moves over consecutive frames, rather than how a frame looks. It also needs a face
+            tracked through 25 consecutive frames, so it abstains outright on media the other
+            two score without difficulty.
+          </p>
+        </>
+      ) : ruleset === RULES_VERSION_V2 ? (
         <>
           <p className="mt-2 text-sm font-medium">
             This risk model is validated for generated video and for face swaps, by two
@@ -692,9 +731,12 @@ function FaceManipulationSection({
   analysis: AnalysisSummary;
 }) {
   // Whether this detector was eligible to decide is a property of the ruleset the decision
-  // was taken under. R4-T2 promoted it from independent evidence to a calibrated decider, and
-  // a report on an older decision must keep saying what was true of that decision.
-  const decides = analysis.risk_rules_version === RULES_VERSION_V2;
+  // was taken under. R4-T2 promoted it from independent evidence to a calibrated decider and
+  // r5-v3.0.0 kept it one, but a report on an older decision must keep saying what was true of
+  // that decision.
+  const decides =
+    analysis.risk_rules_version === RULES_VERSION_V2 ||
+    analysis.risk_rules_version === RULES_VERSION_V3;
 
   return (
     <Section
@@ -759,8 +801,8 @@ function FaceManipulationSection({
               Under this ruleset the score is compared against{" "}
               <span className="font-mono">{FACE_T_HIGH_DISPLAY}</span> — the threshold measured
               for this detector in R4-T1, and for this detector only. It is never averaged or
-              combined with the synthetic-video score above; the two are separate questions
-              with separate answers, and the risk classification names which of them decided.
+              combined with the other detectors&apos; scores; each is a separate question with
+              a separate answer, and the risk classification names which of them decided.
             </p>
           ) : (
             <p className="mt-2 text-xs opacity-80">
@@ -775,15 +817,27 @@ function FaceManipulationSection({
   );
 }
 
-function LipForensicsSection({ signal }: { signal: LipForensicsSignal | null }) {
-  // No ruleset-dependent branch, unlike the section above. That one has to say what was true
-  // of the decision being reported because R4-T2 promoted its detector from independent
-  // evidence to a calibrated decider; this detector has never been read by any ruleset a
-  // stored decision can name, so there is one thing to say and it is true of every report.
+function LipForensicsSection({
+  signal,
+  analysis,
+}: {
+  signal: LipForensicsSignal | null;
+  analysis: AnalysisSummary;
+}) {
+  // The same ruleset-dependent branch the section above carries, and now for the same reason.
+  // R5-T4 promoted this detector from independent evidence to a calibrated decider once R5-T3
+  // had measured an operating point for it; a report on a decision taken under an earlier
+  // ruleset must keep saying that this score took no part in it, because it did not.
+  const decides = analysis.risk_rules_version === RULES_VERSION_V3;
+
   return (
     <Section
       title="LipForensics mouth-dynamics detector"
-      subtitle="Independent evidence. The score below is the model's own output and is not part of the risk classification."
+      subtitle={
+        decides
+          ? "Calibrated evidence. The score below is the model's own output, banded against a threshold measured for it in R5-T3."
+          : "Independent evidence. The score below is the model's own output and is not part of the risk classification."
+      }
     >
       {signal === null ? (
         <NoSignal what="mouth-dynamics" />
@@ -840,17 +894,30 @@ function LipForensicsSection({ signal }: { signal: LipForensicsSignal | null }) 
             nothing else, and what it was trained to separate is forged facial motion from
             genuine facial motion.
           </p>
+          {decides ? (
+            <p className="mt-2 text-xs opacity-80">
+              Under this ruleset the score is compared against{" "}
+              <span className="font-mono">{LIP_T_HIGH_DISPLAY}</span> — the threshold measured
+              for this model in R5-T3, and for this model only. That figure is lower than the
+              thresholds above and this does not mean it is more easily convinced: the three
+              numbers are points on three unrelated scales and comparing them to each other is
+              not a comparison of anything. It was measured over 40 clips of a single dataset,
+              which is a smaller study than the one behind the two detectors above.
+            </p>
+          ) : (
+            <p className="mt-2 text-xs opacity-80">
+              It is <strong>not calibrated</strong> under this ruleset, no threshold is applied
+              to it, and it does not contribute to the risk classification above and cannot
+              change it. This signal is recorded as an independent forensic fact only.
+            </p>
+          )}
           <p className="mt-2 text-xs opacity-80">
-            It is <strong>not calibrated</strong>, no threshold is applied to it, and it does
-            not contribute to the risk classification above and cannot change it. This signal
-            is recorded as an independent forensic fact only.
-          </p>
-          <p className="mt-2 text-xs opacity-80">
-            It is also <strong>not a second reading of the face-manipulation score above</strong>
-            . That model judges the appearance of a face crop; this one judges movement over
+            It is <strong>not a second reading of the face-manipulation score above</strong>.
+            That model judges the appearance of a face crop; this one judges movement over
             time. The two figures are on different scales and are never averaged, compared or
             reconciled — agreement between them would not strengthen a finding, and
-            disagreement does not weaken one.
+            disagreement does not weaken one. Where both reached their own thresholds the risk
+            classification records that as two independent findings and not as a stronger one.
           </p>
         </>
       )}
@@ -949,16 +1016,18 @@ export default async function Report({ params }: { params: Promise<{ id: string 
       </h2>
       <p className="mt-1 text-xs opacity-70">
         Each source is recorded separately and none of them is combined into the other.
-        {analysis.risk_rules_version === RULES_VERSION_V2
-          ? " Two of them are calibrated and can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence, mouth-dynamics evidence and audio evidence have no calibrated threshold and cannot change that classification."
-          : " Only the synthetic-video detector contributes to the risk classification above; provenance, speaking evidence, face-manipulation evidence, mouth-dynamics evidence and audio evidence are recorded as independent forensic facts and cannot change that classification."}
+        {analysis.risk_rules_version === RULES_VERSION_V3
+          ? " Three of them are calibrated and can reach the risk classification above — the synthetic-video detector, the face-manipulation classifier and the mouth-dynamics model — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence and audio evidence have no calibrated threshold and cannot change that classification."
+          : analysis.risk_rules_version === RULES_VERSION_V2
+            ? " Two of them are calibrated and can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence, mouth-dynamics evidence and audio evidence have no calibrated threshold and cannot change that classification."
+            : " Only the synthetic-video detector contributes to the risk classification above; provenance, speaking evidence, face-manipulation evidence, mouth-dynamics evidence and audio evidence are recorded as independent forensic facts and cannot change that classification."}
       </p>
 
       <SyntheticVideoSection signal={analysis.synthetic_video} />
       <ProvenanceSection signal={analysis.provenance} />
       <ActiveSpeakerSection signal={analysis.active_speaker} />
       <FaceManipulationSection signal={analysis.face_manipulation} analysis={analysis} />
-      <LipForensicsSection signal={analysis.lip_forensics} />
+      <LipForensicsSection signal={analysis.lip_forensics} analysis={analysis} />
       <AudioSection signal={analysis.audio_authenticity} />
 
       <footer className="mt-8 break-inside-avoid border-t border-black/15 pt-4 text-xs opacity-70 dark:border-white/20">

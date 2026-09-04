@@ -99,6 +99,8 @@ from app.detection import (
     ACTIVE_SPEAKER_SIGNAL,
     EFFICIENTNET_B7_PROVIDER,
     FACE_MANIPULATION_SIGNAL,
+    LIP_FORENSICS_SIGNAL,
+    LIPFORENSICS_PROVIDER,
     NVIDIA_PROVIDER,
     SYNTHETIC_VIDEO_SIGNAL,
     analyse_audio,
@@ -112,7 +114,13 @@ from app.detection import (
 from app.normalization import NormalizationError, NormalizationTimeout, normalize_to_mp4
 from app.observability import bind_request_id, configure_logging, reset_request_id
 from app.speaker_diarization import SpeakerDiarizationTimeout
-from app.risk_engine import FaceEvidence, RiskDecision, SvdEvidence, evaluate
+from app.risk_engine import (
+    FaceEvidence,
+    LipEvidence,
+    RiskDecision,
+    SvdEvidence,
+    evaluate,
+)
 from app.storage import fetch_object, store_derivative
 
 logger = logging.getLogger(__name__)
@@ -992,6 +1000,34 @@ def persisted_face_evidence(session: Session, analysis_id: uuid.UUID) -> FaceEvi
     )
 
 
+def persisted_lip_evidence(session: Session, analysis_id: uuid.UUID) -> LipEvidence | None:
+    """This analysis's LipForensics mouth-dynamics signal, shaped for the rules.
+
+    `windows_scored` comes out of the signal's JSON metadata, where `app.detection` records how
+    many 25-frame runs actually held a trackable face and therefore how many logits the stored
+    mean was taken over. Absent on every signal that failed, including the abstention this
+    detector reports for a clip in which no run held a face — which the engine treats as no
+    reading rather than as a finding of no manipulation.
+    """
+    row = _persisted_signal(
+        session, analysis_id, LIPFORENSICS_PROVIDER, LIP_FORENSICS_SIGNAL
+    )
+
+    if row is None:
+        return None
+
+    metadata = row.signal_metadata or {}
+
+    return LipEvidence(
+        provider=row.provider,
+        signal_type=row.signal_type,
+        status=row.status,
+        provider_version=row.provider_version,
+        score=row.score,
+        windows_scored=metadata.get("windows_scored"),
+    )
+
+
 def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision | None:
     """Classify the analysis from its committed evidence and close the job out.
 
@@ -1003,22 +1039,22 @@ def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision | None:
     analysis nobody classified, and a decision written without the job moving on would leave
     the classification invisible behind a job still in progress.
 
-    Two signals are read, and only two: NVIDIA's synthetic-video score and EfficientNet-B7's
-    face-manipulation score, each of which R4-T1 calibrated an operating point for. The
-    provenance, speaker-timeline, audio and mouth-dynamics rows committed moments ago are not
-    fetched, not passed in and cannot reach this decision — they remain forensic evidence in
-    their own right and none of them is entitled to move a band (rule 11, and
-    `app.risk_engine`). Each reader above names one provider and one signal type, so the
-    queries cannot see them even by accident.
+    Three signals are read, and only three: NVIDIA's synthetic-video score, EfficientNet-B7's
+    face-manipulation score and LipForensics' mouth-dynamics score, each of which has an
+    operating point measured for it alone — the first two in R4-T1, the third in R5-T3. The
+    provenance, speaker-timeline and audio rows committed moments ago are not fetched, not
+    passed in and cannot reach this decision — they remain forensic evidence in their own right
+    and none of them is entitled to move a band (rule 11, and `app.risk_engine`). Each reader
+    above names one provider and one signal type, so the queries cannot see them even by
+    accident.
 
-    The mouth-dynamics row is the one to be explicit about, because it is new and because it is the
-    kind of signal that will eventually be read here. R5-T2 wires the detector in and stops:
-    there is no `persisted_lip_forensics_evidence`, `evaluate` takes no third argument, and adding
-    this signal to an analysis therefore cannot change the decision that analysis gets — the
-    same evidence yields the same band with the row present or absent. It has no calibration,
-    and a scale is not a calibration; measuring an operating point for it is R5-T3's work.
+    The mouth-dynamics row is the one that changed. Under r4-v2.0.0 it was fetched by nothing and
+    could not move a band; R5-T3 measured an operating point for it, and ruleset r5-v3.0.0 reads
+    it against that threshold and against nothing else. Adding it to an analysis can therefore
+    change that analysis's band now, which is the whole of this task and is exactly what a
+    calibration buys — a scale never did.
 
-    The two are fetched separately and handed over separately. Nothing here compares, combines
+    The three are fetched separately and handed over separately. Nothing here compares, combines
     or reconciles them: the engine holds the rules, and this function's whole responsibility is
     that the evidence it passes is the evidence the database holds.
 
@@ -1034,6 +1070,7 @@ def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision | None:
     decision = evaluate(
         persisted_svd_evidence(session, claimed.analysis_id),
         persisted_face_evidence(session, claimed.analysis_id),
+        persisted_lip_evidence(session, claimed.analysis_id),
     )
 
     if not _set_status(

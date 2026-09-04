@@ -20,8 +20,10 @@ B7 judges the appearance of a face crop and never sees motion, LipForensics judg
 dynamics over consecutive frames and is nearly blind to appearance, and their numbers are
 on different scales and are never compared.
 
-The sixth arrived in R5-T2 and is independent evidence only: the risk engine does not read
-it, and calibrating it into a decision is R5-T3's work.
+The sixth arrived in R5-T2 as independent evidence and became risk-eligible in R5-T4, once
+R5-T3 had measured an operating point for it. What this module writes did not change: the row
+is the same reading either way, and the threshold it is read against lives in
+`app.risk_engine`.
 
 It lived in the upload route until P3-T2, back when detection happened on the request.
 """
@@ -130,7 +132,8 @@ FACE_MANIPULATION_SIGNAL = "face_manipulation"
 # local model. That is not a reason to relate the two: this one reads mouth movement across 25
 # consecutive frames and the B7 reads the appearance of single face crops, so they measure
 # different things on different scales and are never compared, averaged or reconciled (rule 11).
-# In particular this one is not eligible for risk in R5-T2: see `app.risk_engine`.
+# Since R5-T4 it is read by the risk engine against its own measured threshold, and against
+# nothing else — never alongside, against or averaged with the B7's: see `app.risk_engine`.
 LIPFORENSICS_PROVIDER = "lipforensics"
 LIP_FORENSICS_SIGNAL = "lip_forensics"
 
@@ -801,8 +804,9 @@ def lip_forensics_metadata(evidence: LipForensicsEvidence) -> dict:
     would leave the metadata unable to reproduce the figure it documents.
 
     There is deliberately no threshold, class, verdict or band here. R5-T1 reported its
-    confusion matrix at the harness default of 0.5, which is a property of that run and not an
-    operating point this pipeline holds — calibrating one is R5-T3's work.
+    confusion matrix at the harness default of 0.5, which is a property of that run and not the
+    operating point this pipeline holds — R5-T3 measured that one, and `app.risk_engine` is the
+    only place it appears. A stored signal records the reading, never what was made of it.
     """
     return {
         "weights_origin": evidence.weights_origin,
@@ -852,9 +856,9 @@ def detect_lip_forensics(file_path: Path) -> AnalysisSignal:
 
     `score` is the model's own figure for the clip — `sigmoid` of the mean logit over the
     sampled runs — stored exactly as it came back and on the model's own scale. It is not a
-    verdict and nothing here compares it against anything: this signal is independent forensic
-    evidence in R5-T2 and is not eligible for risk. The engine does not read it, and
-    `app.risk_engine` says why.
+    verdict and nothing here compares it against anything. Since R5-T4 the risk engine does read
+    it, against the threshold R5-T3 measured for this model alone; that comparison happens there
+    and never here, which is what keeps this row a reading rather than a conclusion.
 
     No segments. R5-T1's contract is one analyzed clip to one score, and that is preserved
     unchanged; the per-window logits the mean was taken over are recorded in the metadata, where

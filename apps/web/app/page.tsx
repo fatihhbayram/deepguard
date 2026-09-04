@@ -27,7 +27,7 @@ import {
   REMOTE_PROVENANCE,
   RISK_LABELS,
   RISK_STYLES,
-  RULES_VERSION_V2,
+  RULES_VERSION_V3,
   RISK_UNSUPPORTED_STYLE,
   SIGNAL_STATUS_SUCCESS,
   SPEAKER_UNAVAILABLE,
@@ -1138,10 +1138,11 @@ function Methodology() {
           — evidence that settles nothing either way — and the absence of{" "}
           <span className="font-mono">{RISK_LABELS.HIGH}</span> does not mean the media is
           genuine. Under ruleset{" "}
-          <span className="font-mono">{RULES_VERSION_V2}</span> two detectors are read, one
-          calibrated for generated video and one for face swaps, each against its own
-          measured threshold; the scores are never averaged or combined, and the rule in the
-          trace names which detector reached its threshold.{" "}
+          <span className="font-mono">{RULES_VERSION_V3}</span> three detectors are read, one
+          calibrated for generated video and two for face swaps — one reading the appearance
+          of sampled face crops, one reading how the mouth moves across consecutive frames —
+          each against its own measured threshold; the scores are never averaged, combined or
+          voted on, and the rule in the trace names which detector reached its threshold.{" "}
           <span className="font-mono">{RISK_LABELS.UNKNOWN}</span> means the
           engine ran and could not classify, which is not the same as{" "}
           <span className="font-mono">{PENDING}</span>, where no decision has been taken
