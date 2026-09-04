@@ -15,6 +15,10 @@ The two credential families stay apart on purpose — an analysis may name a use
 key, never both — and the database enforces that rather than trusting the two code paths
 that write the column.
 
+Apart from all of them is `shadow_runs` (R6-T1): what an uncalibrated experimental workload
+observed about an analysis, kept in a table no customer-facing reader and no risk rule names.
+Its docstring says why that separation is structural rather than a filter.
+
 Media identity is not analysis identity. Storage keys and hashes are content-addressed,
 so the same bytes can legitimately be uploaded and analysed more than once; none of
 those columns is unique.
@@ -34,6 +38,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
     true as sa_true,
 )
@@ -65,6 +70,19 @@ JOB_STATUS_FAILED = "failed"
 SIGNAL_STATUS_SUCCESS = "SUCCESS"
 SIGNAL_STATUS_FAILED = "FAILED"
 SIGNAL_STATUS_TIMEOUT = "TIMEOUT"
+
+# The state of one experimental workload's run against one analysis (R6-T1). The same four
+# names the production job uses, because it is the same life: queued when the production
+# analysis finished, processing while a worker holds it, and terminal either way.
+#
+# Deliberately a second set of constants rather than a reuse of `JOB_STATUS_*`. The two
+# vocabularies happen to coincide today and are not the same vocabulary: nothing about a
+# shadow run is entitled to follow a change made for production work, and a reader tracing
+# where a status came from should land on the table it belongs to.
+SHADOW_RUN_STATUS_QUEUED = "queued"
+SHADOW_RUN_STATUS_PROCESSING = "processing"
+SHADOW_RUN_STATUS_COMPLETED = "completed"
+SHADOW_RUN_STATUS_FAILED = "failed"
 
 SHA256_HEX_LENGTH = 64
 
@@ -649,4 +667,103 @@ class AnalysisSegment(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ShadowRun(Base):
+    """One experimental workload's run against one analysis, and what it observed (R6-T1).
+
+    Shadow mode exists so an uncalibrated detector can be exercised on real traffic before
+    anybody is entitled to act on what it says. That entitlement is the whole design problem,
+    and it is solved here structurally rather than by discipline: shadow observations live in
+    this table and nowhere else, and nothing that answers a customer — the public API, the
+    dashboard API, the report — and nothing the risk engine reads names it. `analysis_signals`
+    is the forensic record a decision may be taken from; this is not that table and is not a
+    sibling of it. An uncalibrated number written beside calibrated ones would eventually be
+    read as one.
+
+    So the isolation is not a filter that could be forgotten in one query. There is no join
+    from `analyses` to here that any reader traverses, no column on `analyses` pointing at it,
+    and no code path that turns a row here into the evidence types `app.risk_engine` accepts.
+    `tests/test_shadow_mode.py` asserts that absence over the API and risk-engine modules,
+    so a future reader that started selecting this table would fail the suite rather than
+    quietly publish an experiment.
+
+    The row is also the queue. Production splits `analysis_jobs` from `analysis_signals`
+    because a job carries a lease, a request id and a failure while a signal is one immutable
+    reading a detector gave, and the two have genuinely different lives. A shadow run does
+    not: one workload runs once per analysis and produces one observation, so a second table
+    to hold that observation would be a foreign key between a row and itself. It is one row
+    that starts `queued` with nothing observed and ends `completed` carrying what it saw.
+
+    `evidence` is deliberately an opaque JSON document rather than the scored columns
+    `analysis_signals` has. Nothing in this codebase interprets it — R6-T1 runs a stub — and
+    giving it a `score` column would invite the comparison with a calibrated score that the
+    separation exists to prevent. What a shadow observation means is a question for the
+    calibration task that will eventually read these rows offline.
+    """
+
+    __tablename__ = "shadow_runs"
+
+    # One run per workload per analysis. The uniqueness is what makes re-enqueueing safe:
+    # the worker inserts on the way out of a completed job, and a duplicate insert — a
+    # re-run, two workers racing, a job concluded twice — is refused by the database rather
+    # than quietly doubling the corpus a future calibration would be measured on.
+    __table_args__ = (
+        UniqueConstraint("analysis_id", "workload", name="uq_shadow_runs_analysis_workload"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    analysis_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("analyses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Which experimental workload this run is of. A name, not a provider and a signal type:
+    # a shadow workload is not yet a detector with an identity worth splitting in two, and it
+    # will have one when one is integrated.
+    workload: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    # When the claim on this run stops being believed, for the same reason `analysis_jobs`
+    # has one: a worker that dies mid-run would otherwise leave the row `processing` forever
+    # and this analysis would silently drop out of the shadow corpus. Null on every run
+    # nobody is holding.
+    #
+    # No heartbeat thread renews it, which is the one place this deliberately does less than
+    # the production job does. The lease is set generously at claim time and a workload that
+    # outlives it is recovered as stale — acceptable while the workload is a stub, and the
+    # task that integrates a workload long enough to need renewing is the task that should
+    # add the renewal.
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Why the run failed, as a class name rather than the exception's own text — which can
+    # quote credentials or SQL, exactly as `app.worker` records a failed job. Null on every
+    # run that has not failed.
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Which deployment of the experimental workload produced the observation, so a row stays
+    # interpretable once the experiment moves on. Null until the run has produced one.
+    provider_version: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # What the workload observed, as the workload reported it, uninterpreted. Null on a run
+    # that has not finished and on one that failed: an empty document would be an observation
+    # nobody made.
+    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )

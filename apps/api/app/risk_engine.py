@@ -281,6 +281,26 @@ class RiskEngineError(Exception):
     """
 
 
+class UncalibratedEvidence(TypeError):
+    """Something that is not a calibrated production signal was offered to the rules (R6-T1).
+
+    Shadow mode runs uncalibrated experimental workloads on live traffic, and the one thing
+    those workloads may never do is influence a verdict about someone's media. That is already
+    true structurally — their observations are written to `shadow_runs`, the three readers in
+    `app.worker` select `analysis_signals` by provider and signal type, and nothing turns a
+    shadow row into one of the three types below — so this guard is the second lock rather than
+    the first.
+
+    It exists because the first lock is an absence, and an absence is invisible to whoever
+    later adds a caller. `evaluate` is a public function with three optional parameters and no
+    verdict is a small change away from being taken on the wrong evidence; a caller that tries
+    now gets a `TypeError` naming what it passed instead of a classification.
+
+    A `TypeError` and not a `RiskEngineError`, because it is not a failure of the rules. The
+    rules never ran: they were handed something that is not their input.
+    """
+
+
 @dataclass(frozen=True)
 class SvdEvidence:
     """The persisted NVIDIA synthetic-video signal, as the database holds it.
@@ -520,6 +540,30 @@ def is_usable_lip(evidence: LipEvidence) -> bool:
     )
 
 
+def _reject_uncalibrated(parameter: str, evidence: object, expected: type) -> None:
+    """Refuse anything that is not the calibrated evidence type this parameter is for.
+
+    `type(...) is not` rather than `isinstance`, so a subclass is refused too. A type that
+    inherited `SvdEvidence` to carry an experimental workload's number would satisfy an
+    `isinstance` check and be classified against a threshold measured for NVIDIA's detector,
+    which is precisely the substitution this guard is here to make impossible.
+
+    `None` is admitted: a missing signal is evidence the rules decide on, not a caller error.
+
+    The message names the type it was given and never the value. An observation is not a
+    secret, but a rejected object is untrusted input and rendering it into a log line or an
+    exception is how untrusted input ends up somewhere it was never reviewed for.
+    """
+    if evidence is None or type(evidence) is expected:
+        return
+
+    raise UncalibratedEvidence(
+        f"The risk engine was offered {type(evidence).__name__} as {parameter} evidence; "
+        f"only {expected.__name__} is calibrated for these rules. Uncalibrated evidence — "
+        "shadow-mode observations included — cannot reach a verdict."
+    )
+
+
 def evaluate(
     svd: SvdEvidence | None = None,
     face: FaceEvidence | None = None,
@@ -565,7 +609,19 @@ def evaluate(
     those that answered did so with figures that cannot be read — and it is deliberately
     reachable from more conditions than the other two bands, because the error policy behind
     these thresholds prefers admitting ignorance to asserting risk.
+
+    Nothing uncalibrated is admitted, and that is checked before a single rule is read (R6-T1).
+    Only the three types above may reach these rules; anything else — a shadow-mode observation
+    above all — raises `UncalibratedEvidence` rather than being classified against a threshold
+    that was never measured for it.
     """
+    # Before any rule is consulted: these are the three types the rules are calibrated for and
+    # nothing else is admitted (R6-T1). See `UncalibratedEvidence` for why the structural
+    # separation is not considered enough on its own.
+    _reject_uncalibrated("svd", svd, SvdEvidence)
+    _reject_uncalibrated("face", face, FaceEvidence)
+    _reject_uncalibrated("lip", lip, LipEvidence)
+
     svd_eligible = is_eligible_svd(svd)
     face_eligible = is_eligible_face(face)
     lip_eligible = is_eligible_lip(lip)

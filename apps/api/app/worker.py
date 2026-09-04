@@ -60,6 +60,12 @@ Normalization moved here in P4-F2 (D020). It used to run on the upload request u
 deadline that was really about how long a client would wait, which rejected a perfectly
 good 4K HEVC upload before anything had been analysed.
 
+An idle poll also runs one shadow experiment, and only an idle one (R6-T1). Uncalibrated
+workloads are exercised on real traffic from this same loop, behind every queued job and
+writing to a table of its own — see `app.shadow`, which says why none of what they observe
+can reach the report, the public API or the risk engine. A job completed above queues one on
+its way out; the analysis is already decided and closed by then and does not wait for it.
+
 Run it with `python -m app.worker`.
 """
 
@@ -112,6 +118,7 @@ from app.detection import (
     undetectable_media,
 )
 from app.normalization import NormalizationError, NormalizationTimeout, normalize_to_mp4
+from app import shadow
 from app.observability import bind_request_id, configure_logging, reset_request_id
 from app.speaker_diarization import SpeakerDiarizationTimeout
 from app.risk_engine import (
@@ -1365,6 +1372,13 @@ def process_one(session: Session) -> bool:
             )
             return True
 
+        # The production analysis is finished: its evidence is committed, its decision is
+        # recorded and its job is closed. Only now is an experiment allowed to be scheduled
+        # against it, and only as a row in a table of its own (R6-T1). Nothing above waited
+        # for this, nothing below depends on it, and `shadow.enqueue` does not raise — a
+        # customer's analysis must not fail because an experiment could not be queued.
+        shadow.enqueue(session, claimed.analysis_id)
+
         logger.info(
             "Completed job %s with a %s detection signal, %s, a %s active-speaker signal, a "
             "%s audio-authenticity signal and a %s provenance signal%s. Risk %s by %s under "
@@ -1465,11 +1479,25 @@ def run(stopping: Stopping, sleep=time.sleep) -> None:
     A worker whose database has gone away backs off and tries again rather than exiting:
     the container would only be restarted into the same condition, and a crash loop is
     harder to read in the logs than a worker saying the same thing every five seconds.
+
+    Since R6-T1 an idle poll also looks for shadow work, and only an idle one. Experiments
+    run in this process because it is the process that already polls PostgreSQL on a timer,
+    and they run strictly behind production work because nothing about an experiment is
+    allowed to be in front of a customer's analysis.
     """
     while not stopping.requested:
         try:
             with SessionLocal() as session:
                 worked = process_one(session)
+
+                if not worked:
+                    # Production work first, always, and shadow work only on a poll that found
+                    # none (R6-T1). That ordering is what makes shadow mode structurally
+                    # incapable of delaying an analysis: an experiment is never claimed while a
+                    # queued job exists. `shadow.process_one` swallows its own failures, so a
+                    # broken experiment cannot reach the backoff below, cannot stop the next
+                    # job being claimed, and cannot turn an idle poll into an error.
+                    worked = shadow.process_one(session)
         except Exception:
             logger.exception("The worker loop failed; retrying.")
             sleep(ERROR_BACKOFF_SECONDS)

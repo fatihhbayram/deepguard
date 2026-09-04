@@ -218,6 +218,16 @@ services:
       # not close cleanly. The lease in `app/worker.py` is what bounds a job that stops
       # making progress, and it is renewed throughout — a slow analysis is not a dead worker.
       DEEPGUARD_LIPFORENSICS_WINDOWS:
+      # Whether this worker runs uncalibrated experimental workloads against analyses it has
+      # already finished (R6-T1). Off unless set: shadow mode is an experiment somebody is
+      # deliberately running, and a stack that never asked for one should not accumulate rows
+      # for a workload nobody is measuring.
+      #
+      # Passed through with no default, like `DEEPGUARD_ENV` above and for the same kind of
+      # reason — the value that turns it on should be one an operator wrote down. Nothing a
+      # shadow run produces reaches a report, a public response or the risk engine either way;
+      # see `app/shadow.py`.
+      DEEPGUARD_SHADOW_MODE:
     depends_on:
       postgres:
         condition: service_healthy

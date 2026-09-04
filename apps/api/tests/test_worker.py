@@ -28,6 +28,7 @@ from app import (
     nvidia_active_speaker,
     nvidia_video,
     risk_engine,
+    shadow,
     speaker_diarization,
     storage,
     worker,
@@ -59,6 +60,7 @@ from app.db.models import (
     AnalysisSignal,
     ApiKey,
     MediaFile,
+    ShadowRun,
 )
 from app.db.session import SessionLocal, engine
 from app.nvidia_active_speaker import (
@@ -1136,6 +1138,10 @@ def run_loop(monkeypatch, outcomes):
 
     clock = FakeClock()
     monkeypatch.setattr(worker, "process_one", process_one)
+    # An idle poll also looks for shadow work since R6-T1. What that does with a real queue
+    # belongs to `tests/test_shadow_mode.py`; here it is stubbed out so these tests stay
+    # about when the loop pauses and nothing else.
+    monkeypatch.setattr(worker.shadow, "process_one", lambda _session: False)
     monkeypatch.setattr(worker, "SessionLocal", lambda: _NullSession())
     worker.run(stopping, sleep=clock)
 
@@ -3193,3 +3199,93 @@ def test_a_job_outliving_its_lease_is_kept_alive_by_its_heartbeat(queue, fake_st
     # ...and a recovery pass that ran mid-job left it alone.
     assert read_job(job_id).status == "completed"
     assert read_analysis(analysis_id).status == "completed"
+
+
+# Shadow mode (R6-T1). The isolation itself — what a shadow observation may not reach — is
+# `tests/test_shadow_mode.py`'s subject. What belongs here is the single claim that is about
+# the *worker*: a completed analysis queues an experiment on its way out and does not wait
+# for it, and nothing about that experiment can reach the job.
+
+
+@pytest.fixture
+def shadow_mode(monkeypatch):
+    """Turn shadow mode on for this test, the way a deployment would."""
+    monkeypatch.setenv(shadow.SHADOW_MODE_VARIABLE, "true")
+
+
+def shadow_runs_for(analysis_id):
+    with SessionLocal() as reader:
+        return reader.query(ShadowRun).filter(ShadowRun.analysis_id == analysis_id).all()
+
+
+@pytest.mark.integration
+def test_a_completed_job_queues_a_shadow_run_and_does_not_wait_for_it(
+    queue, fake_storage, shadow_mode, monkeypatch
+):
+    ran = []
+
+    def record(claimed):
+        ran.append(claimed)
+        return shadow.ShadowObservation(provider_version="stub-1")
+
+    monkeypatch.setattr(shadow, "run_stub_workload", record)
+
+    analysis_id, job_id = queue()
+
+    with SessionLocal() as session:
+        assert worker.process_one(session) is True
+
+    # The analysis is finished, decided and readable, and the experiment has not been run at
+    # all. That gap is the non-blocking guarantee: a report is available while the workload
+    # that will eventually look at the same media is still sitting in a queue.
+    assert read_job(job_id).status == "completed"
+    assert read_analysis(analysis_id).status == "completed"
+    assert read_analysis(analysis_id).risk_level is not None
+    assert ran == []
+
+    queued = shadow_runs_for(analysis_id)
+    assert [run.status for run in queued] == ["queued"]
+
+    # And it runs later, on a poll of its own, against an analysis that was already complete.
+    with SessionLocal() as session:
+        assert shadow.process_one(session) is True
+
+    assert len(ran) == 1
+    assert shadow_runs_for(analysis_id)[0].status == "completed"
+    assert read_analysis(analysis_id).status == "completed"
+
+
+@pytest.mark.integration
+def test_a_job_completes_even_when_the_shadow_run_cannot_be_queued(
+    queue, fake_storage, shadow_mode, monkeypatch
+):
+    # A real insert failure rather than a patched exception: a workload name too long for the
+    # column, which PostgreSQL refuses. Whatever goes wrong on the shadow side, the customer's
+    # analysis is finished and classified.
+    monkeypatch.setattr(shadow, "STUB_WORKLOAD", "w" * 200)
+
+    analysis_id, job_id = queue()
+
+    with SessionLocal() as session:
+        assert worker.process_one(session) is True
+
+    assert read_job(job_id).status == "completed"
+    assert read_job(job_id).error_message is None
+    assert read_analysis(analysis_id).status == "completed"
+    assert read_analysis(analysis_id).risk_level is not None
+    assert shadow_runs_for(analysis_id) == []
+
+
+@pytest.mark.integration
+def test_a_worker_that_was_not_asked_for_shadow_mode_queues_nothing(
+    queue, fake_storage, monkeypatch
+):
+    monkeypatch.delenv(shadow.SHADOW_MODE_VARIABLE, raising=False)
+
+    analysis_id, _ = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    assert read_analysis(analysis_id).status == "completed"
+    assert shadow_runs_for(analysis_id) == []
