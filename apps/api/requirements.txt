@@ -42,3 +42,16 @@ uvicorn==0.52.3
 # extractors track sites that change under them, so an old pin quietly stops working while a
 # blind upgrade changes behaviour nothing tested.
 yt-dlp==2026.8.19
+# What `face_alignment` needs and does not bring with it (R5-T2). The package itself is
+# installed by the Dockerfile with `--no-deps`, so its own dependency list is not consulted,
+# and these are the two entries from that list this image genuinely needs: `numba`, which its
+# `utils` imports unconditionally, and `scikit-image`, the similarity warp that puts each frame
+# on the LRW mean face. Both are pinned to the versions R5-T1 benchmarked the detector under.
+#
+# The two entries deliberately left behind are why the install is `--no-deps` at all.
+# `opencv-python` would put a second, GUI-linked OpenCV beside the headless wheel above — two
+# copies of one library in one process, one of them dragging in an X11 stack this container
+# has no display for — and `dlib` is declared for a face detector this codebase never selects.
+# `scipy` and `tqdm` are already here through pyannote.
+numba==0.67.0
+scikit-image==0.25.2

@@ -11,6 +11,8 @@ import {
   AUDIO_UNAVAILABLE,
   FACE_SCORE_UNAVAILABLE,
   FaceManipulationSignal,
+  LIP_FORENSICS_SCORE_UNAVAILABLE,
+  LipForensicsSignal,
   ActiveSpeakerSignal,
   AnalysisSummary,
   AudioAuthenticitySignal,
@@ -477,6 +479,45 @@ function faceModelTitle(signal: FaceManipulationSignal): string | undefined {
   return signal.provider_version ? `Checkpoint: ${signal.provider_version}` : undefined;
 }
 
+/**
+ * The mouth-dynamics model's own figure for the clip, or why there is none.
+ *
+ * The same four outcomes the face score above keeps apart, kept apart here for the same
+ * reasons, and the same refusal to interpret: the number is shown as stored, with the runs it
+ * was taken over beside it, and nothing on this page compares it to a threshold or to the
+ * face score in the row above.
+ */
+function LipForensics({ signal }: { signal: LipForensicsSignal | null }) {
+  if (signal === null) {
+    return <>{ABSENT}</>;
+  }
+
+  if (signal.status !== SIGNAL_STATUS_SUCCESS || signal.score === null) {
+    return (
+      <span title={`Mouth dynamics: ${signal.status}`}>
+        {LIP_FORENSICS_SCORE_UNAVAILABLE}
+      </span>
+    );
+  }
+
+  const windows =
+    signal.windows_scored === null || signal.windows_requested === null
+      ? null
+      : `${signal.windows_scored} of ${signal.windows_requested} sampled runs`;
+
+  return (
+    <span title={lipForensicsModelTitle(signal)}>
+      {signal.score.toFixed(4)}
+      {windows === null ? null : <span className="text-muted"> · {windows}</span>}
+    </span>
+  );
+}
+
+/** Which artifacts produced this score. A different revision or checkpoint is a different reading. */
+function lipForensicsModelTitle(signal: LipForensicsSignal): string | undefined {
+  return signal.provider_version ? `Model: ${signal.provider_version}` : undefined;
+}
+
 /** Which checkpoint produced these figures. A different revision is a different reading. */
 function audioModelTitle(signal: AudioAuthenticitySignal): string | undefined {
   return signal.provider_version ? `Checkpoint: ${signal.provider_version}` : undefined;
@@ -877,6 +918,14 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
             <FaceManipulation signal={analysis.face_manipulation} />
           </Field>
 
+          {/* The local mouth-dynamics model's own score for the clip, uncalibrated and outside the
+              risk classification entirely. A separate question from the row above it — mouth
+              movement rather than the appearance of a face crop — on a separate scale, and
+              never compared with it. Shown as stored and never thresholded. */}
+          <Field term="MOUTH DYNAMICS">
+            <LipForensics signal={analysis.lip_forensics} />
+          </Field>
+
           {/* What the file itself claims, read from the forensic original. A missing or
               invalid manifest is never rendered as a verdict about the media. */}
           <Field term="PROVENANCE (C2PA)">
@@ -1157,6 +1206,21 @@ function Methodology() {
           <span className="font-mono">{FACE_SCORE_UNAVAILABLE}</span> means the reading did
           not produce a score — most often because no face was found, in which case the model
           was never asked and nothing was established either way.
+        </Note>
+
+        <Note term="MOUTH DYNAMICS">
+          Mouth dynamics is the score a local LipForensics model gave the movement of the mouth
+          across evenly spaced runs of 25 consecutive frames, shown as the model produced it.
+          It is a forgery reading taken from how a mouth moves, and it is emphatically{" "}
+          <strong>not a measure of audio/video lip synchronisation</strong> — the model is
+          never given the audio at all. It is a different question from the face-manipulation
+          score above — movement over time, not the appearance of a face crop — on a different
+          scale, and the two are never compared or combined. It is <strong>uncalibrated</strong>: no threshold is applied to it anywhere
+          in InspectRoot, it is not a probability that this media is manipulated, and it does
+          not affect the risk classification.{" "}
+          <span className="font-mono">{LIP_FORENSICS_SCORE_UNAVAILABLE}</span> means the reading did
+          not produce a score — most often because no run held a trackable face throughout, in
+          which case the model was never asked and nothing was established either way.
         </Note>
 
         <Note term="STRONGEST CLIPS (LOGIT)">

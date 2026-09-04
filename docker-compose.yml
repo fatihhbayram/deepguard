@@ -206,6 +206,18 @@ services:
       # is exactly what a deadline here could not close cleanly. The lease in `app/worker.py`
       # is what bounds a job that stops making progress.
       DEEPGUARD_FACE_FRAMES:
+      # How many runs of 25 consecutive frames the lip-sync model samples per clip (R5-T2).
+      # Four is what R5-T1 benchmarked at and what `app/lip_forensics.py` defaults to, so an
+      # unset variable changes nothing. It is the one knob that trades this detector's
+      # coverage against its runtime, and that trade is steeper here than anywhere else in
+      # the pipeline: R5-T1 measured a median of 129 s per clip at four runs, almost all of
+      # it in the landmark model, which is asked about 36 frames for every run sampled.
+      #
+      # No timeout beside it either, and for the reason given above: this is in-process
+      # inference holding models in memory, which `app/limits.py` explains a deadline could
+      # not close cleanly. The lease in `app/worker.py` is what bounds a job that stops
+      # making progress, and it is renewed throughout — a slow analysis is not a dead worker.
+      DEEPGUARD_LIPFORENSICS_WINDOWS:
     depends_on:
       postgres:
         condition: service_healthy
@@ -223,6 +235,11 @@ services:
     # in this container for a default eight-frame batch, and the artifact is dropped again
     # between jobs — `app/face_detector.py` is stateless on purpose — so the ceiling has to
     # cover the peak without the process holding it.
+    #
+    # It did not move again for the lip-sync model (R5-T2), and that is a measurement rather
+    # than an omission: it peaks at ~1.07 GB resident in this container, it runs after the
+    # B7 rather than beside it, and `app/lip_forensics.py` is stateless for the same reason
+    # its neighbour is — so the two peaks do not add up. What it costs is time, not memory.
     #
     # It is a ceiling rather than a reservation: a job that stays inside it sees no difference,
     # and one that does not is OOM-killed as this container, which the lease in

@@ -19,9 +19,19 @@ discount the other. What the rules combine is the two detectors' *separate decis
 the same media, which is the only combination R4-T1 measured and the only one rule 11 of
 AGENTS.md permits.
 
-C2PA provenance, the active-speaker timeline and AASIST's audio windows remain persisted as
-independent forensic evidence and still cannot move this classification by a single band —
-they are not read here at all. They have no calibration, and a scale is not a calibration.
+C2PA provenance, the active-speaker timeline, AASIST's audio windows and — since R5-T2 —
+LipForensics' mouth-dynamics score remain persisted as independent forensic evidence and still
+cannot move this classification by a single band. They are not read here at all: `evaluate`
+takes two arguments, this module imports nothing that would fetch a third signal, and an
+analysis carrying a mouth-dynamics row is classified exactly as the same analysis without one. They
+have no calibration, and a scale is not a calibration.
+
+The mouth-dynamics signal is the one that will change, and saying so here is not the same as leaving
+room for it. R5-T1 measured the detector; R5-T3 is where an operating point for it is measured
+and a rule that reads it is written, with its own threshold, its own eligibility check bound to
+its own artifacts, and its own place in the ordering above. Until that measurement exists there
+is nothing for a rule to compare against, and a third detector admitted on the strength of its
+scale rather than its calibration is exactly what this module refuses.
 
 **Why the rule is OR, and why silence never dampens a flag.** R4-T1 measured both detectors
 over one 159-clip corpus and found them strictly complementary. NVIDIA's detector separates

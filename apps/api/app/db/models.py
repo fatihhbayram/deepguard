@@ -364,7 +364,12 @@ class AnalysisSignal(Base):
 
     # Which deployment of the detector produced this, so an old signal stays
     # interpretable after the provider ships a new model.
-    provider_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #
+    # 255 since R5-T2, where a detector arrived whose identity is genuinely two artifacts: the
+    # commit its architecture is executed from and the digest of the weights loaded into it,
+    # which come from different places and neither of which pins the model alone. The
+    # migration that widened it says more.
+    provider_version: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     status: Mapped[str] = mapped_column(String(16), nullable=False)
 

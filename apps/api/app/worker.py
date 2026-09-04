@@ -8,7 +8,7 @@ Four transactions per job, never one:
 
 1. claim — take a `queued` job, mark it `processing`, commit, release the lock;
 2. nothing — the download, provenance, transcoding, diarization, both NVIDIA inferences
-   and the two local checkpoints all happen with no transaction open at all;
+   and the three local checkpoints all happen with no transaction open at all;
 3. persist — write the derivative's identity and every evidence row, and commit them;
 4. conclude — classify the analysis from the evidence just committed, record the decision
    and close the job out.
@@ -103,6 +103,7 @@ from app.detection import (
     SYNTHETIC_VIDEO_SIGNAL,
     analyse_audio,
     detect_face_manipulation,
+    detect_lip_forensics,
     detect_synthetic_video,
     extract_provenance,
     unanalysable_audio,
@@ -549,11 +550,36 @@ class SignalEvidence:
     segments: list
 
 
+def local_readings(path: Path) -> tuple[SignalEvidence, ...]:
+    """Ask every local checkpoint about the prepared artifact, in this order, one at a time.
+
+    The two of them are written out rather than looked up. There is no registry, no table of
+    detectors and no dispatch here — adding a third is a third line in this tuple — because
+    what R5-T2 needed was for the *callers* to stop naming each model individually, not for
+    the models to become interchangeable. They are not: one judges the appearance of a face
+    crop and the other judges how a mouth moves, on different scales, and nothing downstream
+    of this function compares them (rule 11).
+
+    Sequential, and deliberately so. Both are blocking CPU inference in a container with a
+    CPU quota, so running them at once would not finish sooner — it would contend for the
+    same cores and hold both models resident at the same peak. The order is the cheap one
+    first: the B7 costs seconds and LipForensics costs minutes.
+
+    Neither can fail this job. Each records its own failures as a `FAILED` signal — see
+    `app.detection` — so a missing checkpoint, an unreadable clip or a torch that broke
+    costs that reading and nothing else, including the other reading beside it.
+    """
+    return (
+        SignalEvidence(signal=detect_face_manipulation(path), segments=[]),
+        SignalEvidence(signal=detect_lip_forensics(path), segments=[]),
+    )
+
+
 @dataclass(frozen=True)
 class Evidence:
     """Everything asking about one prepared artifact produced, and what preparing it left.
 
-    All three travel together because all three are asked about the same artifact and the
+    They travel together because they are all asked about the same artifact and the
     transcode that produces it either serves them or none of them. They are still wholly
     separate findings — separate rows, separate statuses, separate evidence — and one
     failing says nothing about the others.
@@ -564,18 +590,27 @@ class Evidence:
     """
 
     detection: SignalEvidence
-    # None when the face classifier was never invoked, which is exactly the case where the
-    # transcode failed: it is the one artifact-dependent reading that is not attempted at
-    # all when there is no artifact. The other three are recorded as `FAILED` there because
-    # each is a source that was asked about this media and had no answer — NVIDIA takes MP4
-    # and nothing else, and the audio is demuxed from the same missing derivative — whereas
-    # nothing ever asked this classifier anything.
+    # What the local checkpoints made of the artifact, in the order `local_readings` ran
+    # them. A tuple rather than one field per model since R5-T2, which is the whole of the
+    # Rule-of-Three refactor and is worth being precise about: these are not interchangeable
+    # detectors behind an abstraction, and nothing here dispatches, registers or configures
+    # them. They are grouped because everything downstream — `entries` below, the timeout
+    # path, the transcode-failure path — treats them identically and would otherwise have to
+    # name each one three times over, which is exactly the drift that lets a third model be
+    # persisted on one path and dropped on another.
+    #
+    # Empty when they were never invoked, which is exactly the case where the transcode
+    # failed: they are the artifact-dependent readings that are not attempted at all when
+    # there is no artifact. The other three are recorded as `FAILED` there because each is a
+    # source that was asked about this media and had no answer — NVIDIA takes MP4 and nothing
+    # else, and the audio is demuxed from the same missing derivative — whereas nothing ever
+    # asked these checkpoints anything.
     #
     # The distinction is the same one `AnalysisTimedOut` draws and for the same reason: a
     # `FAILED` row is a finding ("this source was asked and could not answer"), and writing
     # one for a detector that was never reached would be recording a finding nobody made.
     # Absence is the honest record, and it is not the same fact as a failed reading.
-    face_manipulation: SignalEvidence | None
+    local_readings: tuple[SignalEvidence, ...]
     active_speaker: SignalEvidence
     audio_authenticity: SignalEvidence
     derivative_storage_key: str | None = None
@@ -589,19 +624,17 @@ class Evidence:
         this tuple would be a visible omission, and one written on one path but not the
         other is exactly the drift the two paths must not have.
 
-        The face-manipulation entry is dropped when it is absent rather than being written
-        as an empty or failed row — see the field above. Every other entry is required, so
+        The local readings are spread in place, so an empty tuple contributes nothing rather
+        than an empty or failed row — see the field above. Every other entry is required, so
         an omission there is a `TypeError` at construction rather than a silently missing
         signal.
         """
-        found = (
+        return (
             self.detection,
-            self.face_manipulation,
+            *self.local_readings,
             self.active_speaker,
             self.audio_authenticity,
         )
-
-        return tuple(entry for entry in found if entry is not None)
 
 
 class AnalysisTimedOut(Exception):
@@ -654,21 +687,22 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
     from, so it is produced once and held for the length of every call rather than
     transcoded again per consumer.
 
-    The audio pair is run second and cannot fail this job. `analyse_audio` records every
+    The audio pair is run last and cannot fail this job. `analyse_audio` records every
     failure of its own chains as a signal, so a missing Hugging Face token, an unreachable
     second NVIDIA function or a missing local checkpoint costs the affected signal and
-    nothing else.
+    nothing else. The local visual checkpoints in between behave the same way for the same
+    reason — see `local_readings`.
 
     Media that cannot be transcoded is a fact about the media, so it becomes a failed
     signal rather than a failed job — the same treatment a provider that refuses gets, and
     for the same reason: the provenance already read off this file must not be thrown away
-    because ffmpeg could not produce an MP4. Three of the four artifact-dependent signals
-    record it, because each of those sources was asked about this media and had no answer —
-    NVIDIA takes MP4 and nothing else, and the audio the local checkpoint reads is extracted
-    from the same derivative that was never produced.
+    because ffmpeg could not produce an MP4. Three of the artifact-dependent signals record
+    it, because each of those sources was asked about this media and had no answer — NVIDIA
+    takes MP4 and nothing else, and the audio the local checkpoint reads is extracted from
+    the same derivative that was never produced.
 
-    The face-manipulation reading is the exception, and deliberately: it is never invoked at
-    all on this path, so it produces no row rather than a `FAILED` one. Recording a failure
+    The local visual readings are the exception, and deliberately: they are never invoked at
+    all on this path, so they produce no rows rather than `FAILED` ones. Recording a failure
     for a detector nothing ran would be a finding nobody made — the same distinction
     `AnalysisTimedOut` draws for the signals a timeout never reached.
 
@@ -685,10 +719,10 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
     video. Both are re-raised as `AnalysisTimedOut`, which fails the job.
 
     What that re-raise carries is the point of it. Everything already obtained travels with
-    the exception, so a timeout during audio extraction costs the audio signals and not the
-    synthetic-video verdict NVIDIA had already returned. Failing the job and keeping its
-    evidence are separate decisions here, and this is what lets `process_one` make them
-    separately.
+    the exception, so a timeout during audio extraction costs the audio signals and neither
+    the synthetic-video verdict NVIDIA had already returned nor the local readings taken
+    after it. Failing the job and keeping its evidence are separate decisions here, and this
+    is what lets `process_one` make them separately.
     """
     try:
         with prepared_artifact(claimed, original) as artifact:
@@ -696,13 +730,11 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
             detected = SignalEvidence(signal=signal, segments=segments)
 
             # Second, and before the audio chain, so that an audio extraction which runs out
-            # of time costs neither this reading nor the one above it. It is local, blocking
-            # CPU work with no socket and no deadline of its own — `app.limits` says why the
-            # bounds there do not cover in-process inference — and it records its own
-            # failures, so nothing it does can fail this job.
-            face = SignalEvidence(
-                signal=detect_face_manipulation(artifact.path), segments=[]
-            )
+            # of time costs neither these readings nor the one above them. They are local,
+            # blocking CPU work with no socket and no deadline of their own — `app.limits`
+            # says why the bounds there do not cover in-process inference — and each records
+            # its own failures, so nothing they do can fail this job.
+            local = local_readings(artifact.path)
 
             try:
                 # The rate NVIDIA's frame indices have to be read against. It is the rate of
@@ -720,14 +752,14 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
                 # reader.
                 raise AnalysisTimedOut(
                     error,
-                    produced=(detected, face),
+                    produced=(detected, *local),
                     derivative_storage_key=artifact.storage_key,
                     derivative_sha256=artifact.sha256,
                 ) from error
 
             return Evidence(
                 detection=detected,
-                face_manipulation=face,
+                local_readings=local,
                 active_speaker=SignalEvidence(
                     signal=speaker_signal, segments=speaker_segments
                 ),
@@ -751,11 +783,12 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
             detection=SignalEvidence(
                 signal=undetectable_media(error, SYNTHETIC_VIDEO_SIGNAL), segments=[]
             ),
-            # Explicitly nothing. The classifier is never invoked on this path — the call
-            # that would have run it is inside the `with` block above, past the transcode
-            # that raised — so there is no reading to record, failed or otherwise. Stated
-            # here rather than left to a default so the omission is deliberate and visible.
-            face_manipulation=None,
+            # Explicitly nothing. Neither local checkpoint is invoked on this path — the
+            # call that would have run them is inside the `with` block above, past the
+            # transcode that raised — so there is no reading to record, failed or otherwise.
+            # Stated here rather than left to a default so the omission is deliberate and
+            # visible.
+            local_readings=(),
             active_speaker=SignalEvidence(
                 signal=undetectable_media(error, ACTIVE_SPEAKER_SIGNAL), segments=[]
             ),
@@ -806,10 +839,11 @@ def persist_evidence(
     Every signal that exists is written as its own row and none waits on another: they are
     independent evidence, and an analysis that got provenance and a speaker timeline but
     no synthetic-video verdict — or any other combination — records exactly that. An
-    analysis carries at most five, and fewer when a source was never reached.
-    Provenance and face manipulation are the two that never own segments — the first
-    because a signature is not a timeline, the second because R3-T1's contract is one clip
-    to one score — while the other three each own their own and never share a row.
+    analysis carries at most six, and fewer when a source was never reached.
+    Provenance and the two local visual readings are the three that never own segments — the
+    first because a signature is not a timeline, the other two because R3-T1's and R5-T1's
+    contracts are each one clip to one score — while the other three each own their own and
+    never share a row.
 
     The job stays `processing` across this commit, and deliberately so. Nothing can pick it
     up in the gap — `claim_job` only ever takes `queued` rows — and leaving the status for
@@ -971,11 +1005,18 @@ def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision | None:
 
     Two signals are read, and only two: NVIDIA's synthetic-video score and EfficientNet-B7's
     face-manipulation score, each of which R4-T1 calibrated an operating point for. The
-    provenance, speaker-timeline and audio rows committed moments ago are not fetched, not
-    passed in and cannot reach this decision — they remain forensic evidence in their own
-    right and none of them is entitled to move a band (rule 11, and `app.risk_engine`). Each
-    reader above names one provider and one signal type, so the queries cannot see them even
-    by accident.
+    provenance, speaker-timeline, audio and mouth-dynamics rows committed moments ago are not
+    fetched, not passed in and cannot reach this decision — they remain forensic evidence in
+    their own right and none of them is entitled to move a band (rule 11, and
+    `app.risk_engine`). Each reader above names one provider and one signal type, so the
+    queries cannot see them even by accident.
+
+    The mouth-dynamics row is the one to be explicit about, because it is new and because it is the
+    kind of signal that will eventually be read here. R5-T2 wires the detector in and stops:
+    there is no `persisted_lip_forensics_evidence`, `evaluate` takes no third argument, and adding
+    this signal to an analysis therefore cannot change the decision that analysis gets — the
+    same evidence yields the same band with the row present or absent. It has no calibration,
+    and a scale is not a calibration; measuring an operating point for it is R5-T3's work.
 
     The two are fetched separately and handed over separately. Nothing here compares, combines
     or reconciles them: the engine holds the rules, and this function's whole responsibility is
@@ -1288,20 +1329,22 @@ def process_one(session: Session) -> bool:
             return True
 
         logger.info(
-            "Completed job %s with a %s detection signal, a %s face-manipulation signal, a "
-            "%s active-speaker signal, a %s audio-authenticity signal and a %s provenance "
-            "signal%s. Risk %s by %s under %s.",
+            "Completed job %s with a %s detection signal, %s, a %s active-speaker signal, a "
+            "%s audio-authenticity signal and a %s provenance signal%s. Risk %s by %s under "
+            "%s.",
             claimed.job_id,
             evidence.detection.signal.status,
-            # `no` rather than a status, because absence here is not a status: the classifier
-            # is the one reading that is never invoked when the transcode failed, and the
-            # `Evidence` field says at length why that is recorded as no row rather than a
-            # `FAILED` one. The line enumerates the signals this job wrote, so it has to be
-            # able to say that this one was not written — printing `None` would read as a
-            # status the database can hold.
-            evidence.face_manipulation.signal.status
-            if evidence.face_manipulation is not None
-            else "no",
+            # Each local reading named with the signal it wrote, and `no local readings` when
+            # there are none — because absence here is not a status. They are the readings
+            # never invoked when the transcode failed, and the `Evidence` field says at length
+            # why that is recorded as no row rather than a `FAILED` one. This line enumerates
+            # what the job wrote, so it has to be able to say that they were not written;
+            # printing `None` would read as a status the database can hold.
+            ", ".join(
+                f"a {entry.signal.status} {entry.signal.signal_type} signal"
+                for entry in evidence.local_readings
+            )
+            or "no local readings",
             evidence.active_speaker.signal.status,
             evidence.audio_authenticity.signal.status,
             provenance_signal.status,

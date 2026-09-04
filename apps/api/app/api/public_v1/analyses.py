@@ -150,6 +150,7 @@ def public_signals(summary: AnalysisSummary) -> list[PublicSignal]:
         summary.audio_authenticity,
         summary.active_speaker,
         summary.face_manipulation,
+        summary.lip_forensics,
         summary.provenance,
     ]
 
@@ -160,12 +161,13 @@ def public_signals(summary: AnalysisSummary) -> list[PublicSignal]:
                 signal_type=signal.signal_type,
                 status=signal.status,
                 provider_version=signal.provider_version,
-                # Two of them carry a score at all — the synthetic-video model and the
-                # face-manipulation classifier — and each is that provider's own figure on
-                # its own scale. The rest have no such field, and `None` here says so rather
-                # than inventing one. The two scores are never comparable with each other and
-                # nothing here relates either to `risk_level`: only the first is calibrated,
-                # and it is the only one a rule reads (`app.risk_engine`).
+                # Three of them carry a score at all — the synthetic-video model, the
+                # face-manipulation classifier and the mouth-dynamics model — and each is that
+                # provider's own figure on its own scale. The rest have no such field, and
+                # `None` here says so rather than inventing one. No two of the three scores
+                # are comparable with each other, and nothing here relates any of them to
+                # `risk_level`: only the first two are calibrated, and they are the only ones
+                # a rule reads (`app.risk_engine`).
                 score=getattr(signal, "score", None),
             )
             for signal in signals

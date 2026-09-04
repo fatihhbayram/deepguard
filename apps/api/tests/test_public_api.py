@@ -57,6 +57,8 @@ from app.detection import (
     C2PA_PROVIDER,
     EFFICIENTNET_B7_PROVIDER,
     FACE_MANIPULATION_SIGNAL,
+    LIP_FORENSICS_SIGNAL,
+    LIPFORENSICS_PROVIDER,
     NVIDIA_PROVIDER,
     PROVENANCE_SIGNAL,
     SYNTHETIC_VIDEO_SIGNAL,
@@ -760,6 +762,16 @@ def test_a_completed_analysis_reports_the_stored_decision_and_signals(reader, se
         provider_version="repo@rev",
         signal_metadata={"frames_scored": 8},
     )
+    store_signal(
+        session,
+        analysis,
+        provider=LIPFORENSICS_PROVIDER,
+        signal_type=LIP_FORENSICS_SIGNAL,
+        status=SIGNAL_STATUS_SUCCESS,
+        score=0.62,
+        provider_version="repo@rev+digest",
+        signal_metadata={"windows_scored": 4},
+    )
 
     body = reader.get(read_url(analysis.id), headers=authorization(plaintext)).json()
 
@@ -775,6 +787,7 @@ def test_a_completed_analysis_reports_the_stored_decision_and_signals(reader, se
         PROVENANCE_SIGNAL,
         AUDIO_AUTHENTICITY_SIGNAL,
         FACE_MANIPULATION_SIGNAL,
+        LIP_FORENSICS_SIGNAL,
     }
     assert signals[SYNTHETIC_VIDEO_SIGNAL]["score"] == pytest.approx(0.91)
     assert signals[SYNTHETIC_VIDEO_SIGNAL]["provider"] == NVIDIA_PROVIDER
@@ -790,6 +803,12 @@ def test_a_completed_analysis_reports_the_stored_decision_and_signals(reader, se
     assert signals[FACE_MANIPULATION_SIGNAL]["score"] == pytest.approx(0.77)
     assert signals[FACE_MANIPULATION_SIGNAL]["provider"] == EFFICIENTNET_B7_PROVIDER
     assert signals[FACE_MANIPULATION_SIGNAL]["provider_version"] == "repo@rev"
+    # The mouth-dynamics model is the third signal carrying a score, and it crosses the boundary the
+    # same way: its own raw figure, comparable with neither of the two above, beside a HIGH
+    # decision no ruleset let it near.
+    assert signals[LIP_FORENSICS_SIGNAL]["score"] == pytest.approx(0.62)
+    assert signals[LIP_FORENSICS_SIGNAL]["provider"] == LIPFORENSICS_PROVIDER
+    assert signals[LIP_FORENSICS_SIGNAL]["provider_version"] == "repo@rev+digest"
 
 
 @integration

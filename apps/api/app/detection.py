@@ -4,17 +4,24 @@ This is what the worker runs. It sits beside `media.py` and `normalization.py` a
 step that takes a local artifact and describes it — it opens no transaction, writes no
 row, and does not know a job exists.
 
-Five sources are wired in and they answer different questions about different artifacts:
+Six sources are wired in and they answer different questions about different artifacts:
 NVIDIA's synthetic-video detector is asked whether the canonical derivative looks
 generated, NVIDIA's Active Speaker NIM is asked which visible face is speaking when in
 that same derivative, the local EfficientNet-B7 checkpoint is asked how manipulated the
-face in that derivative looks, the local AASIST checkpoint is run over the audio prepared
-from it, and C2PA is read off the forensic original to see what provenance travels with
-the bytes as uploaded. Each becomes its own signal row and none is ever folded into
-another (rule 11).
+face in that derivative looks, the local LipForensics checkpoint is asked how unnatural
+the mouth in it moves, the local AASIST checkpoint is run over the audio prepared from
+it, and C2PA is read off the forensic original to see what provenance travels with the
+bytes as uploaded. Each becomes its own signal row and none is ever folded into another
+(rule 11).
 
-The fifth arrived in R3-T2 and is independent evidence only: the risk engine does not read
-it, and calibrating it into a decision is R4's work.
+Three of them read the same prepared artifact and are still three separate findings. The
+two local visual checkpoints in particular are not a second opinion on one question: the
+B7 judges the appearance of a face crop and never sees motion, LipForensics judges mouth
+dynamics over consecutive frames and is nearly blind to appearance, and their numbers are
+on different scales and are never compared.
+
+The sixth arrived in R5-T2 and is independent evidence only: the risk engine does not read
+it, and calibrating it into a decision is R5-T3's work.
 
 It lived in the upload route until P3-T2, back when detection happened on the request.
 """
@@ -35,6 +42,11 @@ from app.face_detector import (
     FaceDetectorError,
     FaceManipulationEvidence,
     analyze_face_manipulation,
+)
+from app.lip_forensics import (
+    LipForensicsError,
+    LipForensicsEvidence,
+    analyze_lip_forensics,
 )
 from app.db.models import (
     SIGNAL_STATUS_FAILED,
@@ -101,6 +113,26 @@ AUDIO_AUTHENTICITY_SIGNAL = "audio_authenticity"
 # particular this one is not eligible for risk in R3: see `app.risk_engine`.
 EFFICIENTNET_B7_PROVIDER = "efficientnet-b7"
 FACE_MANIPULATION_SIGNAL = "face_manipulation"
+
+# Identity of the local mouth-dynamics evidence (R5-T2). The provider is named for the model
+# that produced it, as the two local checkpoints above are named, and for the same reason:
+# nothing leaves this machine to obtain it, so there is no company to name, and the exact
+# artifacts behind a stored signal are recorded in that signal's metadata rather than implied
+# by this string.
+#
+# The signal type is `lip_forensics` and deliberately not `lip_sync`. This model is given no
+# audio and reports nothing about whether a sound track matches the mouth producing it; it
+# reads mouth movement in the picture and separates forged facial motion from genuine facial
+# motion. A row typed `lip_sync` would assert that an audio/video relationship was checked,
+# which is a claim about evidence nobody gathered — see `app.lip_forensics`.
+#
+# A sixth, wholly independent signal, and the second one taken off the prepared artifact by a
+# local model. That is not a reason to relate the two: this one reads mouth movement across 25
+# consecutive frames and the B7 reads the appearance of single face crops, so they measure
+# different things on different scales and are never compared, averaged or reconciled (rule 11).
+# In particular this one is not eligible for risk in R5-T2: see `app.risk_engine`.
+LIPFORENSICS_PROVIDER = "lipforensics"
+LIP_FORENSICS_SIGNAL = "lip_forensics"
 
 # How many clip results one detection may leave behind. NVIDIA scores a clip every few
 # frames, so a long video produces thousands and persisting all of them would let one
@@ -746,6 +778,129 @@ def detect_face_manipulation(file_path: Path) -> AnalysisSignal:
     )
     signal.score = evidence.score
     signal.signal_metadata = face_manipulation_metadata(evidence)
+
+    return signal
+
+
+def lip_forensics_metadata(evidence: LipForensicsEvidence) -> dict:
+    """The supporting figures behind one mouth-dynamics score, as the signal stores them.
+
+    Everything a reader needs to know what the score describes and nothing that interprets it.
+
+    Every artifact is named by digest because a different checkpoint, a different upstream
+    revision or a different landmark model is a different measurement, and this detector has
+    four of them rather than two: the forgery weights, the upstream source the architecture is
+    executed from, and the S3FD/FAN pair whose landmarks every alignment is built on. The
+    sampling and preprocessing are recorded because the same clip sampled at a different window
+    count, crop size or input size is a different number, and the per-window logits are kept
+    because they are what the mean was taken over — so a stored score stays auditable rather
+    than merely asserted.
+
+    The logits are raw and stay raw. They are recorded before the sigmoid because the mean is
+    taken before it too, and storing squashed values beside a score derived from unsquashed ones
+    would leave the metadata unable to reproduce the figure it documents.
+
+    There is deliberately no threshold, class, verdict or band here. R5-T1 reported its
+    confusion matrix at the harness default of 0.5, which is a property of that run and not an
+    operating point this pipeline holds — calibrating one is R5-T3's work.
+    """
+    return {
+        "weights_origin": evidence.weights_origin,
+        "weights_sha256": evidence.weights_sha256,
+        "upstream_repository": evidence.upstream_repository,
+        "upstream_revision": evidence.upstream_revision,
+        # Per file rather than for the checkout, because these are the files that are actually
+        # executed and read: the network definition, its config and the mean face.
+        "source_sha256": evidence.source_sha256,
+        "landmark_library": evidence.landmark_library,
+        "landmark_compiled": evidence.landmark_compiled,
+        "face_detector_sha256": evidence.face_detector_sha256,
+        "landmark_model_sha256": evidence.landmark_model_sha256,
+        # Which torch ran the checkpoint, and on what. Both are part of the identity of the
+        # number — this is a plain state dict rather than an exported program, so the runtime is
+        # recorded rather than constrained, and the device is recorded because kernel selection
+        # is what would make one card's scores differ from another's.
+        "torch_version": evidence.torch_version,
+        "device": evidence.device,
+        # The input contract every logit above was produced under.
+        "frames_per_window": evidence.frames_per_window,
+        "crop_size": evidence.crop_size,
+        "input_size": evidence.input_size,
+        # What the sampling covered. The three counts differ on ordinary media — a run the
+        # decoder could not supply, a run in which the face was lost — and the gaps between them
+        # are what keep the score from reading as a statement about the whole clip.
+        "windows_requested": evidence.windows_requested,
+        "windows_read": evidence.windows_read,
+        "windows_scored": evidence.windows_scored,
+        # The logits the mean was taken over, in the order the runs were sampled. Capped where
+        # they were produced (`MAX_PERSISTED_WINDOW_LOGITS`), so a raised window count cannot
+        # grow this document without limit; `windows_scored` above says how many there really
+        # were.
+        "window_logits": [
+            {"start_frame": window.start_frame, "logit": window.logit}
+            for window in evidence.window_logits
+        ],
+    }
+
+
+def detect_lip_forensics(file_path: Path) -> AnalysisSignal:
+    """Run the local LipForensics model over the prepared artifact and record what it emitted.
+
+    `file_path` is the artifact NVIDIA's synthetic-video detector and the B7 are given, read a
+    third time by a different model asking a third question. Nothing is shared between them
+    beyond that file, and no answer informs another (rule 11).
+
+    `score` is the model's own figure for the clip — `sigmoid` of the mean logit over the
+    sampled runs — stored exactly as it came back and on the model's own scale. It is not a
+    verdict and nothing here compares it against anything: this signal is independent forensic
+    evidence in R5-T2 and is not eligible for risk. The engine does not read it, and
+    `app.risk_engine` says why.
+
+    No segments. R5-T1's contract is one analyzed clip to one score, and that is preserved
+    unchanged; the per-window logits the mean was taken over are recorded in the metadata, where
+    they document the score rather than claiming to be temporal detections of manipulation. The
+    frame each run started at is DeepGuard's own sampling and not a finding about that moment.
+
+    Nothing raises. Every `LipForensicsError` — a missing or swapped artifact, an absent
+    library, media that will not decode, no run with a trackable face, torch itself breaking —
+    becomes a `FAILED` signal carrying the failure kind and nothing else, so one source going
+    wrong costs this signal and no other.
+
+    A `FAILED` row therefore always means the same thing: this function ran and the model could
+    not produce evidence. It never means the model was not reached — media whose transcode
+    failed produces no row here at all, because this function is never called for it, and
+    `app.worker.Evidence` says why that distinction is kept.
+
+    A clip in which no run yields a tracked face deserves a word of its own, because it is the
+    one failure here that is an ordinary property of an upload rather than a fault, and because
+    it must never be read as a genuine verdict: `LipForensicsNoTrackedFace` is what the metadata
+    records, and the absence of a score beside it says the model was never asked.
+
+    Blocking CPU work, and the most expensive reading in the pipeline — see `app.lip_forensics`.
+    Called synchronously from the worker.
+    """
+    signal = AnalysisSignal(provider=LIPFORENSICS_PROVIDER, signal_type=LIP_FORENSICS_SIGNAL)
+
+    try:
+        evidence = analyze_lip_forensics(file_path)
+    except LipForensicsError as error:
+        # The failure kind, never the message: it quotes the local artifacts' paths.
+        logger.warning("Local mouth-dynamics detection failed.", exc_info=True)
+        signal.status = SIGNAL_STATUS_FAILED
+        signal.signal_metadata = {"error": type(error).__name__}
+        return signal
+
+    signal.status = SIGNAL_STATUS_SUCCESS
+    # Which artifacts produced this, in one string a reader can compare at a glance. The
+    # upstream revision fixes the architecture and the digest fixes the weights, and it takes
+    # both: the same checkpoint loaded into a different network is a different model, and this
+    # network is executed from source rather than shipped as one artifact.
+    signal.provider_version = (
+        f"{evidence.upstream_repository}@{evidence.upstream_revision}"
+        f"+{evidence.weights_sha256}"
+    )
+    signal.score = evidence.score
+    signal.signal_metadata = lip_forensics_metadata(evidence)
 
     return signal
 

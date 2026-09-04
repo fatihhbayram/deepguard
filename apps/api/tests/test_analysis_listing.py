@@ -49,6 +49,7 @@ EXPECTED_FIELDS = {
     "active_speaker",
     "audio_authenticity",
     "face_manipulation",
+    "lip_forensics",
 }
 
 # What ffprobe established about the original, as the database kept it. `major_brand` is
@@ -166,6 +167,17 @@ FACETORCH_CHECKPOINT = (
 # beside a MEDIUM decision, which is what proves it is not being read as a risk input.
 FACE_SCORE = 0.9931
 
+LIPFORENSICS_MODEL = (
+    "https://github.com/ahaliassos/LipForensics"
+    "@d0bf5553bfb9676f1771d590472b26a3a76de894"
+    "+4b7790bc8e02d0c25ecfa0d8d6a2907123c2206cc32e2bad6044e50f013c253d"
+)
+
+# The mouth-dynamics model's own figure for the clip. High on its own scale, for the same reason the
+# face score above is: the listing must hand it back untouched beside a decision no rule let it
+# near, which is what proves it is not being read as a risk input.
+LIP_FORENSICS_SCORE = 0.9612
+
 
 def listing_row(**overrides):
     """A row shaped like the one the select emits, with column names, not model names.
@@ -277,6 +289,34 @@ def listing_row(**overrides):
                 {"frame_index": 14, "probability": 0.88},
             ],
         },
+        "lip_forensics_provider": "lipforensics",
+        "lip_forensics_signal_type": "lip_forensics",
+        "lip_forensics_status": "SUCCESS",
+        "lip_forensics_score": LIP_FORENSICS_SCORE,
+        "lip_forensics_provider_version": LIPFORENSICS_MODEL,
+        "lip_forensics_metadata": {
+            "weights_origin": "https://drive.google.com/file/d/xyz (upstream README)",
+            "weights_sha256": "4b7790bc" + "0" * 56,
+            "upstream_repository": "https://github.com/ahaliassos/LipForensics",
+            "upstream_revision": "d0bf5553bfb9676f1771d590472b26a3a76de894",
+            "source_sha256": {"models/tcn.py": "35f57b7b" + "0" * 56},
+            "landmark_library": "face-alignment 1.5.0",
+            "landmark_compiled": False,
+            "face_detector_sha256": "619a3168" + "0" * 56,
+            "landmark_model_sha256": "11f355bf" + "0" * 56,
+            "torch_version": "2.13.0+cpu",
+            "device": "cpu",
+            "frames_per_window": 25,
+            "crop_size": 96,
+            "input_size": 88,
+            "windows_requested": 4,
+            "windows_read": 4,
+            "windows_scored": 3,
+            "window_logits": [
+                {"start_frame": 0, "logit": 3.1},
+                {"start_frame": 58, "logit": 2.4},
+            ],
+        },
     }
 
     return SimpleNamespace(**{**values, **overrides})
@@ -321,6 +361,12 @@ def unsignalled_row(**overrides):
         face_score=None,
         face_provider_version=None,
         face_metadata=None,
+        lip_forensics_provider=None,
+        lip_forensics_signal_type=None,
+        lip_forensics_status=None,
+        lip_forensics_score=None,
+        lip_forensics_provider_version=None,
+        lip_forensics_metadata=None,
         **overrides,
     )
 
@@ -672,6 +718,20 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
                 "frames_requested": 8,
                 "frames_decoded": 8,
                 "frames_scored": 6,
+            },
+            # The mouth-dynamics model's own figure, handed back exactly as the row holds it. No
+            # rule reads it under any ruleset, so it sits beside the decision above having
+            # taken no part in it — and it is never set beside the face score as though the
+            # two were comparable.
+            "lip_forensics": {
+                "provider": "lipforensics",
+                "signal_type": "lip_forensics",
+                "status": "SUCCESS",
+                "score": LIP_FORENSICS_SCORE,
+                "provider_version": LIPFORENSICS_MODEL,
+                "windows_requested": 4,
+                "windows_read": 4,
+                "windows_scored": 3,
             },
         }
     ]
@@ -1251,7 +1311,7 @@ def test_the_provenance_join_is_restricted_to_the_c2pa_provenance_signal(client,
     assert "signal_type = 'provenance'" in sql
     # Each further signal joins the table again under its own alias, so no two of them
     # can multiply each other.
-    assert sql.count("LEFT OUTER JOIN analysis_signals") == 5
+    assert sql.count("LEFT OUTER JOIN analysis_signals") == 6
 
 
 def test_both_signals_ride_the_same_statement(client, fake_session):

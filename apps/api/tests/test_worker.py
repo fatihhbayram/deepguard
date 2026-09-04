@@ -44,6 +44,12 @@ from app.face_detector import (
     FaceManipulationEvidence,
     FrameScore,
 )
+from app.lip_forensics import (
+    LipForensicsModelUnavailable,
+    LipForensicsNoTrackedFace,
+    LipForensicsEvidence,
+    WindowLogit,
+)
 from app.api.analyses import active_analyses
 from app.auth import generate_api_key
 from app.db.models import (
@@ -107,6 +113,23 @@ FACE_SCORE = 0.1274
 # a real face swap NVIDIA's detector scored 0.1648 on and missed entirely. Used by the tests
 # that are about the face model deciding on its own.
 FACE_SCORE_HIGH = 0.9943
+
+# The pinned mouth-dynamics artifacts, restated for the same reason the ones above are: an upstream
+# revision or a checkpoint changed without anyone noticing must show up here as a failing test
+# rather than as a silently different measurement.
+LIPFORENSICS_REPOSITORY = "https://github.com/ahaliassos/LipForensics"
+LIPFORENSICS_REVISION = "d0bf5553bfb9676f1771d590472b26a3a76de894"
+LIPFORENSICS_WEIGHTS_SHA256 = (
+    "4b7790bc8e02d0c25ecfa0d8d6a2907123c2206cc32e2bad6044e50f013c253d"
+)
+LIPFORENSICS_MODEL = (
+    f"{LIPFORENSICS_REPOSITORY}@{LIPFORENSICS_REVISION}+{LIPFORENSICS_WEIGHTS_SHA256}"
+)
+
+# The mouth-dynamics model's figure for the scripted clip. High on its own scale, and chosen that
+# way deliberately: no rule reads this signal, so a job whose mouth-dynamics score is emphatic must
+# still be classified exactly as one whose score is not, and several tests below turn on that.
+LIP_FORENSICS_SCORE = 0.9612
 
 # The operating point R3-T1 ran its confusion matrix at. Named here only so the tests can
 # assert it never reaches production evidence or a decision: it is a property of that
@@ -516,6 +539,60 @@ def fake_face_detector(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def fake_lip_forensics(monkeypatch):
+    """Stand in for the local LipForensics model, so no test here loads torch or its weights.
+
+    One clip, one score — R5-T1's contract — over a scripted four-run sample where one run lost
+    the face, which is the ordinary shape of a real reading and keeps the three run counts from
+    being interchangeable in the assertions below.
+    """
+
+    class Recorder:
+        def __init__(self):
+            self.error = None
+            self.video_paths = []
+            self.analysed_bytes = []
+            self.evidence = LipForensicsEvidence(
+                weights_origin="https://drive.google.com/file/d/xyz (upstream README)",
+                weights_sha256=LIPFORENSICS_WEIGHTS_SHA256,
+                upstream_repository=LIPFORENSICS_REPOSITORY,
+                upstream_revision=LIPFORENSICS_REVISION,
+                source_sha256={"models/tcn.py": "35f57b7b" + "0" * 56},
+                landmark_library="face-alignment 1.5.0",
+                landmark_compiled=False,
+                face_detector_sha256=YUNET_SHA256,
+                landmark_model_sha256=FACETORCH_SHA256,
+                torch_version="2.13.0+cpu",
+                device="cpu",
+                frames_per_window=25,
+                crop_size=96,
+                input_size=88,
+                windows_requested=4,
+                windows_read=4,
+                windows_scored=3,
+                score=LIP_FORENSICS_SCORE,
+                window_logits=(
+                    WindowLogit(start_frame=0, logit=3.1),
+                    WindowLogit(start_frame=58, logit=2.4),
+                    WindowLogit(start_frame=175, logit=4.0),
+                ),
+            )
+
+        def analyze(self, video_path, **kwargs):
+            # The bytes, not only the path: the artifact is a temp file that has been cleaned
+            # up by the time any assertion below runs.
+            self.video_paths.append(Path(video_path))
+            self.analysed_bytes.append(Path(video_path).read_bytes())
+            if self.error:
+                raise self.error
+            return self.evidence
+
+    recorder = Recorder()
+    monkeypatch.setattr(detection, "analyze_lip_forensics", recorder.analyze)
+    return recorder
+
+
+@pytest.fixture(autouse=True)
 def fake_c2pa(monkeypatch):
     """Stand in for the C2PA reader, which would reject the fake video bytes outright.
 
@@ -869,6 +946,7 @@ def test_both_evidence_sources_are_persisted_as_independent_signals(queue, fake_
         "active_speaker",
         "audio_authenticity",
         "face_manipulation",
+        "lip_forensics",
         "provenance",
         "synthetic_video",
     ]
@@ -1286,9 +1364,14 @@ def test_audio_extraction_that_ran_out_of_time_fails_the_job(
     # of it, so they are kept rather than discarded with the job. Only the two signals the
     # timeout actually prevented are absent.
     #
-    # The face-manipulation reading is among the survivors because it runs before the audio
-    # chain and needs nothing from it — which is the whole reason it was placed there.
-    assert set(signals) == {"provenance", "synthetic_video", "face_manipulation"}
+    # Both local readings are among the survivors because they run before the audio chain and
+    # need nothing from it — which is the whole reason they were placed there.
+    assert set(signals) == {
+        "provenance",
+        "synthetic_video",
+        "face_manipulation",
+        "lip_forensics",
+    }
     assert "active_speaker" not in signals
     assert "audio_authenticity" not in signals
 
@@ -1423,6 +1506,7 @@ def test_all_five_evidence_sources_are_persisted_as_independent_signals(
         "active_speaker",
         "audio_authenticity",
         "face_manipulation",
+        "lip_forensics",
         "provenance",
         "synthetic_video",
     ]
@@ -1458,6 +1542,37 @@ def test_all_five_evidence_sources_are_persisted_as_independent_signals(
     # sure YuNet has to be that it found a face — and is unrelated to the classifier's scale.
     assert R3_T1_BENCHMARK_THRESHOLD not in face.signal_metadata.values()
     assert face.signal_metadata["face_score_threshold"] == 0.6
+
+    lip_forensics = signals["lip_forensics"]
+    # A sixth row, and the second one a local checkpoint wrote off the same artifact. Being
+    # local and reading the same file is not a reason to share anything with the row above:
+    # a different provider, a different question, a different unit, its own status and its
+    # own id.
+    assert lip_forensics.provider == "lipforensics"
+    assert lip_forensics.id != signals["face_manipulation"].id
+    assert lip_forensics.id != signals["synthetic_video"].id
+    assert lip_forensics.status == "SUCCESS"
+    # Both halves of the identity: the revision fixes the architecture, which is executed from
+    # source, and the digest fixes the weights loaded into it.
+    assert lip_forensics.provider_version == LIPFORENSICS_MODEL
+    # The model's own figure, stored untransformed.
+    assert lip_forensics.score == LIP_FORENSICS_SCORE
+    # And no verdict beside it, exactly as above.
+    assert lip_forensics.risk_level is None
+    # It owns no segments: R5-T1's contract is one clip to one score, and the per-run logits
+    # the mean was taken over are metadata that documents the score rather than a timeline of
+    # detections.
+    assert read_segments(lip_forensics.id) == []
+    assert lip_forensics.signal_metadata["upstream_revision"] == LIPFORENSICS_REVISION
+    assert lip_forensics.signal_metadata["weights_sha256"] == LIPFORENSICS_WEIGHTS_SHA256
+    assert lip_forensics.signal_metadata["landmark_library"] == "face-alignment 1.5.0"
+    assert lip_forensics.signal_metadata["windows_requested"] == 4
+    assert lip_forensics.signal_metadata["windows_read"] == 4
+    assert lip_forensics.signal_metadata["windows_scored"] == 3
+    assert len(lip_forensics.signal_metadata["window_logits"]) == 3
+    # Raw logits, not probabilities: the mean is taken before the sigmoid, so metadata that
+    # stored squashed values could not reproduce the score it documents.
+    assert lip_forensics.signal_metadata["window_logits"][0]["logit"] == 3.1
 
     speaker = signals["active_speaker"]
     # NVIDIA answers two questions about one analysis, and they are two rows: the provider
@@ -1992,6 +2107,131 @@ def test_a_broken_face_classifier_costs_only_the_face_signal(
 
 
 @pytest.mark.integration
+def test_a_broken_lip_forensics_model_costs_only_the_lip_forensics_signal(
+    queue, fake_storage, fake_lip_forensics
+):
+    """The third detector obeys the same rule as the other two (AGENTS.md, error-handling)."""
+    analysis_id, job_id = queue()
+    fake_lip_forensics.error = LipForensicsModelUnavailable("weights are missing")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert signals["lip_forensics"].status == "FAILED"
+    assert signals["lip_forensics"].score is None
+    # The failure kind and nothing else: the message can quote the local artifacts' paths.
+    assert signals["lip_forensics"].signal_metadata == {"error": "LipForensicsModelUnavailable"}
+    assert signals["face_manipulation"].status == "SUCCESS"
+    assert signals["face_manipulation"].score == FACE_SCORE
+    assert signals["synthetic_video"].status == "SUCCESS"
+    assert signals["audio_authenticity"].status == "SUCCESS"
+    assert signals["provenance"].status == "SUCCESS"
+
+
+@pytest.mark.integration
+def test_a_clip_with_no_trackable_face_is_an_abstention_not_a_low_score(
+    queue, fake_storage, fake_lip_forensics
+):
+    """The model was never asked, so there is no number — `0.0` would be a fabricated answer."""
+    analysis_id, job_id = queue()
+    fake_lip_forensics.error = LipForensicsNoTrackedFace("no run held a face")
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    signals = read_signals(analysis_id)
+
+    assert read_job(job_id).status == "completed"
+    assert signals["lip_forensics"].status == "FAILED"
+    assert signals["lip_forensics"].score is None
+    assert signals["lip_forensics"].signal_metadata == {"error": "LipForensicsNoTrackedFace"}
+
+
+@pytest.mark.integration
+def test_the_lip_forensics_model_reads_the_same_artifact_the_others_do(
+    queue, fake_storage, fake_lip_forensics, fake_face_detector, fake_nvidia
+):
+    """One preparation serves all three, and none transcodes a second copy for itself."""
+    queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    assert fake_lip_forensics.analysed_bytes == [ORIGINAL_BYTES]
+    assert fake_lip_forensics.analysed_bytes == fake_nvidia.analysed_bytes
+    assert fake_lip_forensics.analysed_bytes == fake_face_detector.analysed_bytes
+
+
+@pytest.mark.integration
+def test_the_lip_forensics_signal_cannot_change_the_risk_decision(
+    queue, fake_storage, fake_nvidia, fake_lip_forensics
+):
+    """R5-T2's central constraint, asserted against the decision the worker actually stored.
+
+    The same job is run twice — once with the mouth-dynamics model answering emphatically, once with
+    it failing outright — and every field of the stored decision has to match. A signal that
+    could move a band would show up here as a different level, a different rule id, or a
+    different calibration identity; there is no arrangement of this evidence under which the
+    engine reads it, because `conclude_job` never fetches it and `evaluate` takes no argument
+    for it.
+    """
+    fake_nvidia.probability = 0.4646
+
+    with_signal, _ = queue()
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    fake_lip_forensics.error = LipForensicsModelUnavailable("weights are missing")
+
+    without_signal, _ = queue()
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    scored = read_analysis(with_signal)
+    unscored = read_analysis(without_signal)
+
+    # The evidence genuinely differs between the two, so this is not two runs of one case.
+    assert read_signals(with_signal)["lip_forensics"].score == LIP_FORENSICS_SCORE
+    assert read_signals(without_signal)["lip_forensics"].score is None
+
+    assert scored.risk_level == unscored.risk_level == "MEDIUM"
+    assert scored.risk_rule_id == unscored.risk_rule_id == "R200"
+    assert scored.risk_rules_version == unscored.risk_rules_version
+    assert scored.risk_calibration_id == unscored.risk_calibration_id
+
+
+@pytest.mark.integration
+def test_an_emphatic_lip_forensics_score_cannot_raise_the_band_on_its_own(
+    queue, fake_storage, fake_nvidia, fake_face_detector, fake_lip_forensics
+):
+    """Both calibrated detectors silent, the uncalibrated one at its ceiling: still UNKNOWN.
+
+    The case that would be a HIGH if this signal were eligible, and the case R5-T3 will have
+    to decide deliberately rather than inherit. Until then a score of 1.0 from a detector with
+    no measured operating point is evidence on the record and nothing more.
+    """
+    analysis_id, _ = queue()
+    fake_nvidia.error = nvidia_video.NvidiaProviderError("provider refused")
+    fake_face_detector.error = FaceDetectorNoFaceFound("no face in any sampled frame")
+    fake_lip_forensics.evidence = dataclasses.replace(
+        fake_lip_forensics.evidence, score=1.0
+    )
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    analysis = read_analysis(analysis_id)
+    signals = read_signals(analysis_id)
+
+    assert signals["lip_forensics"].score == 1.0
+    assert analysis.risk_level == "UNKNOWN"
+    assert analysis.risk_rule_id == "R010"
+
+
+@pytest.mark.integration
 def test_the_face_classifier_reads_the_same_artifact_the_video_detector_does(
     queue, fake_storage, fake_face_detector, fake_nvidia
 ):
@@ -2080,8 +2320,8 @@ def test_both_detectors_flagging_completes_high_by_its_own_rule(
 
 
 @pytest.mark.integration
-def test_media_that_cannot_be_transcoded_leaves_no_face_signal_at_all(
-    queue, fake_storage, fake_ffmpeg, fake_face_detector
+def test_media_that_cannot_be_transcoded_leaves_no_local_signal_at_all(
+    queue, fake_storage, fake_ffmpeg, fake_face_detector, fake_lip_forensics
 ):
     """A detector that was never invoked leaves no row — not a `FAILED` one.
 
@@ -2106,9 +2346,12 @@ def test_media_that_cannot_be_transcoded_leaves_no_face_signal_at_all(
     signals = read_signals(analysis_id)
 
     assert read_job(job_id).status == "completed"
-    # The row is absent, and the classifier is what was never invoked to produce it.
+    # The rows are absent, and the local checkpoints are what were never invoked to produce
+    # them. Both, not only the first: they run together, past the transcode that failed.
     assert "face_manipulation" not in signals
+    assert "lip_forensics" not in signals
     assert fake_face_detector.video_paths == []
+    assert fake_lip_forensics.video_paths == []
 
     # The sources that *were* asked keep their failures, and the provenance read off the
     # forensic original before any of this survives untouched.
@@ -2436,6 +2679,7 @@ def test_a_classification_that_breaks_fails_the_job_but_keeps_the_evidence(
         "active_speaker",
         "audio_authenticity",
         "face_manipulation",
+        "lip_forensics",
     }
     assert signals["synthetic_video"].score == NVIDIA_PROBABILITY
     assert len(read_segments(signals["synthetic_video"].id)) == 2

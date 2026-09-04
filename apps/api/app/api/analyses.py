@@ -34,6 +34,8 @@ from app.detection import (
     C2PA_PROVIDER,
     EFFICIENTNET_B7_PROVIDER,
     FACE_MANIPULATION_SIGNAL,
+    LIP_FORENSICS_SIGNAL,
+    LIPFORENSICS_PROVIDER,
     NVIDIA_PROVIDER,
     PROVENANCE_SIGNAL,
     SYNTHETIC_VIDEO_SIGNAL,
@@ -312,6 +314,55 @@ class FaceManipulationSignal(BaseModel):
     frames_scored: int | None
 
 
+class LipForensicsSignal(BaseModel):
+    """The persisted local mouth-dynamics signal, as the dashboard may see it.
+
+    A raw reading and nothing else. `score` is the figure LipForensics emitted for this clip
+    — `sigmoid` of the mean logit over the sampled runs — on the model's own scale, passed
+    through exactly as stored: not rescaled, not banded, and not compared against anything.
+    R5-T1 reported its confusion matrix at `0.5`, which is the benchmark harness's default and
+    not a production threshold, and that figure appears nowhere in this payload or in what
+    renders it.
+
+    This signal is independent forensic evidence and is not eligible for risk in R5-T2. Nothing
+    here relates it to `risk_level`, which is decided from the synthetic-video and
+    face-manipulation signals under a named ruleset (`app.risk_engine`).
+
+    It is emphatically not a second reading of the face-manipulation score beside it. That
+    model judges the appearance of a face crop; this one judges how a mouth moves across 25
+    consecutive frames. The two numbers are on different scales, were measured on different
+    corpora, and a reader who averages or compares them has invented a figure neither model
+    produced.
+
+    It is also not a lip-sync reading, which is why `signal_type` says `lip_forensics` and not
+    `lip_sync`: no audio reaches this model, so nothing here reports whether a sound track
+    matches the mouth on screen. `app.detection` says more about the distinction.
+
+    `score` is null for every non-SUCCESS status, including the ordinary case of a clip in
+    which no run yielded a trackable face: the model was never asked, so there is no number,
+    and `0.0` would be a fabricated answer about media nothing looked at.
+
+    The stored metadata document is not passed through as it stands; on a failure it holds the
+    exception's class name, which is internal diagnostic detail.
+    """
+
+    provider: str
+    signal_type: str
+    status: str
+    # The model's own figure for the clip, exactly as stored. Null unless the reading succeeded.
+    score: float | None
+    # The upstream revision the architecture was executed from and the digest of the weights
+    # loaded into it. Both, because either alone names a different model.
+    provider_version: str | None
+    # What the sampling covered: how many runs of consecutive frames were asked for, how many
+    # the decoder could supply, and how many survived landmark tracking to reach the model.
+    # All absent unless the reading succeeded and recorded them — without them, a score taken
+    # over one usable run would read exactly like one taken over four.
+    windows_requested: int | None
+    windows_read: int | None
+    windows_scored: int | None
+
+
 class ProvenanceSignal(BaseModel):
     """The persisted C2PA provenance signal, as the dashboard may see it.
 
@@ -437,6 +488,10 @@ class AnalysisSummary(BaseModel):
     # R3-T2 wired the local classifier in. Not the same as a reading that could not run, and
     # not the same as a clip the classifier found no face in.
     face_manipulation: FaceManipulationSignal | None
+    # Null for an analysis carrying no mouth-dynamics signal — everything stored before R5-T2 wired
+    # the local model in. Not the same as a reading that could not run, and not the same as a
+    # clip in which no run held a trackable face.
+    lip_forensics: LipForensicsSignal | None
 
 
 @dataclass(frozen=True)
@@ -1041,6 +1096,31 @@ def face_manipulation_signal(row: Any) -> FaceManipulationSignal | None:
     )
 
 
+def lip_forensics_signal(row: Any) -> LipForensicsSignal | None:
+    """Turn the joined mouth-dynamics columns into the response's signal, or nothing.
+
+    Same rule as the other five joins: every column is null when an analysis carries no such
+    signal, and `status` is the one a real row cannot have null.
+
+    The score is read off the column and handed on untouched. Nothing here compares it to a
+    threshold, derives a band from it, relates it to the analysis's risk level or sets it
+    beside the face-manipulation score.
+    """
+    if row.lip_forensics_status is None:
+        return None
+
+    return LipForensicsSignal(
+        provider=row.lip_forensics_provider,
+        signal_type=row.lip_forensics_signal_type,
+        status=row.lip_forensics_status,
+        score=row.lip_forensics_score,
+        provider_version=row.lip_forensics_provider_version,
+        windows_requested=signal_figure(row.lip_forensics_metadata, "windows_requested", int),
+        windows_read=signal_figure(row.lip_forensics_metadata, "windows_read", int),
+        windows_scored=signal_figure(row.lip_forensics_metadata, "windows_scored", int),
+    )
+
+
 def audio_windows(
     session: Session, signal_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, list[AudioWindowEvidence]]:
@@ -1210,6 +1290,7 @@ def analysis_evidence_select():
     active_speaker = aliased(AnalysisSignal)
     audio = aliased(AnalysisSignal)
     face = aliased(AnalysisSignal)
+    lip_forensics = aliased(AnalysisSignal)
 
     return (
         select(
@@ -1269,6 +1350,12 @@ def analysis_evidence_select():
                 face.score.label("face_score"),
                 face.provider_version.label("face_provider_version"),
                 face.signal_metadata.label("face_metadata"),
+                lip_forensics.provider.label("lip_forensics_provider"),
+                lip_forensics.signal_type.label("lip_forensics_signal_type"),
+                lip_forensics.status.label("lip_forensics_status"),
+                lip_forensics.score.label("lip_forensics_score"),
+                lip_forensics.provider_version.label("lip_forensics_provider_version"),
+                lip_forensics.signal_metadata.label("lip_forensics_metadata"),
             )
             .join(MediaFile, MediaFile.analysis_id == Analysis.id)
             .outerjoin(
@@ -1309,6 +1396,14 @@ def analysis_evidence_select():
                 face.analysis_id == Analysis.id,
                 face.provider == EFFICIENTNET_B7_PROVIDER,
                 face.signal_type == FACE_MANIPULATION_SIGNAL,
+            ),
+        )
+        .outerjoin(
+            lip_forensics,
+            and_(
+                lip_forensics.analysis_id == Analysis.id,
+                lip_forensics.provider == LIPFORENSICS_PROVIDER,
+                lip_forensics.signal_type == LIP_FORENSICS_SIGNAL,
             ),
         )
     )
@@ -1374,6 +1469,9 @@ def analysis_payloads(session: Session, rows: list[Any]) -> list[AnalysisSummary
             # this signal owns no segment rows and everything it carries is on the joined
             # row already.
             face_manipulation=face_manipulation_signal(row),
+            # No further evidence statement either, and for the same reason: R5-T1's contract
+            # is one clip to one score, so this signal owns no segment rows.
+            lip_forensics=lip_forensics_signal(row),
         )
         for row in rows
     ]

@@ -7,6 +7,7 @@ import {
   AnalysisSummary,
   AudioAuthenticitySignal,
   FaceManipulationSignal,
+  LipForensicsSignal,
   MediaFacts,
   ProvenanceSignal,
   FACE_T_HIGH_DISPLAY,
@@ -302,6 +303,10 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
               status={analysis.face_manipulation?.status ?? null}
             />
           </div>
+          <p className="mt-2 text-xs opacity-70">
+            The mouth-dynamics model is not listed here because no ruleset reads it. Its score is
+            recorded below as independent evidence and took no part in this classification.
+          </p>
 
           <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide opacity-70">
             What this covers
@@ -770,6 +775,89 @@ function FaceManipulationSection({
   );
 }
 
+function LipForensicsSection({ signal }: { signal: LipForensicsSignal | null }) {
+  // No ruleset-dependent branch, unlike the section above. That one has to say what was true
+  // of the decision being reported because R4-T2 promoted its detector from independent
+  // evidence to a calibrated decider; this detector has never been read by any ruleset a
+  // stored decision can name, so there is one thing to say and it is true of every report.
+  return (
+    <Section
+      title="LipForensics mouth-dynamics detector"
+      subtitle="Independent evidence. The score below is the model's own output and is not part of the risk classification."
+    >
+      {signal === null ? (
+        <NoSignal what="mouth-dynamics" />
+      ) : (
+        <>
+          <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="Provider" value={signal.provider} />
+            <Field label="Signal type" value={signal.signal_type} />
+            <Field label="Status" value={<SignalState status={signal.status} />} />
+            <Field label="Model" value={signal.provider_version ?? ABSENT} />
+            <Field
+              label="Model score"
+              value={signal.score === null ? ABSENT : signal.score.toString()}
+            />
+            <Field
+              label="Runs sampled"
+              value={
+                signal.windows_requested === null
+                  ? ABSENT
+                  : signal.windows_requested.toString()
+              }
+            />
+            <Field
+              label="Runs decoded"
+              value={signal.windows_read === null ? ABSENT : signal.windows_read.toString()}
+            />
+            <Field
+              label="Runs with a tracked face"
+              value={
+                signal.windows_scored === null ? ABSENT : signal.windows_scored.toString()
+              }
+            />
+          </dl>
+
+          {signal.status !== "SUCCESS" && (
+            <p className="mt-3 text-xs opacity-70">
+              This reading did not produce a score. A clip in which no run held a trackable
+              face throughout is the ordinary case, and it means the model was never asked —
+              it is not a finding that the media is genuine.
+            </p>
+          )}
+
+          <p className="mt-3 text-xs opacity-80">
+            The score is the model&apos;s output for the runs above — each a stretch of 25
+            consecutive frames, scored on how the mouth moves across them — shown exactly as
+            the model produced it. It is{" "}
+            <strong>not a probability that this media is manipulated</strong> and{" "}
+            <strong>not a Fake/Real decision</strong>.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            Despite the model&apos;s name, this is{" "}
+            <strong>not a measure of audio/video lip synchronisation</strong>. The model is
+            given no audio at all: it reads the movement of the mouth in the picture and
+            nothing else, and what it was trained to separate is forged facial motion from
+            genuine facial motion.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            It is <strong>not calibrated</strong>, no threshold is applied to it, and it does
+            not contribute to the risk classification above and cannot change it. This signal
+            is recorded as an independent forensic fact only.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            It is also <strong>not a second reading of the face-manipulation score above</strong>
+            . That model judges the appearance of a face crop; this one judges movement over
+            time. The two figures are on different scales and are never averaged, compared or
+            reconciled — agreement between them would not strengthen a finding, and
+            disagreement does not weaken one.
+          </p>
+        </>
+      )}
+    </Section>
+  );
+}
+
 export default async function Report({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const result = await fetchAnalysis(id);
@@ -862,14 +950,15 @@ export default async function Report({ params }: { params: Promise<{ id: string 
       <p className="mt-1 text-xs opacity-70">
         Each source is recorded separately and none of them is combined into the other.
         {analysis.risk_rules_version === RULES_VERSION_V2
-          ? " Two of them are calibrated and can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence and audio evidence have no calibrated threshold and cannot change that classification."
-          : " Only the synthetic-video detector contributes to the risk classification above; provenance, speaking evidence, face-manipulation evidence and audio evidence are recorded as independent forensic facts and cannot change that classification."}
+          ? " Two of them are calibrated and can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence, mouth-dynamics evidence and audio evidence have no calibrated threshold and cannot change that classification."
+          : " Only the synthetic-video detector contributes to the risk classification above; provenance, speaking evidence, face-manipulation evidence, mouth-dynamics evidence and audio evidence are recorded as independent forensic facts and cannot change that classification."}
       </p>
 
       <SyntheticVideoSection signal={analysis.synthetic_video} />
       <ProvenanceSection signal={analysis.provenance} />
       <ActiveSpeakerSection signal={analysis.active_speaker} />
       <FaceManipulationSection signal={analysis.face_manipulation} analysis={analysis} />
+      <LipForensicsSection signal={analysis.lip_forensics} />
       <AudioSection signal={analysis.audio_authenticity} />
 
       <footer className="mt-8 break-inside-avoid border-t border-black/15 pt-4 text-xs opacity-70 dark:border-white/20">

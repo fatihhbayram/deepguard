@@ -194,6 +194,40 @@ export type FaceManipulationSignal = {
   frames_scored: number | null;
 };
 
+// The local mouth-dynamics signal the API joined onto the analysis. `score` is the figure
+// LipForensics emitted for the clip — the sigmoid of the mean logit over the sampled runs of
+// 25 frames — on the model's own scale and passed through exactly as stored: null for every
+// status but SUCCESS, including the ordinary case of a clip in which no run held a trackable
+// face, where the model was never asked.
+//
+// Named for what it measures rather than for its upstream's name. LipForensics is given no
+// audio and reports nothing about audio/video synchronisation: it reads the movement of the
+// mouth in the picture, and what it was trained to separate is forged facial motion from
+// genuine facial motion.
+//
+// It is independent forensic evidence and is not part of the risk classification. R5-T2 does
+// not calibrate it: there is no threshold in this codebase to compare the score against and
+// nothing here derives a band from it.
+//
+// It is not a second opinion on the face-manipulation score above it either. That model reads
+// the appearance of a face crop, this one reads how a mouth moves; the two are different
+// scales measured on different corpora, and a reader who compares or averages them has
+// invented a number neither model produced.
+export type LipForensicsSignal = {
+  provider: string;
+  signal_type: string;
+  status: string;
+  score: number | null;
+  provider_version: string | null;
+  // What the sample covered: runs asked for, runs the decoder supplied, and runs that held a
+  // trackable face all the way through. All null unless the reading succeeded. They are shown
+  // with the score because a score over one usable run and one over four are different
+  // statements.
+  windows_requested: number | null;
+  windows_read: number | null;
+  windows_scored: number | null;
+};
+
 // What ffprobe established about the forensic original, as the database kept it. These
 // are facts about the bytes, unlike `declared_content_type`, which is only what the client
 // said about them. `format_name` is ffprobe's own name for the demuxer family — one string
@@ -255,6 +289,10 @@ export type AnalysisSummary = {
   // before R3-T2 wired the local classifier in. Not the same as a reading that could not run,
   // and not the same as a clip it found no face in.
   face_manipulation: FaceManipulationSignal | null;
+  // Null when the analysis carries no mouth-dynamics signal at all — everything stored before
+  // R5-T2 wired the local model in. Not the same as a reading that could not run, and not the
+  // same as a clip in which no run held a trackable face.
+  lip_forensics: LipForensicsSignal | null;
 };
 export const SIGNAL_STATUS_SUCCESS = "SUCCESS";
 
@@ -592,6 +630,11 @@ export const NO_AUDIO_WINDOWS = "No audio evidence windows";
 // evidence rather than the media — a clip the classifier found no face in lands here, and
 // that establishes nothing at all about whether the media is genuine.
 export const FACE_SCORE_UNAVAILABLE = "Unavailable";
+
+// The mouth-dynamics outcome that is not a score, kept apart from an absent signal for exactly
+// the reasons the constant above gives. A clip in which no run held a trackable face lands here,
+// and that establishes nothing at all about whether the media is genuine.
+export const LIP_FORENSICS_SCORE_UNAVAILABLE = "Unavailable";
 
 export const NO_PROVENANCE = "No provenance";
 export const REMOTE_PROVENANCE = "Remote provenance (not fetched)";
@@ -975,6 +1018,69 @@ export function parseFaceManipulation(
 }
 
 /**
+ * The mouth-dynamics signal on one analysis, with the same three-way result as `parseSignal`:
+ * `null` for an analysis that carries none, `undefined` for a payload that is not one.
+ *
+ * A near-copy of `parseFaceManipulation` above, and deliberately left as one. The two read
+ * different fields off different signals, and the shared shape is that both are a raw score
+ * with three counts beside it — collapsing them into one parameterised parser would tie two
+ * independent payloads to one definition, which is the drift rule 11 exists to prevent.
+ *
+ * `score` is parsed as an optional number and nothing more. It is not range-checked, not
+ * rounded and not compared against anything here.
+ */
+export function parseLipForensics(payload: unknown): LipForensicsSignal | null | undefined {
+  if (payload === null) {
+    return null;
+  }
+
+  if (typeof payload !== "object") {
+    return undefined;
+  }
+
+  const {
+    provider,
+    signal_type,
+    status,
+    score,
+    provider_version,
+    windows_requested,
+    windows_read,
+    windows_scored,
+  } = payload as Record<string, unknown>;
+
+  const parsedScore = parseOptionalNumber(score);
+  const parsedVersion = parseOptionalString(provider_version);
+  const parsedRequested = parseOptionalNumber(windows_requested);
+  const parsedRead = parseOptionalNumber(windows_read);
+  const parsedScored = parseOptionalNumber(windows_scored);
+
+  if (
+    typeof provider !== "string" ||
+    typeof signal_type !== "string" ||
+    typeof status !== "string" ||
+    parsedScore === undefined ||
+    parsedVersion === undefined ||
+    parsedRequested === undefined ||
+    parsedRead === undefined ||
+    parsedScored === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    provider,
+    signal_type,
+    status,
+    score: parsedScore,
+    provider_version: parsedVersion,
+    windows_requested: parsedRequested,
+    windows_read: parsedRead,
+    windows_scored: parsedScored,
+  };
+}
+
+/**
  * The provenance signal on one analysis, with the same three-way result as `parseSignal`:
  * `null` for an analysis that carries none, `undefined` for a payload that is not one.
  */
@@ -1109,6 +1215,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     active_speaker,
     audio_authenticity,
     face_manipulation,
+    lip_forensics,
   } = payload as Record<string, unknown>;
 
   // Each parsed on its own three-way rule: a real value, a legitimate null, or `undefined`
@@ -1126,6 +1233,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
   const activeSpeaker = parseActiveSpeaker(active_speaker);
   const audioAuthenticity = parseAudioAuthenticity(audio_authenticity);
   const faceManipulation = parseFaceManipulation(face_manipulation);
+  const lipForensics = parseLipForensics(lip_forensics);
   const mediaFacts = parseMedia(media);
 
   if (
@@ -1145,6 +1253,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     activeSpeaker === undefined ||
     audioAuthenticity === undefined ||
     faceManipulation === undefined ||
+    lipForensics === undefined ||
     mediaFacts === undefined ||
     !(typeof original_filename === "string" || original_filename === null)
   ) {
@@ -1170,6 +1279,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     active_speaker: activeSpeaker,
     audio_authenticity: audioAuthenticity,
     face_manipulation: faceManipulation,
+    lip_forensics: lipForensics,
   };
 }
 /**
