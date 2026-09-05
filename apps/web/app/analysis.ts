@@ -271,6 +271,12 @@ export type AnalysisSummary = {
   original_sha256: string | null;
   size_bytes: number | null;
   was_normalized: boolean;
+  // How the analysed artifact was acquired. False means the bytes are exactly what was
+  // uploaded or what the source served; true means DeepGuard fetched a video stream and an
+  // audio stream separately and muxed them here, because that is the only form the source
+  // published. Reported so the report never implies the first case when the second happened.
+  // It carries no claim about authenticity and no risk rule reads it.
+  was_assembled: boolean;
   // Never null: an analysis and its media are written in one transaction.
   media: MediaFacts;
   // Null when the analysis carries no such signal at all — a different fact from a
@@ -1386,6 +1392,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     original_sha256,
     size_bytes,
     was_normalized,
+    was_assembled,
     media,
     synthetic_video,
     provenance,
@@ -1421,6 +1428,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     parsedSha256 === undefined ||
     parsedSize === undefined ||
     typeof was_normalized !== "boolean" ||
+    typeof was_assembled !== "boolean" ||
     riskLevel === undefined ||
     riskRulesVersion === undefined ||
     riskRuleId === undefined ||
@@ -1450,6 +1458,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     original_sha256: parsedSha256,
     size_bytes: parsedSize,
     was_normalized,
+    was_assembled,
     media: mediaFacts,
     synthetic_video: signal,
     provenance: provenanceSignal,

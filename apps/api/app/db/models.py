@@ -39,6 +39,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false as sa_false,
     func,
     true as sa_true,
 )
@@ -240,6 +241,31 @@ class MediaFile(Base):
     # analysis ends up being detected against, and an analysis whose transcode never
     # succeeded never completes.
     was_normalized: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    # How this media was acquired, and the only column that answers it (R7-T1).
+    #
+    # False is one file: an upload, or a URL whose source served a single already-muxed
+    # artifact, stored byte-for-byte as the forensic original. True is an artifact this
+    # service assembled — a separate video stream and a separate audio stream, fetched and
+    # then muxed into one container by ffmpeg here — which is the only form YouTube offers
+    # above 360p. There is no published file for such an acquisition to be a copy of.
+    #
+    # Persisted rather than logged because the distinction outlives the request. Provenance
+    # is read minutes later, in the worker, off the stored original, and "these are the bytes
+    # the source served" is true of one of these artifacts and false of the other. The
+    # process holding the file has no other way to tell which it has.
+    #
+    # It is a fact about the acquisition and nothing more. No risk rule, threshold or verdict
+    # reads it and none may: assembled media is neither more nor less authentic than served
+    # media, and reading suspicion into an ffmpeg mux would be inventing evidence out of
+    # DeepGuard's own plumbing. What it exists to prevent is the opposite error — a report
+    # describing an assembled file as the publisher's original bytes.
+    #
+    # `False` server-side for every row written before this column existed, which is not a
+    # guess: those rows could only have been acquired as a single file.
+    was_assembled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_false()
+    )
 
     # The object downstream inference should read.
     #

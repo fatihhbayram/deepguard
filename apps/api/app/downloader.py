@@ -65,29 +65,63 @@ TEMP_DIR_PREFIX = "deepguard-download-"
 # transcode, the worker already owns transcoding (P4-F2), and doing it here would produce a
 # file whose bytes no longer match anything the source served. Provenance is read off these
 # bytes later, so what is fetched should be what was published.
+#
+# This is what every extractor but one gets, and R7-T1 leaves it exactly as it was.
 MEDIA_FORMAT = "best[ext=mp4]/best[ext=mov]/best"
 
-# YouTube is the exception that needs a word said about it. Its default player clients
-# answer with DASH and HLS only — every format they list is video-only or audio-only — so
-# `MEDIA_FORMAT` finds no single muxed file and the extractor refuses with "Requested format
-# is not available". That is not a bot block and no credential fixes it; it is a catalogue
-# that contains nothing of the shape this module asks for.
+# YouTube is the exception, and this is the second time it has had to be. Its player clients
+# answer with DASH and HLS: every format they list is video-only or audio-only, so
+# `MEDIA_FORMAT` matches nothing and the extractor refuses with "Requested format is not
+# available". That is not a bot block and no credential fixes it; it is a catalogue that
+# contains nothing of the shape that selector asks for.
 #
-# The `android` player client still lists itag 18: one progressive MP4, H.264 video and AAC
-# audio already muxed together, which is exactly what `MEDIA_FORMAT` wants and what the rest
-# of this module was written around. Naming the client is therefore the whole fix — the
-# format selector, the size ceiling, the live-stream refusal and both SSRF guards are
-# untouched, and nothing is merged, so the bytes on disk are still bytes YouTube served.
+# P10 answered it by naming the `android` player client, which still lists itag 18 — one
+# progressive H.264/AAC MP4, already muxed, nothing to merge. That worked, and it capped every
+# YouTube acquisition at 360p, because 360p is the only resolution that client offers in a
+# single file. That frame is then the input the face and lip detectors have to work from,
+# which is a worse forensic outcome than the byte-preservation rule was buying.
 #
-# The cost is that itag 18 is capped at 360p, so a YouTube analysis sees a lower-resolution
-# frame than the same video uploaded as a file would. That is the deliberate trade: the
-# alternative is fetching a video stream and an audio stream and re-muxing them into a
-# container no publisher ever produced, which is the thing the comment above refuses to do.
+# So YouTube gets its own selector instead: the best H.264 video stream at 1080p or below and
+# the best AAC audio stream, merged locally by ffmpeg into one MP4. The muxed chain is kept
+# behind it, so a YouTube URL that does offer a single file still takes it untouched.
 #
-# Scoped to `youtube` alone. Every other extractor keeps yt-dlp's own defaults, because no
-# other site tested here needs steering and pinning clients per-site is a maintenance debt
-# that only pays off where it is actually required.
-EXTRACTOR_ARGS = {"youtube": {"player_client": ["android"]}}
+# 1080p is a ceiling rather than a preference (`height<=1080`, not `height<=?1080`) because
+# `MAX_DOWNLOAD_BYTES` is 100 MiB — a 2160p stream would be fetched only to be refused by the
+# size check — and because every rung below it is always offered beside it.
+#
+# H.264 is asked for by name (`vcodec^=avc1`) rather than left to `[ext=mp4]`, which is not
+# the same thing: YouTube also publishes AV1 inside MP4, and it ranks above H.264, so the
+# plain extension filter selects `av01` on most videos. That is a codec the detectors were
+# never measured against and whose decode support depends on which ffmpeg each of them is
+# linked to. The 360p path this replaces served H.264/AAC, so asking for H.264/AAC at a
+# larger frame size changes one thing and not two. A second branch drops the codec
+# requirement if a video genuinely has no H.264 rendition, since a video that decodes is
+# worth more than a preference.
+#
+# WHAT THIS COSTS, STATED PLAINLY: a merged acquisition is not the bytes YouTube served.
+# There is no single file for it to be a copy of; the publisher never produced one. The
+# artifact on disk is something this service assembled from two streams it fetched, so it is
+# evidence of what was acquired and not a byte-for-byte copy of a published file.
+# `DownloadedMedia.assembled` records which of the two happened. Nothing may read
+# authenticity, provenance or tampering off the merge in either direction — that ffmpeg wrote
+# the container is a fact about DeepGuard's acquisition, not about the video.
+#
+# Scoped to YouTube by hostname alone. No other extractor's behaviour changes and no provider
+# abstraction is introduced; the day a second site needs this, the rule of three applies.
+YOUTUBE_MEDIA_FORMAT = (
+    "bestvideo[ext=mp4][vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]"
+    "/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]"
+    "/best[ext=mp4]/best"
+)
+
+# The hosts that mean YouTube, matched exactly or as a parent domain — so `www.`, `m.` and
+# `music.` are covered without listing them, and `notyoutube.com` is not.
+#
+# Read off the submitted URL rather than from yt-dlp's chosen extractor, because the format
+# has to be decided before anything is extracted. That is sound here because this is a
+# quality decision and not a security one: no guard consults it, and a host that talked its
+# way into this branch would get a format string it cannot satisfy, not access to anything.
+YOUTUBE_HOSTS = frozenset({"youtube.com", "youtu.be", "youtube-nocookie.com"})
 
 # How long a single stalled read may hang before the download gives up lives in `app.limits`
 # as `DEFAULT_DOWNLOAD_SOCKET_TIMEOUT_SECONDS`, unchanged and overridable from the
@@ -139,6 +173,18 @@ class DownloadedMedia:
     path: Path
     filename: str
     size_bytes: int
+    # Whether this file was assembled here rather than served. False means the source handed
+    # over one already-muxed file and these are its bytes; True means the selected formats
+    # were a separate video stream and a separate audio stream, and ffmpeg wrote the container
+    # on this machine (R7-T1, YouTube only).
+    #
+    # It is a fact about the acquisition and nothing more. A merged file is not a tampered
+    # one and an unmerged file is not an authenticated one, so no detector, verdict or
+    # provenance claim may be derived from this flag in either direction. What it exists for
+    # is to stop the opposite mistake: describing an assembled artifact as a byte-for-byte
+    # copy of something a publisher served, which for a DASH/HLS source is not true and never
+    # could be.
+    assembled: bool = False
 
 
 def is_public_address(address: str) -> bool:
@@ -300,6 +346,22 @@ def validate_url(url: str) -> str:
     return url
 
 
+def is_youtube_url(url: str) -> bool:
+    """Whether this URL is one the YouTube-specific format selector applies to.
+
+    Suffix-matched against `YOUTUBE_HOSTS` so subdomains count and lookalikes do not: the
+    boundary is a literal dot, which is what separates `m.youtube.com` from
+    `youtube.com.example.net`. A trailing root dot is stripped first, since `youtube.com.` is
+    the same name and would otherwise slip past.
+
+    Deliberately not asking yt-dlp which extractor it would pick. That answer only exists
+    after extraction, and the format string is an option handed to yt-dlp before it starts.
+    """
+    host = (urlsplit(url).hostname or "").lower().rstrip(".")
+
+    return any(host == known or host.endswith(f".{known}") for known in YOUTUBE_HOSTS)
+
+
 def _reject_live(info: dict) -> None:
     """Refuse anything that is not a finished recording.
 
@@ -317,7 +379,22 @@ def _declared_size(info: dict) -> int | None:
     `filesize` is exact and often absent; `filesize_approx` is yt-dlp's estimate from the
     bitrate and duration. Either is worth refusing on before spending the bandwidth, and
     neither is trusted afterwards — the bytes on disk are what get checked.
+
+    A merge is asked the same question about the whole acquisition rather than about half of
+    it. When two formats were selected the top-level keys describe the video stream alone, so
+    a 90 MiB video beside a 15 MiB audio track would declare itself inside a 100 MiB limit and
+    then land outside it. Summing is what makes the early refusal cover the file that will
+    actually exist — and only when every part declares a size, because a sum with a missing
+    term understates and an understated size is the one shape of wrong answer this check must
+    not produce. Where a part says nothing, the fall-through below asks the top level and, if
+    that says nothing either, the download proceeds to be weighed on disk as it always was.
     """
+    parts = info.get("requested_formats")
+    if parts:
+        sizes = [_declared_size(part) for part in parts]
+        if all(size is not None for size in sizes):
+            return sum(sizes)
+
     for key in ("filesize", "filesize_approx"):
         value = info.get(key)
         if isinstance(value, (int, float)) and value > 0:
@@ -326,8 +403,27 @@ def _declared_size(info: dict) -> int | None:
     return None
 
 
-def _options(directory: Path) -> dict:
+def _was_assembled(info: dict) -> bool:
+    """Whether yt-dlp selected separate streams, meaning the file on disk was merged here.
+
+    `requested_formats` is yt-dlp's own record of that decision: it is present, holding one
+    entry per stream, exactly when the format selector resolved to a `+` combination that
+    ffmpeg then muxes into a single output. A single-file selection leaves the key absent.
+
+    Read off the metadata pass, so the answer is known from the same info dict the size and
+    live-stream checks come from rather than inferred afterwards from what the directory
+    happens to contain.
+    """
+    return len(info.get("requested_formats") or ()) > 1
+
+
+def _options(directory: Path, url: str) -> dict:
     """How yt-dlp is configured for one download into one throwaway directory.
+
+    The URL is a parameter because one option depends on it: YouTube gets a selector that may
+    resolve to a video stream plus an audio stream, and every other site keeps the muxed-only
+    selector it already had. Nothing else here branches, and nothing that branches here is a
+    security control — the guards below and around this call are the same either way.
 
     `max_filesize` is the during-the-download half of the size limit: yt-dlp abandons a file
     that declares itself larger rather than fetching 100 MiB to find out. It is not the whole
@@ -340,8 +436,15 @@ def _options(directory: Path) -> dict:
     resolution on the thread that is guarded.
     """
     return {
-        "format": MEDIA_FORMAT,
-        "extractor_args": EXTRACTOR_ARGS,
+        "format": YOUTUBE_MEDIA_FORMAT if is_youtube_url(url) else MEDIA_FORMAT,
+        # Which container a merge is written into. Only the YouTube selector can ask for one,
+        # so this is inert for every other site — but naming it means the merged file is an
+        # MP4 by instruction rather than by yt-dlp's inference, which is what keeps the
+        # extension inside the two types the ingestion route admits.
+        #
+        # ffmpeg does this locally, on bytes already fetched through the guarded socket. It
+        # opens no connection of its own and needs no network path.
+        "merge_output_format": "mp4",
         "paths": {"home": str(directory)},
         "outtmpl": {"default": "media.%(ext)s"},
         # A URL that happens to name a playlist is one video's worth of work, not a channel's.
@@ -376,9 +479,15 @@ def _downloaded_file(directory: Path) -> Path:
             "downloadable."
         )
 
-    # One file, because one already-muxed format was asked for. More than one means the
-    # format selection did something unexpected, and guessing which is the video would be
-    # the wrong way to find out.
+    # One file, always. A muxed selection downloads one and a merged selection leaves one:
+    # yt-dlp writes the two streams to `media.f<id>.<ext>` parts, muxes them and deletes the
+    # parts, so a successful merge is as single-file as a progressive download.
+    #
+    # More than one file therefore means the merge did not finish — ffmpeg missing, ffmpeg
+    # failed, streams it would not put in one container — and the parts are still sitting
+    # there. Guessing which of them is the video would be the wrong way to find that out, so
+    # this refuses instead, and `download` reports it as an unavailable download exactly as
+    # it did before R7-T1.
     if len(files) > 1:
         raise DownloadUnavailable("The download produced more than one file.")
 
@@ -409,6 +518,7 @@ def download(url: str) -> Iterator[DownloadedMedia]:
 
         media = _downloaded_file(directory)
         size_bytes = media.stat().st_size
+        assembled = _was_assembled(info)
 
         if size_bytes > MAX_DOWNLOAD_BYTES:
             # The declared size was wrong or absent and `max_filesize` had nothing to act on.
@@ -418,7 +528,18 @@ def download(url: str) -> Iterator[DownloadedMedia]:
                 f"{MAX_DOWNLOAD_BYTES} byte limit."
             )
 
-        logger.info("Downloaded %s bytes of media from %r.", size_bytes, urlsplit(url).netloc)
+        # Which of the two acquisitions this was is worth a log line rather than only a field:
+        # it is the difference between bytes a site served and bytes this container assembled,
+        # and an operator reading back over an analysis should not have to guess which one is
+        # in MinIO.
+        logger.info(
+            "Downloaded %s bytes of media from %r (%s).",
+            size_bytes,
+            urlsplit(url).netloc,
+            "assembled here from separate video and audio streams"
+            if assembled
+            else "as served, a single file",
+        )
 
         yield DownloadedMedia(
             path=media,
@@ -426,6 +547,7 @@ def download(url: str) -> Iterator[DownloadedMedia]:
             # site's title, so nothing a publisher controls reaches a filename.
             filename=media.name,
             size_bytes=size_bytes,
+            assembled=assembled,
         )
     finally:
         # `ignore_errors`, because a directory that has already gone is the outcome wanted
@@ -444,7 +566,7 @@ def _fetch(url: str, directory: Path) -> dict:
     as the download: an extractor that follows a redirect to a private address is doing it on
     this call as readily as on the next one.
     """
-    with yt_dlp.YoutubeDL(_options(directory)) as ydl:
+    with yt_dlp.YoutubeDL(_options(directory, url)) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
         except BlockedAddress:

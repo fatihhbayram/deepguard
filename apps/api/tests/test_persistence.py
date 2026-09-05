@@ -109,6 +109,7 @@ def media_file(analysis_id: uuid.UUID, **overrides) -> MediaFile:
         "pix_fmt": "yuv420p",
         "constant_frame_rate": True,
         "was_normalized": True,
+        "was_assembled": False,
         "derivative_storage_key": f"derivatives/{hashlib.sha256(b'derivative').hexdigest()}.mp4",
         "derivative_sha256": hashlib.sha256(b"derivative").hexdigest(),
     }
@@ -161,6 +162,11 @@ def test_migration_created_the_analysis_schema(database):
         "pix_fmt",
         "constant_frame_rate",
         "was_normalized",
+        # How the media was acquired (R7-T1): false for anything stored as it arrived, true
+        # for an artifact DeepGuard muxed here from separate streams. `NOT NULL` with a
+        # `false` server default, so every row written before the column existed reads as
+        # what it was.
+        "was_assembled",
         "derivative_storage_key",
         "derivative_sha256",
     }

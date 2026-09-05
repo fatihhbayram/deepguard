@@ -136,7 +136,11 @@ function MediaSection({
   return (
     <Section
       title="Analysed media"
-      subtitle="What ffprobe established about the forensic original, as the database kept it."
+      subtitle={
+        analysis.was_assembled
+          ? "What ffprobe established about the analysed artifact, as the database kept it. This acquisition was assembled by DeepGuard, so it is not a copy of a single published file."
+          : "What ffprobe established about the forensic original, as the database kept it."
+      }
     >
       <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Field label="Original filename" value={analysis.original_filename ?? ABSENT} />
@@ -152,6 +156,18 @@ function MediaSection({
           value={media.constant_frame_rate ? "yes" : "no"}
         />
         <Field label="Normalized for detection" value={analysis.was_normalized ? "yes" : "no"} />
+        {/* How the artifact was obtained, not what it is. An assembled acquisition is
+            neither more nor less trustworthy than a served one; what the reader must not do
+            is take the hash below as the hash of a file the publisher issued, because for a
+            DASH or HLS source no such single file exists. */}
+        <Field
+          label="Acquisition"
+          value={
+            analysis.was_assembled
+              ? "assembled here from separate video and audio streams"
+              : "stored as received, unmodified"
+          }
+        />
       </dl>
       <div className="mt-4 break-inside-avoid">
         <dt className="text-xs uppercase tracking-wide opacity-60">
@@ -165,6 +181,9 @@ function MediaSection({
         <p className="mt-1 text-xs opacity-70">
           This is the hash of the media that was analysed. It is not a hash or a signature of
           this report.
+          {analysis.was_assembled
+            ? " Because this acquisition was assembled from separate video and audio streams, it hashes the artifact DeepGuard built and stored, not a file the source published — the source published no single file to compare it against."
+            : ""}
         </p>
       </div>
     </Section>
@@ -507,11 +526,24 @@ function SyntheticVideoSection({ signal }: { signal: SyntheticVideoSignal | null
   );
 }
 
-function ProvenanceSection({ signal }: { signal: ProvenanceSignal | null }) {
+function ProvenanceSection({
+  signal,
+  assembled,
+}: {
+  signal: ProvenanceSignal | null;
+  // Whether the artifact this provenance was read from is one DeepGuard assembled. It
+  // changes the wording and nothing else: a missing manifest on an assembled acquisition is
+  // as unremarkable as it is on any other file, and neither reading becomes evidence.
+  assembled: boolean;
+}) {
   return (
     <Section
       title="C2PA provenance"
-      subtitle="What the file itself claims about its origin, read from the forensic original."
+      subtitle={
+        assembled
+          ? "What the stored artifact itself claims about its origin. It was assembled by DeepGuard from separate streams, so any credentials the source may have published alongside them are not expected to survive into it."
+          : "What the file itself claims about its origin, read from the forensic original."
+      }
     >
       {signal === null ? (
         <NoSignal what="provenance" />
@@ -544,6 +576,9 @@ function ProvenanceSection({ signal }: { signal: ProvenanceSignal | null }) {
             whether the media was manipulated. The absence of Content Credentials is not
             evidence of manipulation — most media carries none — and their presence is not
             evidence of authenticity. Any remote manifest URL was recorded and never fetched.
+            {assembled
+              ? " These bytes were assembled by DeepGuard from separate video and audio streams, so this reading describes the stored artifact and not a file the source published. Reading it as a statement about the source would be a mistake in either direction."
+              : ""}
           </p>
         </>
       )}
@@ -1024,7 +1059,7 @@ export default async function Report({ params }: { params: Promise<{ id: string 
       </p>
 
       <SyntheticVideoSection signal={analysis.synthetic_video} />
-      <ProvenanceSection signal={analysis.provenance} />
+      <ProvenanceSection signal={analysis.provenance} assembled={analysis.was_assembled} />
       <ActiveSpeakerSection signal={analysis.active_speaker} />
       <FaceManipulationSection signal={analysis.face_manipulation} analysis={analysis} />
       <LipForensicsSection signal={analysis.lip_forensics} analysis={analysis} />

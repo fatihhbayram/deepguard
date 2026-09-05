@@ -18,6 +18,7 @@ concurrency limit is a lock, and neither is a property a fake can demonstrate.
 """
 
 import json
+import inspect
 import shutil
 import tempfile
 import uuid
@@ -28,13 +29,14 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import downloader, media, storage
+from app import downloader, media, risk_engine, storage
 from app.api.analyses import ALLOWED_CONTENT_TYPES, active_analyses
 from app.api.public_v1.analyses import MAX_ACTIVE_ANALYSES
 from app.api.url_analyses import MAX_URL_LENGTH, URL_MEDIA_TYPES
 from app.auth import generate_api_key
 from app.db.models import (
     ANALYSIS_STATUS_QUEUED,
+    JOB_STATUS_QUEUED,
     USER_ROLE_USER,
     Analysis,
     AnalysisJob,
@@ -86,10 +88,20 @@ class RecordingDownloader:
     block, or never entered it as a context manager at all, leaves the directory behind.
     """
 
-    def __init__(self, *, filename="media.mp4", payload=DOWNLOADED_BYTES, error=None):
+    def __init__(
+        self,
+        *,
+        filename="media.mp4",
+        payload=DOWNLOADED_BYTES,
+        error=None,
+        assembled=False,
+    ):
         self.filename = filename
         self.payload = payload
         self.error = error
+        # What the real downloader reports about the acquisition: False for one file a
+        # source served, True for one muxed here from a separate video and audio stream.
+        self.assembled = assembled
         self.urls = []
         self.directories = []
 
@@ -107,7 +119,10 @@ class RecordingDownloader:
 
         try:
             yield DownloadedMedia(
-                path=path, filename=path.name, size_bytes=len(self.payload)
+                path=path,
+                filename=path.name,
+                size_bytes=len(self.payload),
+                assembled=self.assembled,
             )
         finally:
             shutil.rmtree(directory, ignore_errors=True)
@@ -124,6 +139,20 @@ class RecordingDownloader:
 def download(monkeypatch):
     """The default fake: one MP4 that downloads successfully."""
     fake = RecordingDownloader()
+    monkeypatch.setattr(downloader, "download", fake)
+
+    return fake
+
+
+@pytest.fixture
+def assembled_download(monkeypatch):
+    """A fake whose acquisition was merged here from separate streams.
+
+    What a YouTube DASH or HLS submission produces. The bytes are the same pretend video —
+    the difference this fixture exists for is not in the file, it is in what is true *about*
+    the file, which is the fact the pipeline now has to carry.
+    """
+    fake = RecordingDownloader(assembled=True)
     monkeypatch.setattr(downloader, "download", fake)
 
     return fake
@@ -397,6 +426,76 @@ def test_the_submitted_url_media_goes_through_the_upload_pipeline(
     assert content_type == "video/mp4"
 
 
+# --- how the media was acquired, and that the answer survives the request (R7-T1) ---------
+#
+# The downloader knows whether it assembled the artifact and then goes out of scope. Every
+# process that looks at the stored original afterwards — the worker, the C2PA read, a report
+# rendered days later — has only the database. So the fact is written to `media_files`, and
+# these tests are about it arriving there and staying an acquisition fact.
+
+
+def test_a_progressive_acquisition_is_persisted_as_not_assembled(
+    dashboard, download, fake_minio
+):
+    """The path every non-YouTube URL takes, and the one that preserves bytes.
+
+    One muxed file, served and stored unchanged, so the stored original really is what the
+    source published — which is the claim `was_assembled = false` is there to support.
+    """
+    client, session = dashboard
+
+    assert submit(client).status_code == 202
+
+    assert persisted(session, MediaFile)[0].was_assembled is False
+
+
+def test_a_merged_acquisition_is_persisted_as_assembled(
+    dashboard, assembled_download, fake_minio
+):
+    """The DASH/HLS path, which is the only one that can produce an artifact nobody served.
+
+    The row has to say so. Without this column the stored original is indistinguishable from
+    a published file, and everything downstream reads it as one.
+    """
+    client, session = dashboard
+
+    assert submit(client).status_code == 202
+
+    assert persisted(session, MediaFile)[0].was_assembled is True
+
+
+def test_the_acquisition_is_reported_on_the_response(
+    dashboard, assembled_download, fake_minio
+):
+    """Reported rather than left implicit, on the same response that reports the hash.
+
+    The two belong together: a hash of an assembled artifact is a real, checkable identity
+    for the thing DeepGuard stored, and it is not the hash of anything a publisher issued.
+    A response that gave the first without the second would invite exactly that reading.
+    """
+    client, _ = dashboard
+
+    body = submit(client).json()
+
+    assert body["was_assembled"] is True
+    assert body["sha256"]
+
+
+def test_the_acquisition_fact_never_reaches_the_risk_engine():
+    """Rule 3 of the review, pinned as a test rather than as a promise in a comment.
+
+    Assembled media is neither more nor less likely to be manipulated than served media. An
+    ffmpeg mux is DeepGuard's own plumbing, and a rule that read suspicion into it would be
+    manufacturing evidence out of how the file was fetched.
+
+    Asserted two ways, because the comment saying so is not enforcement: the engine takes
+    exactly its three calibrated detector evidences and nothing else, and its source never
+    mentions the acquisition at all — so a rule could not consult it even if one wanted to.
+    """
+    assert set(inspect.signature(risk_engine.evaluate).parameters) == {"svd", "face", "lip"}
+    assert "assembled" not in inspect.getsource(risk_engine)
+
+
 def test_the_response_reports_what_an_upload_reports(dashboard, download, fake_minio):
     """The internal response model, unchanged: the dashboard reads one shape, not two."""
     client, session = dashboard
@@ -413,6 +512,7 @@ def test_the_response_reports_what_an_upload_reports(dashboard, download, fake_m
         "storage_key",
         "metadata",
         "was_normalized",
+        "was_assembled",
         "derivative_storage_key",
         "derivative_sha256",
     }
@@ -797,6 +897,66 @@ def fill_active(session, key: ApiKey, count: int) -> None:
         db.add(analysis)
         db.commit()
         analyses.append(analysis.id)
+
+
+@integration
+def test_the_acquisition_survives_the_request_that_wrote_it(
+    live, session, assembled_download, fake_minio
+):
+    """Against real PostgreSQL, read back on a statement the request never touched.
+
+    The point of the column is that the answer outlives the process that knew it. The
+    downloader reported `assembled` inside a request that has since ended; the worker will
+    open this analysis minutes later and has nothing but the row. So the row is expired from
+    the session and fetched again, which is as close as a test gets to being the next process.
+
+    The queued job is asserted alongside it because that is the lifecycle the fact has to
+    survive: an analysis is committed with its media and its job in one transaction, and a
+    column written outside that transaction would be a fact that could go missing.
+    """
+    db, analyses, _ = session
+    plaintext, key = issue_key(session)
+
+    response = submit(live, key=plaintext, path=PUBLIC_URL)
+
+    assert response.status_code == 202
+    analysis_id = uuid.UUID(response.json()["id"])
+    analyses.append(analysis_id)
+
+    # Nothing of this request's identity map survives into the reads below.
+    db.expire_all()
+
+    stored = db.query(MediaFile).filter(MediaFile.analysis_id == analysis_id).one()
+    assert stored.was_assembled is True
+
+    job = db.query(AnalysisJob).filter(AnalysisJob.analysis_id == analysis_id).one()
+    assert job.status == JOB_STATUS_QUEUED
+    # The analysis reached the queue with no risk decision, exactly as any other does. How
+    # the media was acquired changed nothing about the work it is owed.
+    assert db.query(Analysis).filter(Analysis.id == analysis_id).one().risk_level is None
+
+
+@integration
+def test_a_progressive_acquisition_survives_as_not_assembled(
+    live, session, download, fake_minio
+):
+    """The backward-compatible half, on the same live database.
+
+    Everything submitted before R7-T1 was acquired this way, and the server default that
+    backfilled those rows says the same thing this write does.
+    """
+    db, analyses, _ = session
+    plaintext, _ = issue_key(session)
+
+    response = submit(live, key=plaintext, path=PUBLIC_URL)
+
+    assert response.status_code == 202
+    analysis_id = uuid.UUID(response.json()["id"])
+    analyses.append(analysis_id)
+    db.expire_all()
+
+    stored = db.query(MediaFile).filter(MediaFile.analysis_id == analysis_id).one()
+    assert stored.was_assembled is False
 
 
 @integration

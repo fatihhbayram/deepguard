@@ -1095,6 +1095,7 @@ def submit_on_its_own_connection(db, key_id: uuid.UUID, results: dict) -> None:
                 sha256=hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest(),
             ),
             storage_key="originals/race",
+            was_assembled=False,
             metadata=MediaMetadata(
                 format_name="mov,mp4,m4a,3gp,3g2,mj2",
                 major_brand="mp42",

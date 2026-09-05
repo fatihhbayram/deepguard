@@ -406,6 +406,9 @@ def test_declared_mp4_is_accepted(client, fake_session, new_temp_uploads, fake_m
             "constant_frame_rate": True,
         },
         "was_normalized": False,
+        # An upload is never assembled: the client sends one file and the pipeline stores
+        # exactly it. Only a URL acquisition can be anything else.
+        "was_assembled": False,
         "derivative_storage_key": f"originals/{sha256}",
         "derivative_sha256": None,
     }
@@ -434,6 +437,7 @@ def test_response_does_not_leak_the_temp_path(client, new_temp_uploads, fake_min
         "storage_key",
         "metadata",
         "was_normalized",
+        "was_assembled",
         "derivative_storage_key",
         "derivative_sha256",
     }
@@ -923,6 +927,9 @@ def test_successful_upload_persists_the_analysis_and_its_media(
     assert media_file.pix_fmt == "yuv420p"
     assert media_file.constant_frame_rate is True
     assert media_file.was_normalized is False
+    # An upload is never assembled (R7-T1): the client sends one file and this is it. Only a
+    # URL acquisition can be anything else, and only when the source published no single file.
+    assert media_file.was_assembled is False
     # No separate artifact exists, so the derivative carries no identity of its own.
     assert media_file.derivative_storage_key == media_file.original_storage_key
     assert media_file.derivative_sha256 is None

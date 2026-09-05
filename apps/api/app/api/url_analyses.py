@@ -4,7 +4,14 @@ A URL is a second door, not a second kind of analysis. The media behind it is do
 a temporary file and that file is handed to `accept_upload` — the same size limit, the same
 container validation, the same forensic original in MinIO, the same queued job and the same
 row shape. Nothing downstream learns that a URL was involved: the worker, the detectors, the
-risk engine and both read paths see an analysis, and the database schema is untouched.
+risk engine and both read paths see an analysis.
+
+The single exception, added by R7-T1, is `was_assembled`: whether the artifact was muxed here
+from separate streams or stored as the source served it. That crosses the boundary because it
+is a fact about the *file*, not about the door it came through — an upload is always the
+source's own bytes and a DASH acquisition never is, and the process that reads provenance off
+the stored original minutes later cannot work that out for itself. It is carried and reported,
+never interpreted: no detector, threshold or risk rule reads it.
 
 Its own module rather than another section of `app/api/analyses.py`, for a concrete reason:
 `app.downloader` imports the upload ceiling from that module, so a route there that imported
@@ -44,10 +51,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["analyses"])
 
-# What a downloaded file's extension is allowed to mean. The downloader asks the source for
-# one already-muxed file and prefers MP4, but a site is free to serve something else, so the
-# extension it wrote is mapped here rather than assumed — and anything not in this table is
-# refused before the pipeline is entered.
+# What a downloaded file's extension is allowed to mean. The downloader asks for one MP4 —
+# already muxed where a source serves one, merged into MP4 where YouTube serves only streams —
+# but a site is free to answer with something else, so the extension it wrote is mapped here
+# rather than assumed, and anything not in this table is refused before the pipeline is
+# entered.
 #
 # Deliberately the same two types an upload may declare. A URL that could smuggle in a
 # container the upload endpoint refuses would make the door, rather than the media policy,
@@ -131,6 +139,10 @@ async def accept_url(
     That is a scheduling detail and not a change of shape; nothing about this call returns
     before the file exists.
 
+    What the pipeline is told beyond the file itself is one fact: whether the downloader
+    assembled it. That is the one thing an upload cannot be and a URL submission can, and it
+    has to survive the request — see `was_assembled` on `MediaFile`.
+
     The downloaded file is wrapped as an `UploadFile` rather than given a pipeline of its
     own. `accept_upload` wants something with a content type, a filename and bytes to read,
     which is exactly what this is, and the wrapping is what keeps a URL submission and a
@@ -176,6 +188,14 @@ async def accept_url(
                 headers=Headers({"content-type": content_type}),
             ),
             session,
+            # The downloader's own answer about what it acquired, carried into the row that
+            # outlives this request. A DASH or HLS source publishes no single file, so what
+            # reaches the pipeline was muxed here from two streams — and the C2PA read that
+            # happens minutes later, in another process, has no other way to learn that.
+            #
+            # Passed through untouched and not interpreted. It records how the artifact was
+            # obtained; it is not a finding about the media and nothing below reads it as one.
+            was_assembled=media.assembled,
             api_key_id=api_key_id,
             owner_id=owner_id,
             max_active_analyses=max_active_analyses,

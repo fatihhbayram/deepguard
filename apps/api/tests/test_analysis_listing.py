@@ -43,6 +43,7 @@ EXPECTED_FIELDS = {
     "size_bytes",
     "original_sha256",
     "was_normalized",
+    "was_assembled",
     "media",
     "synthetic_video",
     "provenance",
@@ -200,6 +201,10 @@ def listing_row(**overrides):
         "size_bytes": 13054,
         "original_sha256": "a" * 64,
         "was_normalized": False,
+        # How the artifact was acquired (R7-T1). False is every upload and every URL whose
+        # source served one file; the listing reports it so a reader is never left to assume
+        # bytes were published as they are stored.
+        "was_assembled": False,
         # What ffprobe established about the original, exactly as `media_files` holds it.
         "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
         "codec_name": "h264",
@@ -656,6 +661,7 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
             "size_bytes": 13054,
             "original_sha256": "a" * 64,
             "was_normalized": False,
+            "was_assembled": False,
             "media": {
                 "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
                 "codec_name": "h264",

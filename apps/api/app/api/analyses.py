@@ -114,6 +114,12 @@ class CreatedAnalysis(BaseModel):
     # Whether a derivative is needed at all — decided here, from the probe, but produced
     # by the worker. True on this response means one is owed, not that one exists.
     was_normalized: bool
+    # Whether the analysed artifact was assembled from separate streams during acquisition
+    # rather than served as one file (R7-T1). False for every upload — there is nothing to
+    # assemble in a file a client sent — and for every URL whose source served one muxed
+    # file. It describes how the bytes came to exist and says nothing about whether they are
+    # authentic.
+    was_assembled: bool = False
     # The object downstream inference should read, when that is already settled. Null
     # whenever a derivative is owed: the transcode has not run, so there is no such object
     # yet and naming one would be a guess. When the original is already canonical this is
@@ -469,6 +475,14 @@ class AnalysisSummary(BaseModel):
     size_bytes: int
     original_sha256: str
     was_normalized: bool
+    # How the artifact was acquired (R7-T1). False means these are bytes a client uploaded or
+    # a source served, stored unchanged. True means DeepGuard fetched a video stream and an
+    # audio stream and muxed them here, because that is the only form the source published —
+    # so there is no original single file for the stored one to be identical to.
+    #
+    # Reported so a reader is never left to assume the first case. It is not a finding: no
+    # risk rule reads it, and it carries no claim about the media's authenticity.
+    was_assembled: bool
     # Never null: an analysis and its media row are written in one transaction, and the
     # listing joins them inner, so a listed analysis always has these facts.
     media: MediaFacts
@@ -588,6 +602,7 @@ def persist_analysis(
     storage_key: str,
     metadata: MediaMetadata,
     was_normalized: bool,
+    was_assembled: bool,
     derivative_storage_key: str | None,
     api_key_id: uuid.UUID | None = None,
     owner_id: uuid.UUID | None = None,
@@ -677,6 +692,7 @@ def persist_analysis(
             pix_fmt=metadata.pix_fmt,
             constant_frame_rate=metadata.constant_frame_rate,
             was_normalized=was_normalized,
+            was_assembled=was_assembled,
             derivative_storage_key=derivative_storage_key,
         )
     )
@@ -718,6 +734,7 @@ class AcceptedUpload:
     storage_key: str
     metadata: MediaMetadata
     was_normalized: bool
+    was_assembled: bool
     derivative_storage_key: str | None
 
 
@@ -725,6 +742,7 @@ async def accept_upload(
     file: UploadFile,
     session: Session,
     *,
+    was_assembled: bool = False,
     api_key_id: uuid.UUID | None = None,
     owner_id: uuid.UUID | None = None,
     max_active_analyses: int | None = None,
@@ -751,6 +769,16 @@ async def accept_upload(
     `was_normalized` is decided here, because the decision needs `major_brand` and no
     column holds it. It says a derivative is *owed*, not that one exists — the response
     carries a null `derivative_storage_key` in that case, and the worker fills it in.
+
+    `was_assembled` is the opposite: it cannot be decided here, because it is a fact about
+    how the file arrived and this function is handed a file. Only the caller that acquired
+    it knows, so it is a parameter — passed by the URL route from the downloader's own
+    answer, and defaulted to `False` for uploads, where it is not a default but the only
+    possible value: a client sends one file and the pipeline stores exactly it.
+
+    It is carried, not acted on. Nothing here branches on it and nothing downstream may
+    treat it as evidence; it is persisted so that a reader of the stored original later can
+    tell an artifact this service assembled from one a source served (R7-T1).
 
     The staged file is deleted before responding. Nothing local survives the request, and
     the worker reads the original back out of MinIO rather than depending on a temp file
@@ -835,6 +863,7 @@ async def accept_upload(
             storage_key=storage_key,
             metadata=metadata,
             was_normalized=was_normalized,
+            was_assembled=was_assembled,
             derivative_storage_key=canonical_key,
             api_key_id=api_key_id,
             owner_id=owner_id,
@@ -874,6 +903,7 @@ async def accept_upload(
         storage_key=storage_key,
         metadata=metadata,
         was_normalized=was_normalized,
+        was_assembled=was_assembled,
         derivative_storage_key=canonical_key,
     )
 
@@ -895,6 +925,7 @@ def created_analysis(accepted: AcceptedUpload) -> CreatedAnalysis:
         storage_key=accepted.storage_key,
         metadata=accepted.metadata,
         was_normalized=accepted.was_normalized,
+        was_assembled=accepted.was_assembled,
         derivative_storage_key=accepted.derivative_storage_key,
     )
 
@@ -1309,6 +1340,7 @@ def analysis_evidence_select():
                 MediaFile.size_bytes,
                 MediaFile.original_sha256,
                 MediaFile.was_normalized,
+                MediaFile.was_assembled,
                 # The probed facts about the original. Already on the joined row, so
                 # naming them costs no extra statement.
                 MediaFile.format_name,
@@ -1448,6 +1480,7 @@ def analysis_payloads(session: Session, rows: list[Any]) -> list[AnalysisSummary
             size_bytes=row.size_bytes,
             original_sha256=row.original_sha256,
             was_normalized=row.was_normalized,
+            was_assembled=row.was_assembled,
             media=MediaFacts(
                 format_name=row.format_name,
                 codec_name=row.codec_name,

@@ -872,6 +872,12 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
           </Field>
 
           <Field term="NORMALIZED">{analysis.was_normalized ? "yes" : "no"}</Field>
+          {/* How the artifact was obtained. "assembled" means DeepGuard muxed it here from
+              separate streams, which is what a DASH or HLS source leaves it no choice but to
+              do; it is not a finding about the media. */}
+          <Field term="ACQUISITION">
+            {analysis.was_assembled ? "assembled" : "as received"}
+          </Field>
 
           {/* The detector's own state, verbatim: SUCCESS, FAILED or TIMEOUT are three
               different forensic facts, and an analysis may carry no signal at all. */}

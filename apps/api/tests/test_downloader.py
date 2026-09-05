@@ -16,6 +16,7 @@ actually stops a redirect. Both are exercised directly.
 """
 
 import ipaddress
+import shutil
 import socket
 import threading
 from pathlib import Path
@@ -96,6 +97,7 @@ class FakeYoutubeDL:
 
     def extract_info(self, url, download=False):
         recorder = FakeYoutubeDL.recorder
+        recorder.guarded.append(getattr(downloader._guarded, "active", False))
         recorder.extracted.append((url, download))
         if recorder.extract_error:
             raise recorder.extract_error
@@ -106,6 +108,7 @@ class FakeYoutubeDL:
 
     def download(self, urls):
         recorder = FakeYoutubeDL.recorder
+        recorder.guarded.append(getattr(downloader._guarded, "active", False))
         recorder.downloaded.append(list(urls))
         if recorder.download_error:
             raise recorder.download_error
@@ -114,6 +117,12 @@ class FakeYoutubeDL:
             # nothing at all.
             return
         home = Path(self.options["paths"]["home"])
+        if recorder.files is not None:
+            # An exact directory, for the cases where what yt-dlp leaves behind is the point:
+            # a merge that finished leaves one file, a merge that did not leaves its parts.
+            for name, payload in recorder.files.items():
+                (home / name).write_bytes(payload)
+            return
         (home / "media.mp4").write_bytes(recorder.written)
 
 
@@ -125,11 +134,17 @@ def site(monkeypatch):
         def __init__(self):
             self.info = {"id": "clip", "ext": "mp4"}
             self.written = MEDIA_BYTES
+            # None means "the one `media.mp4` holding `written`", which is what a progressive
+            # download leaves. A dict names the directory contents exactly instead.
+            self.files = None
             self.extract_error = None
             self.download_error = None
             self.extracted = []
             self.downloaded = []
             self.instances = []
+            # Whether the SSRF guard was up on each call yt-dlp made — the metadata request
+            # and every phase of the download, fragments included.
+            self.guarded = []
 
     recorder = Recorder()
     FakeYoutubeDL.recorder = recorder
@@ -582,36 +597,350 @@ def test_fragments_are_fetched_on_the_guarded_thread(dns, site):
     assert site.instances[0].options["concurrent_fragment_downloads"] == 1
 
 
-def test_youtube_is_asked_for_a_client_that_serves_a_muxed_format(dns, site):
-    """Without this, YouTube offers nothing `MEDIA_FORMAT` can select.
+# --- YouTube, and only YouTube (R7-T1) ----------------------------------------------------
+#
+# Nothing here reaches YouTube. A test that did would be checking YouTube's catalogue on the
+# day it ran, which is neither deterministic nor the property worth pinning: what matters is
+# that a YouTube URL is recognised as one, that it is handed the merging selector, that a
+# merged result is reported as assembled rather than as served bytes, and that every other
+# site is left exactly where P10 left it.
 
-    YouTube's default player clients list DASH and HLS only — every format video-only or
-    audio-only — so asking for one already-muxed file matches nothing and the extractor
-    refuses. The `android` client still lists itag 18, a progressive H.264/AAC MP4, which
-    is the shape the rest of this module is built around.
 
-    Asserted as the exact option yt-dlp receives, because this is a real download's only
-    protection against a well-meaning edit that drops it and turns every YouTube URL back
-    into "Requested format is not available".
+YOUTUBE_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+# What yt-dlp's info dict looks like once the format selector has resolved to two streams.
+# `requested_formats` is the record of that decision, and it is present only for a merge.
+VIDEO_STREAM = {"format_id": "137", "ext": "mp4", "vcodec": "avc1.640028", "acodec": "none"}
+AUDIO_STREAM = {"format_id": "140", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2"}
+
+
+def merged_info(**extra):
+    """A resolved YouTube extraction that will be merged from a video and an audio stream."""
+    return {
+        "id": "dQw4w9WgXcQ",
+        "ext": "mp4",
+        "requested_formats": [dict(VIDEO_STREAM), dict(AUDIO_STREAM)],
+        **extra,
+    }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://m.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://youtu.be/dQw4w9WgXcQ",
+        "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+        "https://YouTube.COM/watch?v=dQw4w9WgXcQ",
+        "https://youtube.com./watch?v=dQw4w9WgXcQ",
+    ],
+)
+def test_youtube_is_recognised_by_host(url):
+    assert downloader.is_youtube_url(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://notyoutube.com/watch?v=x",
+        "https://youtube.com.example.net/watch?v=x",
+        "https://myyoutu.be/x",
+        "https://videos.example.com/clip?ref=youtube.com",
+        "https://example.com/youtube.com",
+        "https://192.0.2.1/clip",
+    ],
+)
+def test_a_lookalike_host_is_not_youtube(url):
+    """The suffix match is on a dot boundary, so a name that merely contains one is not one.
+
+    `youtube.com.example.net` is the case that matters: it is somebody else's domain, and a
+    substring test would hand it the YouTube selector. Nothing unsafe follows from that —
+    the selector is a quality decision, not a guard — but a rule scoped to one site should
+    actually be scoped to one site.
+    """
+    assert downloader.is_youtube_url(url) is False
+
+
+def test_youtube_is_asked_for_streams_it_actually_serves(dns, site):
+    """The one selector change, asserted as the exact option yt-dlp receives.
+
+    YouTube's player clients list DASH and HLS: video-only and audio-only formats, and no
+    single muxed file above 360p. `MEDIA_FORMAT` matches nothing in that catalogue, which is
+    what capped P10's ingestion. This selector asks for the two streams and lets ffmpeg put
+    them in one container, with the muxed chain kept behind it as a fallback.
+
+    The `vcodec^=avc1` half is load-bearing and not decoration: without it `[ext=mp4]` selects
+    AV1 on most YouTube videos, because AV1-in-MP4 outranks H.264 there. H.264 is what the
+    360p path served and what the detectors have been measured on.
+
+    Pinned here because a well-meaning edit that dropped it would put every YouTube
+    acquisition back at 360p silently — the download would still succeed.
+    """
+    site.info = merged_info()
+
+    with downloader.download(YOUTUBE_URL):
+        pass
+
+    assert site.instances[0].options["format"] == downloader.YOUTUBE_MEDIA_FORMAT
+    assert site.instances[0].options["format"] == (
+        "bestvideo[ext=mp4][vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]"
+        "/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]"
+        "/best[ext=mp4]/best"
+    )
+
+
+def test_every_other_site_keeps_the_muxed_only_selector(dns, site):
+    """R7-T1 is a YouTube change. A direct media URL must not notice it happened.
+
+    The progressive path is the byte-preserving one — one file, served, nothing merged — and
+    it stays the default for everything that is not YouTube.
     """
     with downloader.download(PUBLIC_URL):
         pass
 
-    extractor_args = site.instances[0].options["extractor_args"]
+    assert site.instances[0].options["format"] == downloader.MEDIA_FORMAT
+    assert site.instances[0].options["format"] == "best[ext=mp4]/best[ext=mov]/best"
 
-    assert extractor_args["youtube"]["player_client"] == ["android"]
 
+def test_no_extractor_is_steered_towards_a_player_client(dns, site):
+    """P10 pinned YouTube's `android` client to find itag 18. Nothing needs that now.
 
-def test_no_other_extractor_is_steered(dns, site):
-    """Only YouTube needs a client named, so only YouTube gets one.
-
-    A direct media URL and every other site keep yt-dlp's own defaults; pinning clients
-    per-site is maintenance debt that only pays off where it is actually required.
+    That client lists five formats and none above 360p, so keeping it would cap the merge at
+    the resolution the merge exists to get past. With it gone, no site is steered at all and
+    yt-dlp's own defaults apply everywhere.
     """
+    assert not hasattr(downloader, "EXTRACTOR_ARGS")
+
+    with downloader.download(YOUTUBE_URL):
+        pass
+
+    assert "extractor_args" not in site.instances[0].options
+
     with downloader.download(PUBLIC_URL):
         pass
 
-    assert set(site.instances[0].options["extractor_args"]) == {"youtube"}
+    assert "extractor_args" not in site.instances[1].options
+
+
+def test_a_merge_is_written_into_an_mp4(dns, site):
+    """The ingestion route admits `.mp4` and `.mov` and nothing else.
+
+    Naming the container means the merged file's extension is decided here rather than
+    inferred by yt-dlp from whatever pair of streams it chose, which is what keeps a
+    successful acquisition from being refused at the door for its suffix.
+    """
+    site.info = merged_info()
+
+    with downloader.download(YOUTUBE_URL):
+        pass
+
+    assert site.instances[0].options["merge_output_format"] == "mp4"
+
+
+def test_a_merged_acquisition_is_reported_as_assembled(dns, site):
+    """The byte-semantics flag, which is the whole forensic point of this task.
+
+    A DASH acquisition is not a copy of a file YouTube served — there is no such file. It is
+    two streams this container fetched and muxed, and `assembled` is how the artifact says
+    so. Nothing downstream may read authenticity off it in either direction; what it
+    prevents is the opposite claim.
+    """
+    site.info = merged_info()
+    site.files = {"media.mp4": MEDIA_BYTES}
+
+    with downloader.download(YOUTUBE_URL) as media:
+        assert media.assembled is True
+        assert media.filename == "media.mp4"
+        assert media.path.read_bytes() == MEDIA_BYTES
+
+
+def test_a_served_single_file_is_not_reported_as_assembled(dns, site):
+    """The other half of the same statement, and the one every non-YouTube URL takes.
+
+    One muxed format, no `requested_formats`, nothing merged: these are the bytes the source
+    served, and the flag has to keep saying that or it says nothing at all.
+    """
+    with downloader.download(PUBLIC_URL) as media:
+        assert media.assembled is False
+
+
+def test_a_youtube_url_that_offers_one_muxed_file_is_not_assembled(dns, site):
+    """The fallback tail of the selector, which is still a byte-preserving acquisition.
+
+    `best[ext=mp4]` behind the `+` chain means a YouTube URL that does serve a single file
+    takes it untouched. The flag follows what actually happened, not which site it was.
+    """
+    site.info = {"id": "dQw4w9WgXcQ", "ext": "mp4"}
+
+    with downloader.download(YOUTUBE_URL) as media:
+        assert media.assembled is False
+
+
+def test_a_merge_that_did_not_finish_is_refused(dns, site):
+    """ffmpeg missing or failing leaves the two parts behind, and two files is a failure.
+
+    yt-dlp deletes the parts once it has muxed them, so a directory holding
+    `media.f137.mp4` beside `media.f140.m4a` means the merge never happened. Handing either
+    one to the pipeline would be handing over a video with no sound or a sound file with no
+    video, so this refuses rather than guessing.
+    """
+    site.info = merged_info()
+    site.files = {"media.f137.mp4": b"video-stream", "media.f140.m4a": b"audio-stream"}
+
+    with pytest.raises(DownloadUnavailable):
+        with downloader.download(YOUTUBE_URL):
+            pass
+
+
+def test_nothing_is_left_behind_when_a_merge_does_not_finish(dns, site):
+    site.info = merged_info()
+    site.files = {"media.f137.mp4": b"video-stream", "media.f140.m4a": b"audio-stream"}
+    before = set(Path(downloader.tempfile.gettempdir()).glob(f"{downloader.TEMP_DIR_PREFIX}*"))
+
+    with pytest.raises(DownloadUnavailable):
+        with downloader.download(YOUTUBE_URL):
+            pass
+
+    after = set(Path(downloader.tempfile.gettempdir()).glob(f"{downloader.TEMP_DIR_PREFIX}*"))
+    assert after == before
+
+
+def test_ffmpeg_is_available_to_merge_with(dns, site):
+    """The merge is local post-processing, and it is ffmpeg that does it.
+
+    Asserted in the suite rather than assumed from the Dockerfile, because the suite runs in
+    the API container and this is the one dependency the new path adds. Without it every
+    YouTube acquisition falls back to whatever the muxed chain can find, which is the 360p
+    outcome R7-T1 exists to remove — and it would do that silently.
+    """
+    assert shutil.which("ffmpeg") is not None
+
+
+# --- the size ceiling across two streams --------------------------------------------------
+
+
+def test_the_declared_size_of_a_merge_is_both_streams(dns, site, monkeypatch):
+    """A merge is refused early on what the whole file will weigh, not on half of it.
+
+    The top-level `filesize` of a merged extraction describes the video stream alone. A 60
+    MiB video beside a 50 MiB audio track declares itself inside a 100 MiB limit and lands
+    outside it, so the two are summed before anything is fetched.
+    """
+    monkeypatch.setattr(downloader, "MAX_DOWNLOAD_BYTES", 100)
+    site.info = merged_info(filesize=60)
+    site.info["requested_formats"][0]["filesize"] = 60
+    site.info["requested_formats"][1]["filesize"] = 50
+
+    with pytest.raises(MediaTooLarge):
+        with downloader.download(YOUTUBE_URL):
+            pass
+
+    # Refused on the metadata pass. No bytes were spent finding out.
+    assert site.downloaded == []
+
+
+def test_a_merge_inside_the_limit_is_not_refused_early(dns, site, monkeypatch):
+    monkeypatch.setattr(downloader, "MAX_DOWNLOAD_BYTES", 100)
+    site.info = merged_info()
+    site.info["requested_formats"][0]["filesize"] = 60
+    site.info["requested_formats"][1]["filesize"] = 5
+    site.files = {"media.mp4": MEDIA_BYTES}
+
+    with downloader.download(YOUTUBE_URL) as media:
+        assert media.assembled is True
+
+
+def test_a_merge_that_declares_half_a_size_is_still_weighed_on_disk(dns, site, monkeypatch):
+    """A sum with a missing term understates, so it is not used as a refusal.
+
+    What catches it instead is the check that never trusted the source: the file that
+    actually arrived is weighed, and that is the authoritative one for a merge exactly as it
+    is for a progressive download.
+    """
+    monkeypatch.setattr(downloader, "MAX_DOWNLOAD_BYTES", 8)
+    site.info = merged_info()
+    site.info["requested_formats"][0]["filesize"] = 4
+    site.files = {"media.mp4": b"far too many bytes to fit"}
+
+    with pytest.raises(MediaTooLarge):
+        with downloader.download(YOUTUBE_URL):
+            pass
+
+    # The early check had nothing to say, so the download happened and the bytes on disk are
+    # what refused it.
+    assert site.downloaded == [[YOUTUBE_URL]]
+
+
+def test_the_limit_reaches_yt_dlp_on_the_youtube_path_too(dns, site):
+    site.info = merged_info()
+
+    with downloader.download(YOUTUBE_URL):
+        pass
+
+    assert site.instances[0].options["max_filesize"] == downloader.MAX_DOWNLOAD_BYTES
+
+
+# --- the SSRF guard still covers the whole of a merged download ----------------------------
+
+
+def test_every_phase_of_a_merged_download_runs_inside_the_guard(dns, site):
+    """The guard is thread-local, and a merge fetches more than one thing.
+
+    Two streams and, for DASH, many fragments of each — every one of them a resolution that
+    has to be checked. They are all made from this thread by `ydl.download`, which runs
+    inside `public_destinations_only`, and `concurrent_fragment_downloads` stays pinned to 1
+    so none of them moves onto a worker thread the guard cannot see.
+    """
+    site.info = merged_info()
+    site.files = {"media.mp4": MEDIA_BYTES}
+
+    with downloader.download(YOUTUBE_URL):
+        pass
+
+    assert site.guarded == [True, True]
+    assert site.instances[0].options["concurrent_fragment_downloads"] == 1
+
+
+def test_a_youtube_fragment_resolving_inward_is_refused(dns, site):
+    """A redirect mid-download is what the socket guard exists for, merge or no merge.
+
+    Raised from inside `ydl.download`, which is where a fragment fetch lives, and it comes
+    back out as `BlockedAddress` rather than as a generic failure.
+    """
+    site.info = merged_info()
+    site.download_error = BlockedAddress("10.0.0.1 resolves to an address that is not public.")
+
+    with pytest.raises(BlockedAddress):
+        with downloader.download(YOUTUBE_URL):
+            pass
+
+
+def test_a_youtube_url_pointing_inward_never_reaches_the_extractor(dns, site):
+    """The host check happens first, and it does not care which site it is.
+
+    A hostname is a hostname: nothing about being YouTube-shaped exempts a URL from
+    `validate_url`, and this pins that the new branch did not move the guard.
+    """
+    dns.set("www.youtube.com", "127.0.0.1")
+
+    with pytest.raises(BlockedAddress):
+        with downloader.download(YOUTUBE_URL):
+            pass
+
+    assert site.extracted == []
+
+
+def test_a_youtube_live_stream_is_refused(dns, site):
+    """A merge does not make a stream finite. It is refused on the metadata pass as before."""
+    site.info = merged_info(live_status="is_live")
+
+    with pytest.raises(LiveStreamRejected):
+        with downloader.download(YOUTUBE_URL):
+            pass
+
+    assert site.downloaded == []
 
 
 # --- cleanup ------------------------------------------------------------------------------
