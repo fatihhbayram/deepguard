@@ -38,6 +38,9 @@ EXPECTED_FIELDS = {
     "risk_rules_version",
     "risk_rule_id",
     "risk_calibration_id",
+    # The same decision read back under the rules that took it (R7-T3): a derived view of
+    # the four columns above and the signal rows, never a second stored record.
+    "risk_trace",
     "original_filename",
     "declared_content_type",
     "size_bytes",
@@ -656,6 +659,35 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
             "risk_rules_version": RULES_VERSION,
             "risk_rule_id": RULE_INDETERMINATE_BAND,
             "risk_calibration_id": CALIBRATION_ID,
+            # The decision above, read back under `p7-v1.0.0` — the ruleset the row names,
+            # not the one in force today. That version read one detector, so one detector is
+            # what the trace lists, against that version's own 0.98 operating point. The face
+            # and mouth-dynamics rows this fixture also carries were not in its scope and are
+            # correctly absent from the reasoning behind a decision taken without them.
+            "risk_trace": {
+                "risk_level": "MEDIUM",
+                "rule_id": RULE_INDETERMINATE_BAND,
+                "rules_version": RULES_VERSION,
+                "calibration_id": CALIBRATION_ID,
+                "rule_summary": (
+                    "The calibrated synthetic-video score was readable and did not reach "
+                    "its threshold; the single available signal did not support a "
+                    "classification."
+                ),
+                "contributions": [
+                    {
+                        "signal": "synthetic_video",
+                        "provider": "nvidia",
+                        "provider_version": FUNCTION_ID,
+                        "score": PROBABILITY,
+                        "threshold": 0.98,
+                        "condition": "threshold_not_reached",
+                        "unavailable_reason": None,
+                        "role": "considered",
+                    }
+                ],
+                "interpreted": True,
+            },
             "original_filename": "clip.mp4",
             "declared_content_type": "video/mp4",
             "size_bytes": 13054,

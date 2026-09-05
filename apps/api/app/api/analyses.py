@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased
@@ -49,6 +49,7 @@ from app.media import (
 )
 from app.normalization import needs_normalization
 from app.observability import current_request_id
+from app.risk_trace import PersistedSignal, build_trace
 from app.storage import store_original
 from app.web_auth import require_same_origin, require_user
 
@@ -433,6 +434,73 @@ class MediaFacts(BaseModel):
     constant_frame_rate: bool
 
 
+class RiskContribution(BaseModel):
+    """How one detector stood in a decision that was already taken, under that decision's rules.
+
+    Derived at read time from the persisted signal row and the ruleset the analysis names
+    (`app.risk_trace`); nothing here re-runs the risk engine and no field is computed from
+    the thresholds currently in force.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # The signal type the ruleset read, and who produced it.
+    signal: str
+    provider: str
+    # The deployment that answered, as persisted. Null when nothing answered.
+    provider_version: str | None
+    # The provider's own figure, exactly as stored, when the persisted decision could use it.
+    # Null when there is none — a detector that produced no number is never rendered as 0.0 —
+    # and null on every `unavailable` contribution, whose reading the decision could not use.
+    # The raw persisted value is still carried by this analysis's own signal evidence.
+    score: float | None
+    # The operating point measured for this detector under the *persisted* ruleset version,
+    # not the one in force today. Null when it could not be resolved, and null alongside an
+    # `unavailable` score: a number beside a threshold reads as a comparison, and for an
+    # unavailable reading no comparison was made.
+    threshold: float | None
+    # One of `threshold_reached`, `threshold_not_reached`, `unavailable`, `not_interpreted`.
+    #
+    # None of the four is a statement about the media. In particular `threshold_not_reached`
+    # is not a finding of authenticity: a detector reports it for a manipulation family it is
+    # blind to as readily as for genuine media, and `unavailable` says only that this detector
+    # contributed no reading at all.
+    condition: str
+    # Why this detector contributed nothing, set only alongside `unavailable` or
+    # `not_interpreted`. Never a finding about the media.
+    unavailable_reason: str | None
+    # `decisive` only on a detector that reached its own threshold under a HIGH decision —
+    # the HIGH rules are disjunctive, so such a detector is a reason for the level.
+    # `considered` otherwise: in scope of the ruleset and read by it, nothing more.
+    role: str
+
+
+class RiskTrace(BaseModel):
+    """The persisted risk decision with the reasoning behind it made explicit.
+
+    A derived view, not a second record: the first four fields are copied from the analysis
+    row unchanged, and `rule_summary` and `contributions` are read off the frozen definition
+    of the ruleset version that row names. An analysis decided under `p7-v1.0.0` is therefore
+    explained with `p7-v1.0.0` thresholds and `p7-v1.0.0` rule meanings however far the rules
+    have moved since — `R200` means something different in each of the three rulesets.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    risk_level: str
+    rule_id: str | None
+    rules_version: str | None
+    calibration_id: str | None
+    # What the fired rule meant under the persisted ruleset version. Null when that version
+    # or rule is not one this build knows: an old decision is left unexplained rather than
+    # explained under rules it was not taken under.
+    rule_summary: str | None
+    contributions: list[RiskContribution]
+    # False when the ruleset version or its calibration identity could not be resolved, so a
+    # reader can tell "no detector contributed" from "this trace could not be interpreted".
+    interpreted: bool
+
+
 class AnalysisSummary(BaseModel):
     """One analysis as its readers get it: the dashboard listing and the report route.
 
@@ -468,6 +536,14 @@ class AnalysisSummary(BaseModel):
     risk_rules_version: str | None = None
     risk_rule_id: str | None = None
     risk_calibration_id: str | None = None
+    # The same decision, read back under the rules that produced it (R7-T3). Derived at
+    # serialization time from the four fields above and the persisted signal rows; null
+    # exactly when `risk_level` is, since an analysis with no decision has no reasoning to
+    # show. Nothing here re-evaluates: the engine is not called on a read path.
+    #
+    # Internal contract only. `/api/public/v1` renders its own model from this one and does
+    # not carry this field; widening the public contract is a separate decision.
+    risk_trace: RiskTrace | None = None
     original_filename: str | None
     # Named for what it is: the MIME the client declared. ffprobe proves the bytes are
     # video, but it never confirms this string, so the listing must not imply it did.
@@ -1153,6 +1229,66 @@ def lip_forensics_signal(row: Any) -> LipForensicsSignal | None:
     )
 
 
+def analysis_risk_trace(row: Any) -> RiskTrace | None:
+    """Explain the decision on this row under the ruleset the row itself names.
+
+    The four persisted risk columns are the decision and are copied through untouched. The
+    signal rows already on the joined row are handed over as they are stored — provider,
+    deployment, status, score and the metadata document — and `app.risk_trace` decides which
+    of them the persisted ruleset version even read, and against which of that version's
+    measured thresholds.
+
+    Nothing here classifies. The risk engine is not imported by `app.risk_trace` and is not
+    called on this path: a read that re-ran the rules would let the report disagree with the
+    record the moment a threshold moved, and every historical analysis would silently acquire
+    a new explanation.
+
+    A signal whose provider column is null is a detector with no row at all, which the trace
+    reports as an unavailable reading rather than as a score below a threshold.
+    """
+    signals: dict[str, PersistedSignal] = {}
+
+    if row.signal_provider is not None:
+        signals[SYNTHETIC_VIDEO_SIGNAL] = PersistedSignal(
+            provider=row.signal_provider,
+            signal_type=row.signal_type,
+            status=row.signal_status,
+            provider_version=row.signal_provider_version,
+            score=row.signal_score,
+            metadata=row.signal_metadata,
+        )
+
+    if row.face_provider is not None:
+        signals[FACE_MANIPULATION_SIGNAL] = PersistedSignal(
+            provider=row.face_provider,
+            signal_type=row.face_signal_type,
+            status=row.face_status,
+            provider_version=row.face_provider_version,
+            score=row.face_score,
+            metadata=row.face_metadata,
+        )
+
+    if row.lip_forensics_provider is not None:
+        signals[LIP_FORENSICS_SIGNAL] = PersistedSignal(
+            provider=row.lip_forensics_provider,
+            signal_type=row.lip_forensics_signal_type,
+            status=row.lip_forensics_status,
+            provider_version=row.lip_forensics_provider_version,
+            score=row.lip_forensics_score,
+            metadata=row.lip_forensics_metadata,
+        )
+
+    trace = build_trace(
+        risk_level=row.risk_level,
+        rule_id=row.risk_rule_id,
+        rules_version=row.risk_rules_version,
+        calibration_id=row.risk_calibration_id,
+        signals=signals,
+    )
+
+    return None if trace is None else RiskTrace.model_validate(trace, from_attributes=True)
+
+
 def audio_windows(
     session: Session, signal_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, list[AudioWindowEvidence]]:
@@ -1475,6 +1611,8 @@ def analysis_payloads(session: Session, rows: list[Any]) -> list[AnalysisSummary
             risk_rules_version=row.risk_rules_version,
             risk_rule_id=row.risk_rule_id,
             risk_calibration_id=row.risk_calibration_id,
+            # Derived from those four columns and the signal rows above, never recomputed.
+            risk_trace=analysis_risk_trace(row),
             original_filename=row.original_filename,
             declared_content_type=row.content_type,
             size_bytes=row.size_bytes,
