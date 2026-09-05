@@ -67,6 +67,15 @@ DEFAULT_NVIDIA_ASD_TIMEOUT_SECONDS = 600.0
 DOWNLOAD_SOCKET_TIMEOUT_VARIABLE = "DEEPGUARD_DOWNLOAD_SOCKET_TIMEOUT_SECONDS"
 DEFAULT_DOWNLOAD_SOCKET_TIMEOUT_SECONDS = 30.0
 
+# How long the worker waits for a shadow workload running on Modal's GPU (R6-T2). It bounds
+# the local *wait*, not the remote container — `app.modal_shadow_app` carries Modal's own
+# ceiling on execution — and it is the larger of the two on purpose: a remote run that hangs
+# should be killed by Modal, leaving this to catch the case where Modal itself stopped
+# answering. Fifteen minutes because the first run after a quiet period pays a cold start and
+# the price of being wrong here is one experiment missing from an offline corpus.
+SHADOW_MODAL_TIMEOUT_VARIABLE = "DEEPGUARD_SHADOW_MODAL_TIMEOUT_SECONDS"
+DEFAULT_SHADOW_MODAL_TIMEOUT_SECONDS = 900.0
+
 
 class InvalidTimeout(ValueError):
     """A configured timeout is not a number of seconds this service can act on."""
@@ -138,6 +147,12 @@ def download_socket_timeout_seconds() -> float:
     )
 
 
+def shadow_modal_timeout_seconds() -> float:
+    return _seconds(
+        SHADOW_MODAL_TIMEOUT_VARIABLE, DEFAULT_SHADOW_MODAL_TIMEOUT_SECONDS
+    )
+
+
 # Every accessor above, so one caller can check the whole set. Listed rather than
 # discovered by introspection: a bound that is added and not listed here should be a
 # visible omission in a diff, not an invisible one behind a module scan.
@@ -148,6 +163,7 @@ ACCESSORS = (
     nvidia_svd_timeout_seconds,
     nvidia_asd_timeout_seconds,
     download_socket_timeout_seconds,
+    shadow_modal_timeout_seconds,
 )
 
 

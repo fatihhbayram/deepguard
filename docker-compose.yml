@@ -228,6 +228,27 @@ services:
       # shadow run produces reaches a report, a public response or the risk engine either way;
       # see `app/shadow.py`.
       DEEPGUARD_SHADOW_MODE:
+      # Where a shadow run executes, and the credentials to execute it there (R6-T2). All
+      # three passed through with no default, like the flag above: Modal execution is opt-in
+      # twice over — the flag *and* both tokens — and a stack that sets none of them keeps
+      # running the shadow stub in this process exactly as R6-T1 left it.
+      #
+      # Declared on this container alone, which is where shadow runs execute — the API never
+      # starts one and never reads one. That is a statement about the compose file rather
+      # than about the process: `env_file: .env` above hands both containers everything in
+      # that file, exactly as it does the detector keys, so the API does receive these. What
+      # it does not have is any code that reads them, which is the guarantee that matters.
+      #
+      # Nothing here can reach an analysis either way: `app/modal_client.py` never imports
+      # Modal's SDK unless all three are set, and every failure it can have fails one row in
+      # `shadow_runs`.
+      DEEPGUARD_SHADOW_MODAL:
+      MODAL_TOKEN_ID:
+      MODAL_TOKEN_SECRET:
+      # How long this worker waits for a Modal shadow run. Unset means 900 seconds, from
+      # `app/limits.py`. It bounds the wait rather than the remote container — Modal enforces
+      # its own ceiling on the function itself.
+      DEEPGUARD_SHADOW_MODAL_TIMEOUT_SECONDS:
     depends_on:
       postgres:
         condition: service_healthy

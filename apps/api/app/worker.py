@@ -66,6 +66,12 @@ writing to a table of its own — see `app.shadow`, which says why none of what 
 can reach the report, the public API or the risk engine. A job completed above queues one on
 its way out; the analysis is already decided and closed by then and does not wait for it.
 
+Since R6-T2 that experiment may run on a rented GPU, and the loop no longer waits for one to
+finish either. `shadow.process_one` starts a remote workload on one poll and collects it on a
+later one, so the step this loop takes is always short — an experiment already in flight
+cannot delay the claiming of a job submitted while it runs, which a blocking wait was measured
+doing before the split.
+
 Run it with `python -m app.worker`.
 """
 
@@ -1505,6 +1511,11 @@ def run(stopping: Stopping, sleep=time.sleep) -> None:
 
         if not worked:
             sleep(IDLE_POLL_SECONDS)
+
+    # On the way out, let go of any remote shadow call this worker started (R6-T2). The row
+    # is left to its lease, exactly as it would be if this process had died — what this saves
+    # is a GPU container still running for an answer nobody is going to collect.
+    shadow.abandon_pending()
 
 
 def main() -> int:

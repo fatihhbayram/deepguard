@@ -28,6 +28,7 @@ from app import (
     nvidia_active_speaker,
     nvidia_video,
     risk_engine,
+    modal_client,
     shadow,
     speaker_diarization,
     storage,
@@ -3209,8 +3210,16 @@ def test_a_job_outliving_its_lease_is_kept_alive_by_its_heartbeat(queue, fake_st
 
 @pytest.fixture
 def shadow_mode(monkeypatch):
-    """Turn shadow mode on for this test, the way a deployment would."""
+    """Turn shadow mode on for this test, the way a deployment would.
+
+    And turn the *Modal* backend off with it (R6-T2). Which workload a completed analysis
+    queues is now a configuration question, and these tests are about the claim that a job
+    does not wait for whatever that workload turns out to be — so they pin the local one
+    rather than inheriting whichever backend the machine running the suite happens to have
+    configured. `tests/test_modal_shadow.py` is where the remote backend is exercised.
+    """
     monkeypatch.setenv(shadow.SHADOW_MODE_VARIABLE, "true")
+    monkeypatch.delenv(modal_client.MODAL_SHADOW_VARIABLE, raising=False)
 
 
 def shadow_runs_for(analysis_id):

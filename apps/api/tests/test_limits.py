@@ -23,6 +23,10 @@ PREVIOUS_LITERALS = {
     limits.nvidia_svd_timeout_seconds: 600.0,
     limits.nvidia_asd_timeout_seconds: 600.0,
     limits.download_socket_timeout_seconds: 30.0,
+    # Not a previous literal — R6-T2 introduced it here rather than in a module, and the
+    # figure is pinned for the same reason the others are: a drifted default is a change in
+    # how long a worker waits, and it should show up in a diff of this file.
+    limits.shadow_modal_timeout_seconds: 900.0,
 }
 
 

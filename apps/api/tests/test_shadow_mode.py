@@ -28,7 +28,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import shadow
+from app import modal_client, shadow
 from app.db.models import (
     ANALYSIS_STATUS_COMPLETED,
     SHADOW_RUN_STATUS_COMPLETED,
@@ -116,6 +116,22 @@ def session(database):
         for key_id in keys:
             db.query(ApiKey).filter(ApiKey.id == key_id).delete()
         db.commit()
+
+
+@pytest.fixture(autouse=True)
+def local_backend(monkeypatch):
+    """Every test in this module means the *in-process* workload (R6-T2).
+
+    Shadow execution acquired a second backend in R6-T2, chosen by `DEEPGUARD_SHADOW_MODAL`
+    and written onto the row at enqueue time. This module's subject is unchanged by that —
+    the four things a shadow observation may not touch — but several of its tests assert
+    against `STUB_WORKLOAD` and its evidence, and a suite run on a machine that has Modal
+    configured would otherwise be quietly testing the remote path instead. Autouse, because
+    the alternative is remembering which of these tests is backend-sensitive.
+
+    The remote backend has a module of its own: `tests/test_modal_shadow.py`.
+    """
+    monkeypatch.delenv(modal_client.MODAL_SHADOW_VARIABLE, raising=False)
 
 
 @pytest.fixture

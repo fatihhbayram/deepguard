@@ -34,6 +34,40 @@ no inference, loads no model and reads no media; it records that the machinery w
 task that integrates a real experimental detector replaces that one function and the constant
 naming it, and finds every boundary above already in place and already tested.
 
+R6-T2 adds a second place for that stub to run: Modal's GPU, reached through
+`app.modal_client`. It is still a stub — no detector, no weights, no media — because the
+question that task asks is whether a *remote* execution backend can be plugged in underneath
+this module without any of the guarantees above weakening, and the answer has to be readable
+without a model in the way. Three things change here and nothing else does:
+
+- **which workload is queued is a configuration question.** `workload()` names `modal-stub`
+  when Modal is configured and `stub` when it is not, the name is written on the row at
+  enqueue time, and execution dispatches on the name the row carries. A run therefore
+  executes as what it was queued as, and the two kinds of observation stay distinguishable in
+  a table that is going to be read offline months later;
+
+- **a workload is started on one poll and collected on another.** This is the change that
+  matters most and it was not in the first draft of R6-T2. A remote GPU answers in tens of
+  seconds, and the worker runs one loop; a `process_one` that waited for Modal would hold that
+  loop, and a production job submitted meanwhile would sit queued behind an experiment. That
+  was measured before the split: a job was claimed 8 ms after an in-flight Modal call
+  returned, having waited 4.1 s for it. So `start_workload` spawns and returns, and
+  `_collect_pending` asks — with no timeout, one round trip — on later idle polls. R6-T1's
+  guarantee was that an experiment is never *claimed* ahead of a queued job; this is the
+  guarantee that one already running cannot get in front of one either;
+
+- **the lease is renewed rather than only set.** A remote call can outlive
+  `SHADOW_LEASE_SECONDS`, and `renew_lease` pushes the deadline out on every visit to a
+  pending run. The renewal is also the ownership check: a refusal means the row was recovered
+  or taken while the GPU was busy, so the remote call is cancelled and its answer discarded
+  instead of written over somebody else's recovery;
+
+- **Modal failing is a shadow run failing.** Every way the remote half can go wrong —
+  unreachable, not deployed, no credentials, a timeout, a result that is not a document —
+  arrives here as a `ModalShadowError` and is handled by the `except` that was already
+  catching a stub that raised. Nothing about production changes, including in the case where
+  Modal is enabled and completely down.
+
 Off unless switched on. `DEEPGUARD_SHADOW_MODE` gates enqueueing, so a deployment that has
 not asked for shadow mode does not accumulate rows for a workload nobody is measuring.
 Execution is deliberately *not* gated by the same flag: runs already queued when the flag went
@@ -50,6 +84,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app import modal_client
 from app.db.models import (
     SHADOW_RUN_STATUS_COMPLETED,
     SHADOW_RUN_STATUS_FAILED,
@@ -78,10 +113,25 @@ STUB_WORKLOAD = "stub"
 # a commit and a weights digest in.
 STUB_WORKLOAD_VERSION = "stub-1"
 
-# How long a claim on a shadow run is believed for. Ten minutes, and no heartbeat renewing it
-# — see `ShadowRun.lease_expires_at`. Generous rather than tight because nothing depends on a
-# shadow run being recovered quickly: the cost of a stale row sitting a little longer is one
-# analysis missing from a corpus that is measured offline, not a customer waiting.
+# The same stub, executed on Modal's GPU instead of in this process (R6-T2). A second name
+# rather than a flag on the row, because the name is what a calibration reads a year later:
+# `stub` and `modal-stub` are observations of the same workload made by two different
+# backends, and a corpus that cannot separate them cannot answer whether the backend mattered.
+#
+# It also makes the unique constraint do something useful. `(analysis_id, workload)` means one
+# analysis can carry both, so turning Modal on does not orphan the local runs already queued
+# and does not refuse a remote run for an analysis that has a local one.
+MODAL_STUB_WORKLOAD = "modal-stub"
+
+# How long a claim on a shadow run is believed for. Ten minutes. Generous rather than tight
+# because nothing depends on a shadow run being recovered quickly: the cost of a stale row
+# sitting a little longer is one analysis missing from a corpus that is measured offline, not
+# a customer waiting.
+#
+# Since R6-T2 it is also renewed rather than only set — see `renew_lease`. The figure did not
+# have to move for remote execution, and that is the point of renewing instead: a lease long
+# enough to cover the worst cold start anybody ever sees would be a lease too long to recover
+# a dead worker's row from in reasonable time.
 SHADOW_LEASE_SECONDS = 600
 
 # What a recovered run records, as a class name like every other failure written to a status
@@ -92,6 +142,23 @@ STALE_LEASE_ERROR = "StaleShadowLease"
 # exception's text can quote credentials, endpoints or SQL, so the class name is written down
 # and the traceback stays in the log.
 MAX_ERROR_MESSAGE = 200
+
+
+# The remote call this worker started and has not collected yet, keyed by run id. At most one
+# entry: the worker claims one shadow run at a time, and a second would need a second lease to
+# renew and a second deadline to watch for no gain — a shadow corpus grows by a handful of
+# rows a day.
+#
+# Process memory rather than a column on the row, which `app.modal_client.ModalCall` explains:
+# persisting the call id would let another worker collect a call this one started, and the two
+# would then need to agree about who owns an in-flight remote call on top of the lease they
+# already use to agree about who owns the row. A worker that dies instead loses the call, and
+# the lease it stops renewing fails the row exactly as R6-T1 arranged.
+_pending: dict[uuid.UUID, tuple["ClaimedShadowRun", Any]] = {}
+
+
+class UnknownShadowWorkload(Exception):
+    """A queued run names a workload this worker cannot execute."""
 
 
 @dataclass(frozen=True)
@@ -130,6 +197,19 @@ def enabled() -> bool:
     return os.getenv(SHADOW_MODE_VARIABLE, "").strip().lower() in ENABLED_VALUES
 
 
+def workload() -> str:
+    """Which workload a run queued right now is a run of (R6-T2).
+
+    Decided at enqueue time and written on the row, rather than decided again at execution
+    time from configuration that may have changed since. That ordering is what makes the
+    dispatch in `run_workload` honest: a row says what it is, and a `modal-stub` row queued
+    while Modal was configured fails cleanly if Modal has been turned off since, instead of
+    silently completing as a local stub and putting an observation nobody made into a corpus
+    labelled `modal-stub`.
+    """
+    return MODAL_STUB_WORKLOAD if modal_client.configured() else STUB_WORKLOAD
+
+
 def lease_deadline():
     """How far ahead of *the database's* clock a fresh lease reaches.
 
@@ -160,11 +240,13 @@ def enqueue(session: Session, analysis_id: uuid.UUID) -> bool:
     if not enabled():
         return False
 
+    queued_workload = workload()
+
     try:
         session.add(
             ShadowRun(
                 analysis_id=analysis_id,
-                workload=STUB_WORKLOAD,
+                workload=queued_workload,
                 status=SHADOW_RUN_STATUS_QUEUED,
             )
         )
@@ -179,7 +261,7 @@ def enqueue(session: Session, analysis_id: uuid.UUID) -> bool:
         return False
 
     logger.info(
-        "Queued a %s shadow run for analysis %s.", STUB_WORKLOAD, analysis_id
+        "Queued a %s shadow run for analysis %s.", queued_workload, analysis_id
     )
     return True
 
@@ -257,6 +339,38 @@ def claim_run(session: Session) -> ClaimedShadowRun | None:
     return claimed
 
 
+def renew_lease(session: Session, claimed: ClaimedShadowRun) -> bool:
+    """Push this run's lease out by a full period. Returns whether it is still ours.
+
+    The whole of the heartbeat, in one conditional update. Conditional on the row still being
+    `processing`, which is what turns "renew the lease" into "renew the lease *and* tell me
+    whether I still have it": a row that `recover_stale_runs` already failed matches nothing
+    and the caller learns it has lost the run, which is the only useful thing to know halfway
+    through a remote call.
+
+    Not a background thread, and that is a deliberate limit on how much machinery this task
+    adds. The only workload long enough to need this is one that spends its time waiting in a
+    poll loop, and a loop is somewhere to put a heartbeat. A workload that blocked instead
+    would need a thread — and would need it designed, because a thread renewing a lease for a
+    call that has already failed is a lease that never expires.
+    """
+    renewed = session.execute(
+        ShadowRun.__table__.update()
+        .where(
+            ShadowRun.id == claimed.run_id,
+            ShadowRun.status == SHADOW_RUN_STATUS_PROCESSING,
+        )
+        .values(lease_expires_at=lease_deadline())
+    )
+
+    if renewed.rowcount != 1:
+        session.rollback()
+        return False
+
+    session.commit()
+    return True
+
+
 def run_stub_workload(claimed: ClaimedShadowRun) -> ShadowObservation:
     """The placeholder workload R6-T1 proves the infrastructure with.
 
@@ -273,6 +387,104 @@ def run_stub_workload(claimed: ClaimedShadowRun) -> ShadowObservation:
         provider_version=STUB_WORKLOAD_VERSION,
         evidence={"observed": True, "analysis_id": str(claimed.analysis_id)},
     )
+
+
+def start_workload(
+    session: Session, claimed: ClaimedShadowRun
+) -> ShadowObservation | None:
+    """Begin the workload this run was queued as. `None` means it is running remotely.
+
+    Dispatch on the name the row carries rather than on configuration read now, for the
+    reason `workload` gives: a row is a run *of* something, and what it is a run of was
+    decided when it was queued.
+
+    The local stub finishes here and returns its observation. The Modal one cannot: it is
+    *started* here and collected on a later poll, because this function runs on the worker's
+    only thread and a remote GPU takes tens of seconds to answer. Returning `None` is what
+    hands the loop back — see `_collect_pending`.
+
+    An unknown name is an error rather than a fallback. A row naming a workload this worker
+    does not have is either a deployment mid-rollout or a workload that has been removed, and
+    in both cases failing the run says so, where quietly running the stub instead would put a
+    `stub` observation into a corpus under some other workload's name.
+    """
+    if claimed.workload == MODAL_STUB_WORKLOAD:
+        _pending[claimed.run_id] = (claimed, modal_client.spawn_stub(claimed.analysis_id))
+        return None
+
+    if claimed.workload == STUB_WORKLOAD:
+        return run_stub_workload(claimed)
+
+    raise UnknownShadowWorkload(claimed.workload)
+
+
+def _collect_pending(session: Session) -> bool:
+    """Ask about the remote call this worker started, and finish the run if it has answered.
+
+    Returns whether anything is still in flight afterwards, which is how `process_one` knows
+    not to claim a second run.
+
+    Three things happen on every visit, in this order and for three different reasons:
+
+    - **the lease is renewed first.** A remote call outliving `SHADOW_LEASE_SECONDS` is the
+      case this exists for, and renewing before asking means a slow answer is never the reason
+      a run is recovered as stale. If the renewal is refused the run is no longer this
+      worker's — recovered while the GPU was busy, or taken — so the call is cancelled and
+      forgotten rather than waited on for an observation `complete_run` would refuse anyway;
+    - **the call is asked, never waited for.** `modal_client.collect` returns `None` if there
+      is no answer yet, and this returns straight back to the loop, which polls production
+      again in a couple of seconds. That is the whole non-blocking guarantee: the worker is
+      inside Modal's SDK for one round trip per idle poll and never for the length of a run;
+    - **a failure ends the run and nothing else.** Every way Modal can go wrong arrives as a
+      `ModalShadowError`, fails this row, and leaves the worker polling.
+    """
+    run_id, (claimed, pending) = next(iter(_pending.items()))
+
+    if not renew_lease(session, claimed):
+        logger.warning(
+            "Shadow run %s was recovered as stale while its Modal workload ran; the remote "
+            "call is cancelled and its observation discarded.",
+            run_id,
+        )
+        _pending.pop(run_id, None)
+        modal_client.cancel(pending)
+        return False
+
+    try:
+        result = modal_client.collect(pending)
+    except Exception as error:
+        logger.exception("Shadow run %s failed on Modal.", run_id)
+        _pending.pop(run_id, None)
+        modal_client.cancel(pending)
+        _record_failure(session, claimed, error)
+        return False
+
+    if result is None:
+        return True
+
+    _pending.pop(run_id, None)
+    _record_observation(
+        session,
+        claimed,
+        ShadowObservation(
+            provider_version=result.provider_version, evidence=result.evidence
+        ),
+    )
+    return False
+
+
+def abandon_pending() -> None:
+    """Cancel and forget whatever this worker was waiting on. Used when it is shutting down.
+
+    The row is left `processing` with a lease that stops being renewed, which
+    `recover_stale_runs` fails on some later worker's poll — the R6-T1 behaviour for a worker
+    that goes away, reached deliberately here instead of by dying. What this adds is the
+    cancellation: a container still running for an answer nobody will collect is GPU time
+    billed for nothing.
+    """
+    while _pending:
+        _, (_, pending) = _pending.popitem()
+        modal_client.cancel(pending)
 
 
 def complete_run(
@@ -347,47 +559,30 @@ def _discard_transaction(session: Session) -> None:
         logger.debug("Rolling back after a failed shadow run failed too.", exc_info=True)
 
 
-def process_one(session: Session) -> bool:
-    """Claim and execute a single shadow run. Returns whether there was one to run.
+def _record_failure(
+    session: Session, claimed: ClaimedShadowRun, error: BaseException
+) -> None:
+    """Write a run's failure down, and never raise doing it.
 
-    The shadow half of `app.worker.process_one`, and called by the worker loop only when the
-    production half found nothing to do. That ordering is the non-blocking guarantee at the
-    level of the queue rather than of one job: no analysis waits behind an experiment, because
-    an experiment is only ever picked up on a poll where there was no analysis to run.
-
-    Nothing propagates out of here. Every failure — the workload's, the database's, a defect
-    in this module — is logged and swallowed, so a broken experiment cannot reach the loop that
-    runs production work, cannot trigger its error backoff and cannot stop it claiming the next
-    job. This is the one place in the codebase where a bare `except Exception` that reports
-    `False` is the correct behaviour rather than a smell: the caller has production work to get
-    on with and there is nothing it could usefully do about an experiment that went wrong.
+    A failure that cannot be recorded is not a failure that propagates: the lease is still
+    there, and `recover_stale_runs` will close the row out on some later poll. Losing the
+    precise reason is a worse record of an experiment, not a worse outcome for anybody.
     """
     try:
-        recover_stale_runs(session)
-
-        claimed = claim_run(session)
-        if claimed is None:
-            return False
+        fail_run(session, claimed, error)
     except Exception:
-        logger.exception("Claiming a shadow run failed; production work is unaffected.")
+        logger.exception(
+            "Recording the failure of shadow run %s failed; it will be recovered by its "
+            "lease.",
+            claimed.run_id,
+        )
         _discard_transaction(session)
-        return False
 
-    try:
-        observation = run_stub_workload(claimed)
-    except Exception as error:
-        logger.exception("Shadow run %s failed.", claimed.run_id)
-        try:
-            fail_run(session, claimed, error)
-        except Exception:
-            logger.exception(
-                "Recording the failure of shadow run %s failed; it will be recovered by "
-                "its lease.",
-                claimed.run_id,
-            )
-            _discard_transaction(session)
-        return True
 
+def _record_observation(
+    session: Session, claimed: ClaimedShadowRun, observation: ShadowObservation
+) -> None:
+    """Write what a workload saw, and never raise doing it."""
     try:
         if complete_run(session, claimed, observation):
             logger.info(
@@ -407,5 +602,70 @@ def process_one(session: Session) -> bool:
             "Recording the observation of shadow run %s failed.", claimed.run_id
         )
         _discard_transaction(session)
+
+
+def process_one(session: Session) -> bool:
+    """Advance shadow execution by one step. Returns whether there was anything to do.
+
+    The shadow half of `app.worker.process_one`, and called by the worker loop only when the
+    production half found nothing to do. That ordering was R6-T1's non-blocking guarantee: an
+    experiment is never *claimed* while a queued job exists.
+
+    R6-T2 had to make a second guarantee, because the first one turned out not to cover the
+    case that matters once a workload runs on a remote GPU. An experiment claimed on an idle
+    poll used to finish in microseconds; a Modal call takes tens of seconds, and while the
+    worker was inside it, a job submitted a moment later sat queued. It was measured: a
+    production job was claimed 8 ms after an in-flight Modal call returned, having waited
+    4.1 s behind it, and a cold start or a hung Modal would have made that far worse.
+
+    So a step is never a wait. There are exactly three of them, and each returns to the loop
+    promptly:
+
+    - a remote call is outstanding — renew its lease, ask once whether it has answered, and
+      hand the loop straight back if it has not;
+    - nothing is outstanding and a run is queued — claim it and *start* it. The local stub
+      finishes inside this step; the Modal one is spawned and collected on a later visit;
+    - nothing is outstanding and nothing is queued — say so, and the loop goes to sleep.
+
+    Nothing propagates out of here. Every failure — the workload's, the database's, a defect
+    in this module — is logged and swallowed, so a broken experiment cannot reach the loop
+    that runs production work, cannot trigger its error backoff and cannot stop it claiming
+    the next job. This is the one place in the codebase where a bare `except Exception` that
+    reports `False` is the correct behaviour rather than a smell: the caller has production
+    work to get on with and there is nothing it could usefully do about an experiment that
+    went wrong.
+    """
+    if _pending:
+        try:
+            return _collect_pending(session)
+        except Exception:
+            logger.exception(
+                "Collecting a remote shadow run failed; production work is unaffected."
+            )
+            _discard_transaction(session)
+            return False
+
+    try:
+        recover_stale_runs(session)
+
+        claimed = claim_run(session)
+        if claimed is None:
+            return False
+    except Exception:
+        logger.exception("Claiming a shadow run failed; production work is unaffected.")
+        _discard_transaction(session)
+        return False
+
+    try:
+        observation = start_workload(session, claimed)
+    except Exception as error:
+        logger.exception("Shadow run %s failed.", claimed.run_id)
+        _record_failure(session, claimed, error)
+        return True
+
+    # `None` means the workload is running somewhere else and will be collected on a later
+    # poll. The run stays `processing`, holding the lease `_collect_pending` renews.
+    if observation is not None:
+        _record_observation(session, claimed, observation)
 
     return True

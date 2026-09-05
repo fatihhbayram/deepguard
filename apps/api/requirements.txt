@@ -16,6 +16,13 @@ c2pa-python==0.37.7
 fastapi==0.141.1
 grpcio==1.76.0
 minio==7.2.20
+# Starts the shadow workload that runs on a remote GPU, and only that (R6-T2). It is a
+# production dependency because the worker holds it, not because production uses it: nothing
+# on the analysis path imports `modal`, and `app/modal_client.py` imports it inside a function
+# so a deployment that never configures Modal never loads it at all. Pinned like everything
+# else here — this is a client for somebody else's API and its wire behaviour is theirs to
+# change.
+modal==1.5.3
 # Runs the AASIST audio anti-spoofing checkpoint (P6-T2). The CPU-only wheel — there is no
 # GPU build here and none is wanted — is 17.4 MB down / ~52 MB installed, against a 1.6 MB
 # checkpoint and ~60 MiB resident at inference. Pinned to the version P6-T1 benchmarked on,
