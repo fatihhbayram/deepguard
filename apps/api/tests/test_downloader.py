@@ -16,8 +16,11 @@ actually stops a redirect. Both are exercised directly.
 """
 
 import ipaddress
+import logging
+import os
 import shutil
 import socket
+import tempfile
 import threading
 from pathlib import Path
 
@@ -1042,7 +1045,7 @@ def test_a_url_with_nothing_behind_it_is_refused(dns, site):
             pass
 
 
-def test_a_blocked_address_during_the_download_is_reported_as_blocked(dns, site):
+def test_a_blocked_address_during_the_download_is_reported_as_blocked(dns, site, monkeypatch):
     """Not flattened into a generic failure.
 
     `BlockedAddress` says something a `DownloadUnavailable` does not — that the URL pointed
@@ -1053,14 +1056,13 @@ def test_a_blocked_address_during_the_download_is_reported_as_blocked(dns, site)
         raise BlockedAddress("127.0.0.1 resolves to an address that is not public.")
 
     site.download_error = None
-    FakeYoutubeDL.download = lambda self, urls: refuse(urls)
+    # `monkeypatch.setattr` rather than assign-and-`del`: deleting the attribute would remove
+    # `FakeYoutubeDL`'s own `download` for every test that runs after this one, not restore it.
+    monkeypatch.setattr(FakeYoutubeDL, "download", lambda self, urls: refuse(urls))
 
-    try:
-        with pytest.raises(BlockedAddress):
-            with downloader.download(PUBLIC_URL):
-                pass
-    finally:
-        del FakeYoutubeDL.download
+    with pytest.raises(BlockedAddress):
+        with downloader.download(PUBLIC_URL):
+            pass
 
 
 def test_yt_dlp_only_has_backends_the_guard_can_see():
@@ -1082,3 +1084,544 @@ def test_yt_dlp_only_has_backends_the_guard_can_see():
         f"yt-dlp gained the {handlers - {'Urllib', 'Requests'}} backend, which may resolve "
         "names outside Python's socket layer and bypass the SSRF guard entirely"
     )
+
+
+# --- authenticated Instagram ingestion (R7-T2) --------------------------------------------
+#
+# Nothing here touches Instagram, and nothing here uses a real cookie. Both would be the
+# wrong test: a live Instagram would make this suite a check on Instagram's rate limiter, and
+# a real session would put a credential in a repository. What is worth pinning is entirely
+# local — which URLs get the option, which never do, what happens when the configured file is
+# not there, and what a failure is allowed to say — and every one of those is decidable
+# against a fake extractor and a temporary file holding nonsense.
+
+
+INSTAGRAM_URL = "https://www.instagram.com/reel/CxAmPlEiD/"
+
+# What a Netscape cookie file looks like, near enough. The value is the thing that must never
+# turn up in an error or a log, so it is distinctive on purpose.
+COOKIE_JAR = (
+    "# Netscape HTTP Cookie File\n"
+    ".instagram.com\tTRUE\t/\tTRUE\t2000000000\tsessionid\tNOT-A-REAL-SESSION-1234567890\n"
+)
+
+
+@pytest.fixture
+def instagram_auth(monkeypatch, tmp_path):
+    """Configure an Instagram cookie file the way a deployment would, and hand back its path.
+
+    The file is a real file in `tmp_path` — it is copied, opened and (in one test) written
+    back to, so a mock would be testing less than this does. The environment variable is set
+    exactly as the compose file sets it, because `instagram_cookie_file` reads it per call
+    and that is the whole configuration surface.
+    """
+    cookies = tmp_path / "outside-the-repo" / "instagram_cookies.txt"
+    cookies.parent.mkdir()
+    cookies.write_text(COOKIE_JAR)
+    monkeypatch.setenv(downloader.IG_COOKIE_FILE_VARIABLE, str(cookies))
+    return cookies
+
+
+@pytest.fixture(autouse=True)
+def no_instagram_auth_by_default(monkeypatch):
+    """Every test in this module runs unconfigured unless it asks not to.
+
+    A variable left set in the ambient environment — a developer's shell, a compose file
+    handed to `pytest` — would otherwise silently change what half of this suite is testing.
+    """
+    monkeypatch.delenv(downloader.IG_COOKIE_FILE_VARIABLE, raising=False)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.instagram.com/reel/CxAmPlEiD/",
+        "https://instagram.com/p/CxAmPlEiD/",
+        "https://instagram.com/reel/CxAmPlEiD/",
+        "https://Instagram.COM/reel/CxAmPlEiD/",
+        "https://instagram.com./reel/CxAmPlEiD/",
+        "https://instagr.am/p/CxAmPlEiD/",
+    ],
+)
+def test_instagram_is_recognised_by_host(url):
+    assert downloader.is_instagram_url(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://instagram.com.example.net/reel/CxAmPlEiD/",
+        "https://notinstagram.com/reel/CxAmPlEiD/",
+        "https://myinstagram.com/reel/CxAmPlEiD/",
+        "https://instagram.example.com/reel/CxAmPlEiD/",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://videos.example.com/clip",
+    ],
+)
+def test_a_lookalike_host_is_not_instagram(url):
+    """The one place a hostname match decides whether a secret leaves this container.
+
+    `is_youtube_url` picking the wrong site costs a format string. This picking the wrong
+    site would send a live session to whoever registered the lookalike, so the cases that
+    end in `instagram.com` without being it are pinned individually.
+    """
+    assert downloader.is_instagram_url(url) is False
+
+
+def test_the_feature_is_off_until_a_file_is_named():
+    """No default path. Unconfigured means unconfigured, not "look in the usual place"."""
+    assert downloader.instagram_cookie_file() is None
+
+
+def test_an_empty_configuration_is_the_same_as_none(monkeypatch):
+    """What a compose file passing an unset host variable through actually produces."""
+    monkeypatch.setenv(downloader.IG_COOKIE_FILE_VARIABLE, "   ")
+
+    assert downloader.instagram_cookie_file() is None
+
+
+def test_an_instagram_url_is_given_the_configured_cookies(
+    dns, site, instagram_auth, monkeypatch
+):
+    """The feature, stated as the option yt-dlp actually receives.
+
+    Read from inside the download rather than after it, because after it the file is
+    deliberately gone — which is a different test, two below.
+    """
+    served = []
+
+    def read_cookies(self, urls):
+        served.append(Path(self.options["cookiefile"]).read_text())
+        (Path(self.options["paths"]["home"]) / "media.mp4").write_bytes(MEDIA_BYTES)
+
+    monkeypatch.setattr(FakeYoutubeDL, "download", read_cookies)
+
+    with downloader.download(INSTAGRAM_URL):
+        pass
+
+    assert served == [COOKIE_JAR]
+
+
+def test_yt_dlp_is_given_a_copy_and_never_the_mounted_file(dns, site, instagram_auth):
+    """The read-only mount only survives because yt-dlp is not pointed at it.
+
+    yt-dlp writes its cookie jar back to `cookiefile` when the session closes. Against the
+    mount that is either a failed download on a read-only filesystem or, worse, a site
+    rewriting the deployment's stored session. Neither happens, because what it is handed is
+    a copy in a directory this download owns.
+    """
+    with downloader.download(INSTAGRAM_URL):
+        pass
+
+    assert site.instances[0].options["cookiefile"] != str(instagram_auth)
+
+
+def test_the_configured_file_is_untouched_by_a_download_that_rewrites_its_cookies(
+    dns, site, instagram_auth, monkeypatch
+):
+    """The same property, proved by letting the fake extractor do what the real one does."""
+    written = []
+
+    def rewrite_cookies(self, urls):
+        Path(self.options["cookiefile"]).write_text("# rewritten by the extractor\n")
+        written.append(self.options["cookiefile"])
+        home = Path(self.options["paths"]["home"])
+        (home / "media.mp4").write_bytes(MEDIA_BYTES)
+
+    monkeypatch.setattr(FakeYoutubeDL, "download", rewrite_cookies)
+
+    with downloader.download(INSTAGRAM_URL):
+        pass
+
+    assert written, "the extractor never wrote its cookie jar back"
+    assert instagram_auth.read_text() == COOKIE_JAR
+
+
+def test_the_copy_is_destroyed_when_the_download_ends(dns, site, instagram_auth):
+    """A credential on disk for longer than the download that needed it is a credential left
+    lying around. The copy goes with the same certainty the media does."""
+    with downloader.download(INSTAGRAM_URL):
+        pass
+
+    copy = Path(site.instances[0].options["cookiefile"])
+
+    assert not copy.exists()
+    assert not copy.parent.exists()
+
+
+def test_the_copy_is_destroyed_when_the_download_fails(dns, site, instagram_auth):
+    site.extract_error = yt_dlp.utils.DownloadError("ERROR: [Instagram] login required")
+
+    with pytest.raises(DownloadUnavailable):
+        with downloader.download(INSTAGRAM_URL):
+            pass
+
+    copy = Path(site.instances[0].options["cookiefile"])
+
+    assert not copy.exists()
+
+
+def test_the_copy_is_not_left_beside_the_media(dns, site, instagram_auth):
+    """`_downloaded_file` refuses a directory holding more than one file, so a credential
+    kept beside the download would break every authenticated ingestion. It is kept in its
+    own directory, which is also simply the right place for it."""
+    with downloader.download(INSTAGRAM_URL) as media:
+        assert Path(site.instances[0].options["cookiefile"]).parent != media.path.parent
+
+
+def test_the_copy_is_readable_by_nobody_else(dns, site, instagram_auth, monkeypatch):
+    seen = []
+
+    def record_mode(self, urls):
+        seen.append(Path(self.options["cookiefile"]).stat().st_mode & 0o777)
+        home = Path(self.options["paths"]["home"])
+        (home / "media.mp4").write_bytes(MEDIA_BYTES)
+
+    monkeypatch.setattr(FakeYoutubeDL, "download", record_mode)
+
+    with downloader.download(INSTAGRAM_URL):
+        pass
+
+    assert seen == [0o600]
+
+
+# --- what must never receive the credential -----------------------------------------------
+
+
+@pytest.mark.parametrize("url", [PUBLIC_URL, YOUTUBE_URL])
+def test_no_other_site_receives_the_cookie_file(url, dns, site, instagram_auth):
+    """Credential isolation, and the key is absent rather than empty.
+
+    An option set to `None` or `""` would be a `cookiefile` yt-dlp still reasons about. What
+    a non-Instagram extraction gets is an options dict that does not contain the word.
+    """
+    with downloader.download(url):
+        pass
+
+    assert "cookiefile" not in site.instances[0].options
+
+
+def test_a_youtube_download_beside_a_configured_instagram_session_is_anonymous(
+    dns, site, instagram_auth
+):
+    """The constraint stated the way an operator would ask it: the credential is configured,
+    and YouTube still knows nothing about it."""
+    site.info = merged_info()
+
+    with downloader.download(YOUTUBE_URL):
+        pass
+
+    options = site.instances[0].options
+
+    assert "cookiefile" not in options
+    assert str(instagram_auth) not in repr(options)
+    assert options["format"] == downloader.YOUTUBE_MEDIA_FORMAT
+
+
+def test_an_unconfigured_instagram_url_is_attempted_anonymously(dns, site):
+    """The default, and the behaviour R7-T2 is not allowed to change.
+
+    Without configuration an Instagram URL is the ordinary path: the muxed-only selector,
+    no credential, and whatever Instagram says to an anonymous client.
+    """
+    with downloader.download(INSTAGRAM_URL):
+        pass
+
+    options = site.instances[0].options
+
+    assert "cookiefile" not in options
+    assert options["format"] == downloader.MEDIA_FORMAT
+
+
+# --- a configured file that is not usable -------------------------------------------------
+
+
+def test_a_missing_cookie_file_fails_only_that_download(dns, site, monkeypatch, tmp_path):
+    monkeypatch.setenv(downloader.IG_COOKIE_FILE_VARIABLE, str(tmp_path / "not-there.txt"))
+
+    with pytest.raises(DownloadUnavailable):
+        with downloader.download(INSTAGRAM_URL):
+            pass
+
+    assert site.instances == [], "the extractor was started without the credential"
+
+
+def test_a_cookie_path_that_is_not_a_file_fails_the_download(dns, site, monkeypatch, tmp_path):
+    """A directory, which is what a misconfigured bind mount most often leaves behind."""
+    directory = tmp_path / "instagram_cookies.txt"
+    directory.mkdir()
+    monkeypatch.setenv(downloader.IG_COOKIE_FILE_VARIABLE, str(directory))
+
+    with pytest.raises(DownloadUnavailable):
+        with downloader.download(INSTAGRAM_URL):
+            pass
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode says")
+def test_an_unreadable_cookie_file_fails_the_download(dns, site, instagram_auth):
+    instagram_auth.chmod(0o000)
+
+    with pytest.raises(DownloadUnavailable):
+        with downloader.download(INSTAGRAM_URL):
+            pass
+
+
+def test_a_broken_credential_does_not_affect_other_ingestion(dns, site, monkeypatch, tmp_path):
+    """The isolation that matters operationally: an expired or missing cookie file is an
+    Instagram outage, not a DeepGuard one."""
+    monkeypatch.setenv(downloader.IG_COOKIE_FILE_VARIABLE, str(tmp_path / "not-there.txt"))
+
+    with pytest.raises(DownloadUnavailable):
+        with downloader.download(INSTAGRAM_URL):
+            pass
+
+    with downloader.download(PUBLIC_URL) as media:
+        assert media.size_bytes == len(MEDIA_BYTES)
+
+
+def test_nothing_is_left_behind_when_the_credential_cannot_be_read(
+    dns, site, monkeypatch, tmp_path
+):
+    before = set(Path(tempfile.gettempdir()).glob(f"{downloader.COOKIE_DIR_PREFIX}*"))
+    monkeypatch.setenv(downloader.IG_COOKIE_FILE_VARIABLE, str(tmp_path / "not-there.txt"))
+
+    with pytest.raises(DownloadUnavailable):
+        with downloader.download(INSTAGRAM_URL):
+            pass
+
+    assert set(Path(tempfile.gettempdir()).glob(f"{downloader.COOKIE_DIR_PREFIX}*")) == before
+
+
+# --- what a failure is allowed to say -----------------------------------------------------
+
+
+def test_a_rejected_session_is_an_ordinary_unavailable_download(dns, site, instagram_auth):
+    """An expired cookie is not a new failure mode. It is the one the caller already handles,
+    which is what keeps it out of the response as anything more specific than a refusal."""
+    site.extract_error = yt_dlp.utils.DownloadError(
+        "ERROR: [Instagram] CxAmPlEiD: Requested content is not available, rate-limit "
+        "reached or login required. Cookies from /run/secrets/instagram_cookies.txt were "
+        "sent as Cookie: sessionid=NOT-A-REAL-SESSION-1234567890"
+    )
+
+    with pytest.raises(DownloadUnavailable) as failure:
+        with downloader.download(INSTAGRAM_URL):
+            pass
+
+    message = str(failure.value)
+
+    assert "sessionid" not in message
+    assert "NOT-A-REAL-SESSION-1234567890" not in message
+    assert "/run/secrets" not in message
+    assert "Cookie" not in message
+
+
+@pytest.mark.parametrize("phase", ["extract_error", "download_error"])
+def test_the_cookie_path_never_reaches_the_raised_error(
+    phase, dns, site, instagram_auth
+):
+    setattr(
+        site,
+        phase,
+        yt_dlp.utils.DownloadError(f"ERROR: [Instagram] cookies from {instagram_auth} failed"),
+    )
+
+    with pytest.raises(DownloadUnavailable) as failure:
+        with downloader.download(INSTAGRAM_URL):
+            pass
+
+    assert str(instagram_auth) not in str(failure.value)
+    assert "instagram_cookies.txt" not in str(failure.value)
+
+
+def test_a_missing_credential_does_not_name_the_path_it_looked_for(
+    dns, site, monkeypatch, tmp_path
+):
+    """The `OSError` underneath quotes the path. It is dropped rather than chained, so it
+    cannot be recovered from `__cause__` by anything rendering a traceback either."""
+    configured = tmp_path / "secret-location" / "instagram_cookies.txt"
+    monkeypatch.setenv(downloader.IG_COOKIE_FILE_VARIABLE, str(configured))
+
+    with pytest.raises(DownloadUnavailable) as failure:
+        with downloader.download(INSTAGRAM_URL):
+            pass
+
+    assert str(configured) not in str(failure.value)
+    assert "secret-location" not in str(failure.value)
+    assert failure.value.__cause__ is None
+
+
+def test_the_extractors_message_is_withheld_from_the_log(
+    dns, site, instagram_auth, caplog
+):
+    """The log is where credential material actually escapes.
+
+    An authenticated failure's text can name the cookie file, quote the session and repeat
+    the headers that carried it, and DeepGuard's production logs are JSON that gets shipped
+    somewhere. So none of it is written down.
+    """
+    site.extract_error = yt_dlp.utils.DownloadError(
+        f"ERROR: [Instagram] login required; read cookies from {instagram_auth}; sent "
+        "Cookie: sessionid=NOT-A-REAL-SESSION-1234567890"
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.downloader"):
+        with pytest.raises(DownloadUnavailable):
+            with downloader.download(INSTAGRAM_URL):
+                pass
+
+    assert str(instagram_auth) not in caplog.text
+    assert "NOT-A-REAL-SESSION-1234567890" not in caplog.text
+    assert "sessionid" not in caplog.text
+    assert "withheld" in caplog.text
+
+
+def test_the_download_phase_message_is_withheld_too(dns, site, instagram_auth, caplog):
+    """Two `except` clauses, two chances to write the thing down. Both are covered."""
+    site.download_error = yt_dlp.utils.DownloadError(
+        f"ERROR: [Instagram] cookies from {instagram_auth}: sessionid rejected"
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.downloader"):
+        with pytest.raises(DownloadUnavailable):
+            with downloader.download(INSTAGRAM_URL):
+                pass
+
+    assert str(instagram_auth) not in caplog.text
+    assert "sessionid" not in caplog.text
+
+
+def test_the_unreadable_credential_is_logged_without_the_path(
+    dns, site, monkeypatch, tmp_path, caplog
+):
+    configured = tmp_path / "secret-location" / "instagram_cookies.txt"
+    monkeypatch.setenv(downloader.IG_COOKIE_FILE_VARIABLE, str(configured))
+
+    with caplog.at_level(logging.WARNING, logger="app.downloader"):
+        with pytest.raises(DownloadUnavailable):
+            with downloader.download(INSTAGRAM_URL):
+                pass
+
+    assert str(configured) not in caplog.text
+    assert "secret-location" not in caplog.text
+    assert "could not be read" in caplog.text
+
+
+def test_an_ordinary_failure_still_carries_its_message_to_the_log(
+    dns, site, instagram_auth, caplog
+):
+    """Withholding is scoped to the requests that carried a credential. A non-Instagram
+    extractor's message is still quoted in full, because nothing secret was in that request
+    and a diagnosable log is worth more than a uniform one."""
+    site.extract_error = yt_dlp.utils.DownloadError("ERROR: [generic] HTTP Error 403")
+
+    with caplog.at_level(logging.WARNING, logger="app.downloader"):
+        with pytest.raises(DownloadUnavailable):
+            with downloader.download(PUBLIC_URL):
+                pass
+
+    assert "HTTP Error 403" in caplog.text
+
+
+def test_an_unconfigured_instagram_failure_is_logged_as_it_always_was(dns, site, caplog):
+    """Nothing was sent, so there is nothing to withhold — and this is the behaviour that
+    existed before R7-T2, which an unconfigured deployment is entitled to keep."""
+    site.extract_error = yt_dlp.utils.DownloadError("ERROR: [Instagram] login required")
+
+    with caplog.at_level(logging.WARNING, logger="app.downloader"):
+        with pytest.raises(DownloadUnavailable):
+            with downloader.download(INSTAGRAM_URL):
+                pass
+
+    assert "login required" in caplog.text
+
+
+# --- the guards are unchanged by any of it ------------------------------------------------
+
+
+def test_an_authenticated_download_runs_inside_the_ssrf_guard(dns, site, instagram_auth):
+    """A session does not buy an extractor a redirect into the Docker network."""
+    with downloader.download(INSTAGRAM_URL):
+        pass
+
+    assert site.guarded and all(site.guarded)
+
+
+def test_an_instagram_url_pointing_inward_never_reaches_the_extractor(
+    dns, site, instagram_auth
+):
+    """Validation happens first, so a hostile URL that merely *looks* like Instagram is
+    refused before a credential is copied anywhere, let alone sent."""
+    dns.set("instagram.com", "10.0.0.5")
+
+    with pytest.raises(BlockedAddress):
+        with downloader.download("https://instagram.com/reel/CxAmPlEiD/"):
+            pass
+
+    assert site.instances == []
+
+
+def test_the_size_limit_applies_to_an_authenticated_download_too(dns, site, instagram_auth):
+    site.info = {"id": "reel", "ext": "mp4", "filesize": downloader.MAX_DOWNLOAD_BYTES + 1}
+
+    with pytest.raises(MediaTooLarge):
+        with downloader.download(INSTAGRAM_URL):
+            pass
+
+
+def test_an_authenticated_download_is_not_reported_as_assembled(dns, site, instagram_auth):
+    """Instagram serves one muxed file, and a credential changes nothing about what the
+    bytes on disk are. `assembled` stays a fact about the acquisition, not about the auth."""
+    with downloader.download(INSTAGRAM_URL) as media:
+        assert media.assembled is False
+
+
+def test_yt_dlp_may_not_print_its_own_errors_on_an_authenticated_download(
+    dns, site, instagram_auth, caplog
+):
+    """`quiet` silences progress and warnings. It does not silence errors, and an error goes
+    to stderr — which is the container's log stream and, in production, shipped JSON.
+
+    So an authenticated download hands yt-dlp somewhere else to write. The line an operator
+    gets says an error happened and nothing about what it said.
+    """
+    with downloader.download(INSTAGRAM_URL):
+        pass
+
+    given = site.instances[0].options["logger"]
+
+    with caplog.at_level(logging.WARNING, logger="app.downloader"):
+        given.error(
+            f"ERROR: [Instagram] cookies from {instagram_auth}; sent Cookie: "
+            "sessionid=NOT-A-REAL-SESSION-1234567890"
+        )
+        given.warning("WARNING: sessionid=NOT-A-REAL-SESSION-1234567890")
+        given.info("Loading cookies")
+        given.debug("Cookie: sessionid=NOT-A-REAL-SESSION-1234567890")
+
+    assert "NOT-A-REAL-SESSION-1234567890" not in caplog.text
+    assert str(instagram_auth) not in caplog.text
+    assert "withheld" in caplog.text
+
+
+@pytest.mark.parametrize("url", [PUBLIC_URL, YOUTUBE_URL])
+def test_an_unauthenticated_download_still_prints_as_it_always_did(
+    url, dns, site, instagram_auth
+):
+    """The redirection is scoped to the credential, not applied to everything.
+
+    Nothing secret was in these requests, so yt-dlp keeps writing its errors where it always
+    wrote them. An option that quietly changed every download's output would be a second
+    change hiding inside this one.
+    """
+    with downloader.download(url):
+        pass
+
+    assert "logger" not in site.instances[0].options
+
+
+def test_an_unconfigured_instagram_download_still_prints_as_it_always_did(dns, site):
+    with downloader.download(INSTAGRAM_URL):
+        pass
+
+    assert "logger" not in site.instances[0].options

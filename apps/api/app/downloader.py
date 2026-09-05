@@ -26,10 +26,29 @@ blocked address as an opaque download failure, so both are kept.
 
 yt-dlp is used as a library. There is no subprocess and no command string, so the URL is a
 Python argument the whole way down and there is no shell for a crafted one to reach.
+
+One extractor may be handed a credential (R7-T2). Instagram refuses almost everything to an
+anonymous client, so a deployment may point `DEEPGUARD_IG_COOKIE_FILE` at a session cookie
+file and have it reach yt-dlp for Instagram URLs and for nothing else. Three properties hold
+that in place, and each is asserted in `test_downloader.py`:
+
+- it is scoped to Instagram by hostname, so no other site — YouTube included — is ever sent
+  an authenticated request or learns that a credential exists;
+- it changes nothing about the guards above. The socket guard is up for an authenticated
+  download exactly as it is for an anonymous one; a session does not buy an extractor the
+  right to be redirected inward;
+- neither the path nor the contents reach a caller, a stored error or a log line. An
+  authenticated extraction's failure text can quote the cookie file, a session id or the
+  request headers that carried it, so that text is withheld rather than trusted, and the
+  failure surfaces as the same `DownloadUnavailable` an anonymous refusal produces.
+
+Unconfigured — which is the default, and what every test that does not say otherwise runs
+under — none of this happens and Instagram is attempted anonymously as it was before.
 """
 
 import ipaddress
 import logging
+import os
 import shutil
 import socket
 import tempfile
@@ -122,6 +141,36 @@ YOUTUBE_MEDIA_FORMAT = (
 # quality decision and not a security one: no guard consults it, and a host that talked its
 # way into this branch would get a format string it cannot satisfy, not access to anything.
 YOUTUBE_HOSTS = frozenset({"youtube.com", "youtu.be", "youtube-nocookie.com"})
+
+# The hosts that mean Instagram, matched the same way and for the same reason as the YouTube
+# set above: exactly or as a parent domain, so `www.instagram.com` counts and
+# `instagram.com.example.net` does not.
+#
+# Unlike the YouTube set, this one *is* consulted by something that matters — it decides
+# which requests carry a credential — so it is deliberately short. Only the two hostnames
+# Instagram itself serves pages on are here. A front-end that proxies Instagram is not
+# Instagram and must never be handed the session.
+INSTAGRAM_HOSTS = frozenset({"instagram.com", "instagr.am"})
+
+# Where the Instagram session cookie file is, inside this container. Unset — which is the
+# default and what the tracked compose file produces when an operator has configured nothing
+# — means Instagram is attempted anonymously, exactly as it was before R7-T2.
+#
+# There is no default path on purpose. A default would be a location this module goes looking
+# for a secret in, and "the feature is off unless somebody named the file" is the only opt-in
+# that cannot be switched on by accident.
+#
+# Read per call rather than at import, like every bound in `app.limits` and for the same two
+# reasons: a test can state it for one case without reloading the module, and — the one that
+# matters here — nothing about this feature can affect API startup. A misconfigured value is
+# a failed Instagram download, never a process that will not boot.
+IG_COOKIE_FILE_VARIABLE = "DEEPGUARD_IG_COOKIE_FILE"
+
+# Where the working copy of that cookie file goes for the length of one download. Separate
+# from `TEMP_DIR_PREFIX` because it is a separate directory: `_downloaded_file` reads the
+# download directory expecting to find the media and nothing else, and a credential sitting
+# beside it would be both a bug and a bad place to keep one.
+COOKIE_DIR_PREFIX = "deepguard-credentials-"
 
 # How long a single stalled read may hang before the download gives up lives in `app.limits`
 # as `DEFAULT_DOWNLOAD_SOCKET_TIMEOUT_SECONDS`, unchanged and overridable from the
@@ -362,6 +411,147 @@ def is_youtube_url(url: str) -> bool:
     return any(host == known or host.endswith(f".{known}") for known in YOUTUBE_HOSTS)
 
 
+def is_instagram_url(url: str) -> bool:
+    """Whether this URL is one the Instagram credential may be used on.
+
+    Matched exactly as `is_youtube_url` matches its own set, and written out again rather
+    than factored into a shared helper: two callers is not three, and the two answers are
+    used for different kinds of decision — one picks a format, this one decides whether a
+    secret leaves the container. Those are worth being able to change independently.
+
+    The host is read off the submitted URL, before anything is extracted, because that is
+    when the option has to be decided. It is also the conservative direction: a host that is
+    not on this list gets no credential, and the only way to be wrongly *included* is to be
+    `instagram.com` or a subdomain of it.
+    """
+    host = (urlsplit(url).hostname or "").lower().rstrip(".")
+
+    return any(host == known or host.endswith(f".{known}") for known in INSTAGRAM_HOSTS)
+
+
+def instagram_cookie_file() -> Path | None:
+    """The configured Instagram cookie file, or `None` if the feature was never turned on.
+
+    Says nothing about whether the file exists or can be read. That question is asked once,
+    at the moment a download needs it, by `_extractor_credentials` — asking it here would
+    mean a missing file could be discovered somewhere that has no safe way to report it.
+    """
+    configured = os.getenv(IG_COOKIE_FILE_VARIABLE, "").strip()
+
+    return Path(configured) if configured else None
+
+
+@contextmanager
+def _extractor_credentials(url: str) -> Iterator[Path | None]:
+    """The cookie file yt-dlp should use for this one download, copied and then destroyed.
+
+    Yields `None` — meaning an anonymous extraction — for every URL that is not Instagram and
+    for every deployment that has not configured a cookie file. That is the default path and
+    it allocates nothing.
+
+    When there is a credential, what yt-dlp is given is a **copy** in a throwaway directory,
+    never the configured file. That is not tidiness, it is what makes the read-only mount
+    work: yt-dlp writes its cookie jar back to `cookiefile` when the session closes, so
+    handing it the mounted secret would either fail the whole download on a read-only
+    filesystem or, on a writable one, let a site rewrite the deployment's stored credential.
+    The copy absorbs that write and is deleted on the way out, whatever happened in between.
+
+    A configured file that is missing, unreadable or not a file at all fails this one
+    download and nothing else. The `OSError` that says so names the path, so it is dropped
+    (`from None`) rather than chained, and neither the log line nor the raised error repeats
+    it — an operator who needs to know which path was tried has the value they configured.
+    """
+    configured = instagram_cookie_file()
+
+    if configured is None or not is_instagram_url(url):
+        yield None
+        return
+
+    directory = Path(tempfile.mkdtemp(prefix=COOKIE_DIR_PREFIX))
+
+    try:
+        working = directory / "cookies.txt"
+
+        try:
+            # Created empty and restricted *before* it holds anything, so the contents are
+            # never briefly readable by another user of this container.
+            working.touch(mode=0o600)
+            shutil.copyfile(configured, working)
+        except OSError:
+            logger.warning(
+                "The configured Instagram cookie file could not be read. This Instagram "
+                "download is refused; nothing else is affected."
+            )
+            raise DownloadUnavailable("The media could not be downloaded.") from None
+
+        yield working
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+class _WithheldOutput:
+    """yt-dlp's own console output, for a download that carried a credential.
+
+    Everything above sanitizes the *exception*. This closes the other end: yt-dlp does not
+    only raise, it also prints. `quiet` and `no_warnings` silence its progress and its
+    warnings but not its errors, and an error goes to this process's stderr — which in a
+    container is the log stream, which in production is JSON shipped somewhere. An
+    authenticated extractor's error line is exactly the text that must not go there.
+
+    Handed to yt-dlp as `logger` only when there is a credential in the request, so an
+    ordinary download's output reaches stderr exactly as it did before R7-T2 and nothing
+    about the unauthenticated path is quieter than it was.
+
+    The failure still gets a line, because an operator has to be able to see that something
+    went wrong. What it does not get is yt-dlp's sentence.
+    """
+
+    def debug(self, message: str) -> None:
+        pass
+
+    def info(self, message: str) -> None:
+        pass
+
+    def warning(self, message: str) -> None:
+        pass
+
+    def error(self, message: str) -> None:
+        logger.warning(
+            "yt-dlp reported an error during an authenticated extraction. Its message is "
+            "withheld, because that text can carry credential material."
+        )
+
+
+def _loggable(url: str, error: Exception) -> str:
+    """What may be written to the log about an extractor failure on this URL.
+
+    yt-dlp's message is quoted in full for an ordinary failure, which is what it was before
+    and what makes a broken extractor diagnosable. An *authenticated* failure is different in
+    kind: "login required", a rejected session, a challenge page — those messages carry the
+    cookie file's path, session identifiers and sometimes the request headers that were sent,
+    and a log is exactly the place that material gets copied out of.
+
+    So an Instagram failure is withheld whenever a credential was configured for it. An
+    Instagram failure on a deployment that configured none is quoted as before, because there
+    was nothing secret in the request to leak.
+
+    The redaction on the remaining path is belt and braces. No non-Instagram extractor is ever
+    told the cookie file exists, so its message cannot name it — this is here so that stays
+    true by construction rather than by argument.
+    """
+    configured = instagram_cookie_file()
+
+    if configured is not None and is_instagram_url(url):
+        return (
+            "the extractor's message is withheld, because an authenticated extraction's "
+            "failure text can carry credential material"
+        )
+
+    text = str(error)
+
+    return text if configured is None else text.replace(str(configured), "[redacted]")
+
+
 def _reject_live(info: dict) -> None:
     """Refuse anything that is not a finished recording.
 
@@ -417,13 +607,20 @@ def _was_assembled(info: dict) -> bool:
     return len(info.get("requested_formats") or ()) > 1
 
 
-def _options(directory: Path, url: str) -> dict:
+def _options(directory: Path, url: str, cookiefile: Path | None = None) -> dict:
     """How yt-dlp is configured for one download into one throwaway directory.
 
     The URL is a parameter because one option depends on it: YouTube gets a selector that may
     resolve to a video stream plus an audio stream, and every other site keeps the muxed-only
     selector it already had. Nothing else here branches, and nothing that branches here is a
     security control — the guards below and around this call are the same either way.
+
+    `cookiefile` is the second thing that varies, and it arrives already decided.
+    `_extractor_credentials` is what worked out whether this URL gets one; by the time it
+    reaches here it is either a readable file this download owns or `None`, and `None` means
+    the key is left out entirely rather than set to something falsy. That distinction is the
+    whole isolation guarantee: a non-Instagram extraction's options dict does not contain the
+    word `cookiefile` at all, which is a property a test can assert and a reader can see.
 
     `max_filesize` is the during-the-download half of the size limit: yt-dlp abandons a file
     that declares itself larger rather than fetching 100 MiB to find out. It is not the whole
@@ -435,7 +632,7 @@ def _options(directory: Path, url: str) -> dict:
     thread yt-dlp started would resolve outside it. One connection at a time keeps every
     resolution on the thread that is guarded.
     """
-    return {
+    options = {
         "format": YOUTUBE_MEDIA_FORMAT if is_youtube_url(url) else MEDIA_FORMAT,
         # Which container a merge is written into. Only the YouTube selector can ask for one,
         # so this is inert for every other site — but naming it means the merged file is an
@@ -462,6 +659,14 @@ def _options(directory: Path, url: str) -> dict:
         "cachedir": False,
         "noplaylist_metafiles": True,
     }
+
+    if cookiefile is not None:
+        options["cookiefile"] = str(cookiefile)
+        # Paired with the credential deliberately. `_WithheldOutput` explains why an
+        # authenticated download is the one case where yt-dlp may not print its own errors.
+        options["logger"] = _WithheldOutput()
+
+    return options
 
 
 def _downloaded_file(directory: Path) -> Path:
@@ -513,8 +718,13 @@ def download(url: str) -> Iterator[DownloadedMedia]:
     directory = Path(tempfile.mkdtemp(prefix=TEMP_DIR_PREFIX))
 
     try:
-        with public_destinations_only():
-            info = _fetch(url, directory)
+        # The credential — if this URL and this deployment have one — is taken first and
+        # released last, so it exists for exactly the span in which yt-dlp is running and not
+        # a moment either side. The guard is nested inside it rather than around it because
+        # copying a file opens no socket; the order says which of the two is about the
+        # network.
+        with _extractor_credentials(url) as cookiefile, public_destinations_only():
+            info = _fetch(url, directory, cookiefile)
 
         media = _downloaded_file(directory)
         size_bytes = media.stat().st_size
@@ -555,7 +765,7 @@ def download(url: str) -> Iterator[DownloadedMedia]:
         shutil.rmtree(directory, ignore_errors=True)
 
 
-def _fetch(url: str, directory: Path) -> dict:
+def _fetch(url: str, directory: Path, cookiefile: Path | None = None) -> dict:
     """Ask yt-dlp about the URL, refuse it if it is live, and download it if it is not.
 
     Metadata first, in its own call, because the two questions worth asking early — is this a
@@ -566,15 +776,17 @@ def _fetch(url: str, directory: Path) -> dict:
     as the download: an extractor that follows a redirect to a private address is doing it on
     this call as readily as on the next one.
     """
-    with yt_dlp.YoutubeDL(_options(directory, url)) as ydl:
+    with yt_dlp.YoutubeDL(_options(directory, url, cookiefile)) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
         except BlockedAddress:
             raise
         except yt_dlp.utils.DownloadError as error:
             # yt-dlp's message quotes the URL, the extractor and sometimes a response body.
-            # It goes to the log; the caller gets the fact and not the transcript.
-            logger.warning("yt-dlp could not read %r: %s", url, error)
+            # The caller gets the fact and not the transcript either way; `_loggable` decides
+            # how much of the transcript the log itself may keep, which is all of it for an
+            # anonymous failure and none of it for an authenticated one.
+            logger.warning("yt-dlp could not read %r: %s", url, _loggable(url, error))
             raise DownloadUnavailable("The URL could not be read as media.") from None
 
         if info is None:
@@ -595,7 +807,9 @@ def _fetch(url: str, directory: Path) -> dict:
         except BlockedAddress:
             raise
         except yt_dlp.utils.DownloadError as error:
-            logger.warning("yt-dlp could not download %r: %s", url, error)
+            logger.warning(
+                "yt-dlp could not download %r: %s", url, _loggable(url, error)
+            )
             raise DownloadUnavailable("The media could not be downloaded.") from None
 
     return info

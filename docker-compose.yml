@@ -111,8 +111,40 @@ services:
       # analysis records a failed NVIDIA signal.
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       NVIDIA_SVD_FUNCTION_ID: ${NVIDIA_SVD_FUNCTION_ID:-}
+      # Where the Instagram session cookie file is *inside this container* (R7-T2), and the
+      # switch that turns authenticated Instagram ingestion on at all. Passed through with no
+      # default, like DEEPGUARD_ENV above and for the same fail-secure reason: a default here
+      # would be this service going looking for a credential nobody configured. Unset, the
+      # downloader attempts Instagram anonymously exactly as it did before.
+      #
+      # Declared on this service alone, and that is the point of the pair — this is the
+      # process that runs the URL ingestion route, and it is the only one the file below is
+      # mounted into. `env_file: .env` still hands the worker whatever an operator writes in
+      # `.env`, exactly as it does the Modal tokens; what the worker does not have is the
+      # file, the code that reads the variable, or any way to start a download.
+      DEEPGUARD_IG_COOKIE_FILE:
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
+    # The credential itself, mounted read-only and into this one service (R7-T2).
+    #
+    # `:ro` is not the only thing keeping the host file intact: yt-dlp writes its cookie jar
+    # back to whatever `cookiefile` names when a session closes, so `app/downloader.py` hands
+    # it a throwaway copy and never this path. The read-only flag is what makes that a
+    # guarantee rather than a convention.
+    #
+    # The `/dev/null` default is what keeps `docker compose up` working on a host that has
+    # configured none of this. A bind mount whose source does not exist is not a no-op —
+    # Compose either refuses outright or silently creates a directory where a file was meant
+    # to be — so the source has to be something that always exists, and the target is then a
+    # zero-length device node that nothing reads, because DEEPGUARD_IG_COOKIE_FILE above is
+    # unset in exactly the same case.
+    #
+    # Set both together in `.env` to turn the feature on: DEEPGUARD_IG_COOKIE_HOST_FILE to
+    # the file on the host, DEEPGUARD_IG_COOKIE_FILE to the container path below. The host
+    # file belongs outside this repository — it is a live Instagram session, `.gitignore`
+    # does not know about it, and nothing here copies it into the image.
+    volumes:
+      - ${DEEPGUARD_IG_COOKIE_HOST_FILE:-/dev/null}:/run/secrets/instagram_cookies.txt:ro
     depends_on:
       postgres:
         condition: service_healthy
