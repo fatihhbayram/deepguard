@@ -15,6 +15,7 @@ import {
   RISK_LABELS,
   RULES_VERSION_V2,
   RULES_VERSION_V3,
+  RULES_VERSION_V4,
   RiskRationale,
   SyntheticVideoSignal,
   UNSUPPORTED,
@@ -206,6 +207,7 @@ const CONTRIBUTION_LABELS: Record<RiskRationale["syntheticVideo"]["role"], strin
   unreadable: "Answered, but unreadable",
   unavailable: "No usable reading",
   unread: "Not read by this ruleset",
+  evidence: "Read as evidence — not eligible to decide under this ruleset",
   unclear: "Not named by the rule — see this detector's own panel below",
 };
 
@@ -386,7 +388,36 @@ function ScopeDisclosure({ analysis }: { analysis: AnalysisSummary }) {
       <h2 className="text-sm font-semibold uppercase tracking-wide">
         Scope of this risk model
       </h2>
-      {ruleset === RULES_VERSION_V3 ? (
+      {ruleset === RULES_VERSION_V4 ? (
+        <>
+          <p className="mt-2 text-sm font-medium">
+            This risk model is validated for generated video and for face swaps, by two
+            separate detectors with separate thresholds. Absence of HIGH risk does not mean
+            the media is genuine.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            Both thresholds were set to almost never flag legitimate footage: neither detector
+            flagged any of the 54 genuine clips in the calibration corpus. That choice is paid
+            for in detection rate. At these operating points the synthetic-video detector
+            flagged 54.6% of generated video and the face classifier flagged 44% of face
+            swaps, so a great deal of manipulated media is correctly not flagged as HIGH.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            The mouth-dynamics model still runs and its score is reported below, but it cannot
+            change this classification. Under the previous ruleset it could, on its own. R7-T5
+            replayed those rules over 307 independent genuine recordings and found that rule
+            responsible for 21 of 22 false HIGH results, so it was removed rather than
+            re-tuned — no study has measured an operating point that would be safe here. Its
+            score is recorded as independent forensic evidence and nothing more.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            The two deciding detectors cover different things and are read independently.
+            Neither scoring low is evidence against the other: in the R4-T1 study they never
+            agreed on a single clip, and each was blind to the manipulation family the other
+            was calibrated for.
+          </p>
+        </>
+      ) : ruleset === RULES_VERSION_V3 ? (
         <>
           <p className="mt-2 text-sm font-medium">
             This risk model is validated for generated video and for face swaps, by three
@@ -767,11 +798,13 @@ function FaceManipulationSection({
 }) {
   // Whether this detector was eligible to decide is a property of the ruleset the decision
   // was taken under. R4-T2 promoted it from independent evidence to a calibrated decider and
-  // r5-v3.0.0 kept it one, but a report on an older decision must keep saying what was true of
-  // that decision.
+  // every ruleset since has kept it one — r7-v4.0.0 included, which withdrew the
+  // mouth-dynamics model and left this one exactly as it was. A report on a `p7-v1.0.0`
+  // decision must keep saying what was true of that decision.
   const decides =
     analysis.risk_rules_version === RULES_VERSION_V2 ||
-    analysis.risk_rules_version === RULES_VERSION_V3;
+    analysis.risk_rules_version === RULES_VERSION_V3 ||
+    analysis.risk_rules_version === RULES_VERSION_V4;
 
   return (
     <Section
@@ -863,6 +896,12 @@ function LipForensicsSection({
   // R5-T4 promoted this detector from independent evidence to a calibrated decider once R5-T3
   // had measured an operating point for it; a report on a decision taken under an earlier
   // ruleset must keep saying that this score took no part in it, because it did not.
+  //
+  // v3 is the only ruleset this is ever true of, and deliberately so on both sides. R7-T6
+  // withdrew the detector from the rules after R7-T5 measured what its operating point did to
+  // genuine media, so a `r7-v4.0.0` decision belongs with the earlier ones here: the score
+  // below was read, recorded and shown, and it took no part in the level — including when it
+  // is above the threshold measured for it.
   const decides = analysis.risk_rules_version === RULES_VERSION_V3;
 
   return (
@@ -1051,7 +1090,9 @@ export default async function Report({ params }: { params: Promise<{ id: string 
       </h2>
       <p className="mt-1 text-xs opacity-70">
         Each source is recorded separately and none of them is combined into the other.
-        {analysis.risk_rules_version === RULES_VERSION_V3
+        {analysis.risk_rules_version === RULES_VERSION_V4
+          ? " Two of them can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. The mouth-dynamics model is calibrated and is recorded here as independent evidence, but under this ruleset it cannot change that classification. Neither can provenance, speaking evidence or audio evidence, which have no calibrated threshold at all."
+          : analysis.risk_rules_version === RULES_VERSION_V3
           ? " Three of them are calibrated and can reach the risk classification above — the synthetic-video detector, the face-manipulation classifier and the mouth-dynamics model — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence and audio evidence have no calibrated threshold and cannot change that classification."
           : analysis.risk_rules_version === RULES_VERSION_V2
             ? " Two of them are calibrated and can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence, mouth-dynamics evidence and audio evidence have no calibrated threshold and cannot change that classification."

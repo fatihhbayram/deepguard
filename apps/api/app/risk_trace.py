@@ -74,9 +74,10 @@ UNAVAILABLE_UNREADABLE_FIGURES = "unreadable_figures"
 UNAVAILABLE_THRESHOLD_UNRESOLVED = "threshold_unresolved"
 
 # What the fired rule made of this detector. `decisive` is only ever set on a detector that
-# reached its own threshold under a rule that concluded HIGH — the rules are disjunctive, so a
-# flagged detector is the reason for the level. Everything else was in scope of the ruleset and
-# read by it, which is all `considered` claims.
+# reached its own threshold under a rule that concluded HIGH *and* that its ruleset version could
+# take a decision from — the HIGH rules are disjunctive, so such a detector is the reason for the
+# level. Everything else was in scope of the ruleset and read by it, which is all `considered`
+# claims, and it is all a `r7-v4.0.0` mouth-dynamics crossing may claim however high it scored.
 ROLE_DECISIVE = "decisive"
 ROLE_CONSIDERED = "considered"
 
@@ -94,6 +95,15 @@ class CalibratedSignal:
     uncalibrated one, because the operating point was measured against that deployment's
     distribution and nothing else. `count_key` names the metadata figure the engine demanded
     be positive — the provider's own statement that it aggregated something.
+
+    `decisional` says whether *this version's rules* could take a HIGH from this detector. It is
+    a property of the ruleset and not of the detector: LipForensics was decisional under
+    `r5-v3.0.0` and is not under `r7-v4.0.0`, with the same threshold and the same deployment on
+    both sides of that line, because R7-T5 measured what the threshold does on genuine media and
+    the rules changed rather than the measurement. It defaults to true, which is what every
+    detector in every ruleset up to v3 was, so no historical entry below is altered by its
+    existence. Only `role` reads it: a detector that could not decide is never reported as having
+    decided, however high it scored.
     """
 
     signal_type: str
@@ -101,6 +111,7 @@ class CalibratedSignal:
     provider_version: str
     threshold: float
     count_key: str
+    decisional: bool = True
 
 
 @dataclass(frozen=True)
@@ -109,9 +120,16 @@ class Ruleset:
 
     `rules` is why this table exists at all. `R200` under `p7-v1.0.0` is one detector's score
     sitting below its threshold; under `r4-v2.0.0` it is two detectors both below theirs;
-    under `r5-v3.0.0` it is three. `R102` is "both detectors" in v2 and "two or more" in v3.
-    The same four characters, three different statements — so an old decision read under
-    today's meanings would be misreported while looking entirely well-formed.
+    under `r5-v3.0.0` it is three below theirs, and under `r7-v4.0.0` it is three readable with
+    neither decisional one reaching its own — a band a stored mouth-dynamics score above 0.2296
+    can now sit inside and could not before. `R102` is "both detectors" in v2, "two or more" in
+    v3, and "both decisional detectors" in v4. The same four characters, four different
+    statements — so an old decision read under today's meanings would be misreported while
+    looking entirely well-formed.
+
+    `R103` is the sharpest case and the reason nothing here is ever edited in place: it exists in
+    `r5-v3.0.0` and in no other version. A stored v3 row naming it must keep reading as the
+    sentence v3 wrote, and a v4 row can never name it, because v4 has no such rule.
     """
 
     rules_version: str
@@ -120,7 +138,7 @@ class Ruleset:
     rules: dict[str, str]
 
 
-# NVIDIA's synthetic-video deployment, unchanged across all three rulesets. The threshold is
+# NVIDIA's synthetic-video deployment, unchanged across every ruleset. The threshold is
 # not: P7 chose 0.98 by hand, R4-T1 measured 0.9550971388816833 in its place.
 _SVD_PROVIDER = "nvidia"
 _SVD_SIGNAL_TYPE = "synthetic_video"
@@ -269,12 +287,85 @@ RULESET_V3 = Ruleset(
     },
 )
 
+# The ruleset in force. It reads the same three detectors as v3, against the same three
+# thresholds, under the same calibration identity — R7-T5 changed no measurement and adopted no
+# artifact, so the id it was taken under is the id v3 was taken under, and a v4 row resolves
+# against exactly the artifacts it rests on. What changed is the rules: `R103` is gone, and the
+# mouth-dynamics detector is carried here as non-decisional evidence.
+#
+# v3 above is untouched by any of this, and must stay untouched. The two entries deliberately
+# share `calibration_id` and differ in `rules_version`, which is the whole reason a decision
+# persists both.
+RULESET_V4 = Ruleset(
+    rules_version="r7-v4.0.0",
+    calibration_id="a74f6b9dbc64cead34cb8e31a03791228cdeb19497e8e5e0bc1a67c0337fc5f7",
+    signals=(
+        CalibratedSignal(
+            signal_type=_SVD_SIGNAL_TYPE,
+            provider=_SVD_PROVIDER,
+            provider_version=_SVD_PROVIDER_VERSION,
+            threshold=0.9550971388816833,
+            count_key=_SVD_COUNT_KEY,
+        ),
+        CalibratedSignal(
+            signal_type=_FACE_SIGNAL_TYPE,
+            provider=_FACE_PROVIDER,
+            provider_version=_FACE_PROVIDER_VERSION,
+            threshold=0.9867589175701141,
+            count_key=_FACE_COUNT_KEY,
+        ),
+        CalibratedSignal(
+            signal_type=_LIP_SIGNAL_TYPE,
+            provider=_LIP_PROVIDER,
+            provider_version=_LIP_PROVIDER_VERSION,
+            # R5-T3's operating point, unchanged and still the honest thing to band a stored
+            # score against: it is where this detector's own study put it. What v4 withdrew is
+            # the rule that concluded from the crossing, not the crossing's meaning as evidence.
+            threshold=0.22962537594139576,
+            count_key=_LIP_COUNT_KEY,
+            decisional=False,
+        ),
+    ),
+    rules={
+        "R010": (
+            "No calibrated evidence was available from any of the three detectors: every "
+            "signal was absent, did not report, or came from an uncalibrated deployment."
+        ),
+        "R012": (
+            "At least one calibrated detector reported with figures that could not be read."
+        ),
+        "R100": "The calibrated synthetic-video score reached its measured threshold.",
+        "R101": "The calibrated face-manipulation score reached its measured threshold.",
+        "R102": (
+            "Both detectors this ruleset takes a decision from — synthetic-video and "
+            "face-manipulation — independently reached their measured thresholds. The level is "
+            "not raised by the agreement; there is no band above HIGH and no measurement that "
+            "says two flags mean more than one."
+        ),
+        "R200": (
+            "All three calibrated detectors were readable and neither detector this ruleset "
+            "takes a decision from reached its threshold; the evidence did not support a "
+            "classification. The mouth-dynamics score is reported beside its measured "
+            "threshold as independent evidence and does not decide this level, whether or not "
+            "it reached it (R7-T5)."
+        ),
+        "R201": (
+            "At least one calibrated detector was readable and neither detector this ruleset "
+            "takes a decision from reached its threshold, while the remaining detectors "
+            "contributed no reading. The mouth-dynamics score is reported beside its measured "
+            "threshold as independent evidence and does not decide this level, whether or not "
+            "it reached it (R7-T5)."
+        ),
+    },
+)
+
 # Keyed by the string the decision persisted. A version absent from this table is a version
 # this module cannot explain, and it says so rather than reaching for the nearest one.
 RULESETS: dict[str, Ruleset] = {
     RULESET_V1.rules_version: RULESET_V1,
     RULESET_V2.rules_version: RULESET_V2,
     RULESET_V3.rules_version: RULESET_V3,
+    RULESET_V4.rules_version: RULESET_V4,
 }
 
 
@@ -472,10 +563,16 @@ def _contribution(
         # A threshold comparison was made, so there is no reason for absence to report.
         unavailable_reason=None,
         # The HIGH rules are disjunctive and name one detector's own finding, so a detector
-        # that reached its threshold under a HIGH decision is a reason for that level. Under
-        # any other level no detector reached one, and nothing here is decisive.
+        # that reached its threshold under a HIGH decision is a reason for that level — provided
+        # this version's rules could take a decision from it at all. Under `r7-v4.0.0` the
+        # mouth-dynamics detector cannot, so a crossing of its threshold alongside a HIGH taken
+        # from another detector is `considered`: the level was not reached on its evidence, and
+        # `decisive` beside a score that could not have decided would be a false attribution.
+        # Under any level other than HIGH no detector reached one, and nothing here is decisive.
         role=(
-            ROLE_DECISIVE if reached and risk_level == RISK_HIGH else ROLE_CONSIDERED
+            ROLE_DECISIVE
+            if reached and risk_level == RISK_HIGH and calibrated.decisional
+            else ROLE_CONSIDERED
         ),
     )
 

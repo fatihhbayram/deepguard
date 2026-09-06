@@ -61,12 +61,18 @@ def test_the_rules_are_the_production_module_not_a_copy():
     """If this file ever grew its own rule table, this is the test that would have to be deleted."""
     assert replay_module.RISK_ENGINE_PATH.name == "risk_engine.py"
     assert "apps/api/app" in replay_module.RISK_ENGINE_PATH.as_posix()
-    assert engine.RULES_VERSION == "r5-v3.0.0"
+    assert engine.RULES_VERSION == "r7-v4.0.0"
     assert engine.LIP_T_HIGH == 0.22962537594139576
 
 
-def test_a_lip_score_over_the_threshold_alone_reaches_high_on_r103():
-    """The rule the regression case fires, reproduced offline from evidence alone."""
+def test_a_lip_score_over_the_threshold_alone_no_longer_reaches_high():
+    """The rule the regression case used to fire, reproduced offline from evidence alone.
+
+    R7-T5 ran against `r5-v3.0.0`, where this evidence was a HIGH by `R103`; R7-T6 withdrew that
+    rule on the strength of what R7-T5 measured. The harness reads whatever the production rules
+    are, so it now observes a MEDIUM — and still attributes the crossing to LipForensics, which
+    is the observation this script exists to make.
+    """
     svd, face, lip = replay_module.build_evidence(
         "clip",
         engine,
@@ -76,8 +82,8 @@ def test_a_lip_score_over_the_threshold_alone_reaches_high_on_r103():
         versions(),
     )
     decision = engine.evaluate(svd=svd, face=face, lip=lip)
-    assert decision.risk_level == "HIGH"
-    assert decision.rule_id == "R103"
+    assert decision.risk_level == "MEDIUM"
+    assert decision.rule_id == "R200"
     assert replay_module.responsible_detectors(engine, svd, face, lip) == ["lipforensics"]
 
 
@@ -208,5 +214,5 @@ def test_the_replay_writes_a_trace_that_names_its_rule_set():
     assert report["rules"]["rules_version"] == engine.RULES_VERSION
     assert report["rules"]["lip_t_high"] == engine.LIP_T_HIGH
     assert report["rules"]["modified_by_this_task"] is False
-    assert report["decisions"][0]["rule_id"] == "R103"
+    assert report["decisions"][0]["rule_id"] == "R201"
     assert report["decisions"][0]["responsible_detectors"] == ["lipforensics"]

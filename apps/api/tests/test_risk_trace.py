@@ -13,6 +13,7 @@ version-aware and one that merely happens to agree with the current release.
 """
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,14 @@ V2_CALIBRATION = "cab2ea262bb7e41cb87e49bdb3dad53ecd0f02248035a993f9fcb033363afd
 
 V3_VERSION = "r5-v3.0.0"
 V3_CALIBRATION = "a74f6b9dbc64cead34cb8e31a03791228cdeb19497e8e5e0bc1a67c0337fc5f7"
+
+# v4 is decided under v3's calibration identity, deliberately and as a matter of contract:
+# R7-T6 changed the rules and not one measurement, so the artifacts a v4 decision rests on are
+# the artifacts a v3 decision rested on. The two versions are told apart by `rules_version`,
+# which is why a stored decision carries both columns. Spelled as its own name rather than
+# reusing `V3_CALIBRATION` so the tests below say which version they mean.
+V4_VERSION = "r7-v4.0.0"
+V4_CALIBRATION = "a74f6b9dbc64cead34cb8e31a03791228cdeb19497e8e5e0bc1a67c0337fc5f7"
 
 SVD_T_HIGH = 0.9550971388816833
 FACE_T_HIGH = 0.9867589175701141
@@ -207,6 +216,178 @@ def test_a_v3_decision_lists_all_three_detectors_with_their_own_thresholds():
     assert contributions["face_manipulation"].role == risk_trace.ROLE_CONSIDERED
 
 
+def test_a_v4_decision_lists_the_same_three_detectors_with_the_same_thresholds():
+    """v4 reads everything v3 read, against the numbers v3 read it against.
+
+    The withdrawal of `R103` took a rule out of the ruleset and no detector out of the trace.
+    LipForensics is still listed, still banded against R5-T3's operating point, and a score
+    above it is still reported as the crossing it is — `threshold_reached` is a statement about
+    a number and a threshold, and that statement did not stop being true.
+    """
+    result = trace(
+        "MEDIUM",
+        "R200",
+        V4_VERSION,
+        V4_CALIBRATION,
+        svd=svd(score=0.1),
+        face=face(score=0.2),
+        lip=lip(score=0.91),
+    )
+
+    contributions = by_signal(result)
+    assert result.interpreted is True
+    assert set(contributions) == {"synthetic_video", "face_manipulation", "lip_forensics"}
+    assert contributions["synthetic_video"].threshold == SVD_T_HIGH
+    assert contributions["face_manipulation"].threshold == FACE_T_HIGH
+    assert contributions["lip_forensics"].threshold == LIP_T_HIGH
+    assert contributions["lip_forensics"].condition == (
+        risk_trace.CONDITION_THRESHOLD_REACHED
+    )
+
+
+def test_a_v4_mouth_dynamics_crossing_is_never_reported_as_decisive():
+    """The role field, on the one arrangement where v3 and v4 disagree about it.
+
+    A HIGH taken from the synthetic-video detector, with the mouth-dynamics score above its own
+    threshold beside it. Under v3 both were `decisive` — both rules could take the level, and
+    `R102` said so. Under v4 only NVIDIA's finding could have produced this level, so only
+    NVIDIA's is decisive, and the crossing is `considered`: read, reported, and not credited
+    with a decision it was not entitled to make.
+    """
+    result = by_signal(
+        trace(
+            "HIGH",
+            "R100",
+            V4_VERSION,
+            V4_CALIBRATION,
+            svd=svd(score=0.99),
+            face=face(score=0.2),
+            lip=lip(score=0.91),
+        )
+    )
+
+    assert result["synthetic_video"].condition == risk_trace.CONDITION_THRESHOLD_REACHED
+    assert result["synthetic_video"].role == risk_trace.ROLE_DECISIVE
+    assert result["lip_forensics"].condition == risk_trace.CONDITION_THRESHOLD_REACHED
+    assert result["lip_forensics"].role == risk_trace.ROLE_CONSIDERED
+    assert result["face_manipulation"].role == risk_trace.ROLE_CONSIDERED
+
+
+def test_the_same_evidence_reads_as_decisive_under_v3_and_considered_under_v4():
+    """One stored mouth-dynamics crossing, two versions, two honest readings of it.
+
+    This is the whole of what `decisional` buys, in one comparison. The score, the threshold,
+    the deployment and the calibration identity are identical on both sides; the only thing that
+    differs is the ruleset version the decision was taken under, and that is exactly the thing
+    that decides whether this detector could have concluded anything.
+    """
+    stored = dict(svd=svd(score=0.1), face=face(score=0.2), lip=lip(score=0.91))
+
+    under_v3 = by_signal(trace("HIGH", "R103", V3_VERSION, V3_CALIBRATION, **stored))
+    under_v4 = by_signal(trace("MEDIUM", "R200", V4_VERSION, V4_CALIBRATION, **stored))
+
+    assert under_v3["lip_forensics"].score == under_v4["lip_forensics"].score
+    assert under_v3["lip_forensics"].threshold == under_v4["lip_forensics"].threshold
+    assert under_v3["lip_forensics"].condition == under_v4["lip_forensics"].condition
+
+    assert under_v3["lip_forensics"].role == risk_trace.ROLE_DECISIVE
+    assert under_v4["lip_forensics"].role == risk_trace.ROLE_CONSIDERED
+
+
+def test_r103_exists_in_v3_and_in_no_other_version():
+    """The immutability requirement, stated as the smallest fact that carries it.
+
+    A stored `r5-v3.0.0` row naming `R103` must keep reading as v3's sentence for as long as
+    that row exists. Two things protect it: v3's table is never edited, and no later version
+    may reuse the id for anything. The second is what this asserts — a v4 rule wearing `R103`
+    would silently rewrite every historical decision that names it.
+    """
+    assert "R103" in risk_trace.RULESET_V3.rules
+    assert risk_trace.RULESET_V3.rules["R103"] == (
+        "The calibrated mouth-dynamics score reached its measured threshold."
+    )
+
+    for ruleset in risk_trace.RULESETS.values():
+        if ruleset.rules_version != V3_VERSION:
+            assert "R103" not in ruleset.rules
+
+
+def test_a_stored_r103_decision_still_reads_exactly_as_v3_wrote_it():
+    """The persisted row, rendered after R7-T6 shipped. Nothing about it moved.
+
+    The level, the rule, the summary, the threshold the score was read against and the role the
+    detector played are all v3's. This analysis is not re-evaluated, not re-explained and not
+    migrated: it was decided under those rules, and the trace's job is to say what they said.
+    """
+    result = trace(
+        "HIGH",
+        "R103",
+        V3_VERSION,
+        V3_CALIBRATION,
+        svd=svd(score=0.1),
+        face=face(score=0.2),
+        lip=lip(score=0.91),
+    )
+
+    assert result.risk_level == "HIGH"
+    assert result.rule_id == "R103"
+    assert result.rules_version == V3_VERSION
+    assert result.interpreted is True
+    assert result.rule_summary == (
+        "The calibrated mouth-dynamics score reached its measured threshold."
+    )
+
+    lip_contribution = by_signal(result)["lip_forensics"]
+    assert lip_contribution.threshold == LIP_T_HIGH
+    assert lip_contribution.condition == risk_trace.CONDITION_THRESHOLD_REACHED
+    assert lip_contribution.role == risk_trace.ROLE_DECISIVE
+
+
+def test_the_v3_ruleset_entry_is_byte_for_byte_what_it_was():
+    """A guard on the historical table itself, not on one trace built from it.
+
+    Every field v3 was measured and written with, restated as a literal. R7-T6 added a version
+    beside it and edited nothing inside it; if a later change ever does, this fails rather than
+    quietly re-explaining every stored v3 decision.
+    """
+    v3 = risk_trace.RULESET_V3
+
+    assert v3.rules_version == V3_VERSION
+    assert v3.calibration_id == V3_CALIBRATION
+    assert {s.signal_type: s.threshold for s in v3.signals} == {
+        "synthetic_video": SVD_T_HIGH,
+        "face_manipulation": FACE_T_HIGH,
+        "lip_forensics": LIP_T_HIGH,
+    }
+    # All three could take a decision under v3. That is what `R103` was.
+    assert all(s.decisional for s in v3.signals)
+    assert set(v3.rules) == {
+        "R010",
+        "R012",
+        "R100",
+        "R101",
+        "R102",
+        "R103",
+        "R200",
+        "R201",
+    }
+
+
+def test_only_the_mouth_dynamics_detector_is_non_decisional_and_only_under_v4():
+    """Which detector each version could take a HIGH from, across the whole table."""
+    decisional = {
+        version: {s.signal_type for s in ruleset.signals if s.decisional}
+        for version, ruleset in risk_trace.RULESETS.items()
+    }
+
+    assert decisional == {
+        V1_VERSION: {"synthetic_video"},
+        V2_VERSION: {"synthetic_video", "face_manipulation"},
+        V3_VERSION: {"synthetic_video", "face_manipulation", "lip_forensics"},
+        V4_VERSION: {"synthetic_video", "face_manipulation"},
+    }
+
+
 def test_the_same_rule_id_means_different_things_under_different_versions():
     """`R200` is one detector below its threshold in v1, two in v2, three in v3."""
     summaries = {
@@ -221,23 +402,37 @@ def test_the_same_rule_id_means_different_things_under_different_versions():
             (V1_VERSION, V1_CALIBRATION),
             (V2_VERSION, V2_CALIBRATION),
             (V3_VERSION, V3_CALIBRATION),
+            (V4_VERSION, V4_CALIBRATION),
         )
     }
 
-    assert len(set(summaries.values())) == 3
+    assert len(set(summaries.values())) == 4
     assert "single available signal" in summaries[V1_VERSION]
     assert "Both calibrated detectors" in summaries[V2_VERSION]
-    assert "All three calibrated detectors" in summaries[V3_VERSION]
+    assert "All three calibrated detectors were readable and none reached" in (
+        summaries[V3_VERSION]
+    )
+    # v4's `R200` is the one a mouth-dynamics crossing can sit inside. Saying "none reached its
+    # threshold" on such a decision would be false, and this is where that would show.
+    assert "neither detector this ruleset takes a decision from" in summaries[V4_VERSION]
+    assert "does not decide this level" in summaries[V4_VERSION]
 
 
 def test_the_same_high_rule_id_is_read_under_the_version_that_fired_it():
-    """`R102` is "both detectors" under v2 and "two or more" under v3."""
+    """`R102` is "both detectors" in v2, "two or more" in v3, "both deciding ones" in v4.
+
+    Three statements behind four characters, and the v3/v4 pair is the sharp one: under v3 a
+    mouth-dynamics crossing could be one of the two that agreed, and under v4 it cannot be.
+    A stored v3 `R102` must keep meaning what it meant.
+    """
     v2 = trace("HIGH", "R102", V2_VERSION, V2_CALIBRATION)
     v3 = trace("HIGH", "R102", V3_VERSION, V3_CALIBRATION)
+    v4 = trace("HIGH", "R102", V4_VERSION, V4_CALIBRATION)
 
-    assert v2.rule_summary != v3.rule_summary
+    assert len({v2.rule_summary, v3.rule_summary, v4.rule_summary}) == 3
     assert "Both" in v2.rule_summary
     assert "Two or more" in v3.rule_summary
+    assert "Both detectors this ruleset takes a decision from" in v4.rule_summary
 
 
 def test_the_same_score_is_read_against_the_threshold_of_the_version_that_decided():
@@ -348,11 +543,20 @@ def test_the_current_ruleset_entry_matches_the_engine_that_writes_it():
         risk_engine.RULE_HIGH_SYNTHETIC_VIDEO,
         risk_engine.RULE_HIGH_FACE_MANIPULATION,
         risk_engine.RULE_HIGH_MULTIPLE_SOURCES,
-        risk_engine.RULE_HIGH_MOUTH_DYNAMICS,
         risk_engine.RULE_INDETERMINATE_ALL_SOURCES,
         risk_engine.RULE_INDETERMINATE_PARTIAL_SOURCES,
     }
     assert rule_ids <= set(current.rules)
+
+    # Every rule the engine can fire is explained by this version's table, and nothing else is.
+    # The equality is the half that matters after R7-T6: `R103` is not among the engine's rule
+    # constants any more, and an entry for it here would be a sentence no decision can name.
+    declared = {
+        value
+        for name, value in vars(risk_engine).items()
+        if name.startswith("RULE_") and isinstance(value, str)
+    }
+    assert declared == set(current.rules)
 
 
 # Silence. A detector that contributed no reading is reported as exactly that, and never as
@@ -654,3 +858,159 @@ def test_a_missing_signal_row_reaches_the_trace_as_an_unavailable_reading():
     assert lip_contribution.unavailable_reason == risk_trace.UNAVAILABLE_NO_READING
     assert lip_contribution.score is None
     assert lip_contribution.threshold is None
+
+
+# --------------------------------------------------------------------------------------
+# The report's own version-aware rendering (R7-T6)
+# --------------------------------------------------------------------------------------
+#
+# The report is a second reader of the same persisted columns, and it carries its own copy of
+# "which detectors could this version decide from" — a rationale table keyed by ruleset, and two
+# `decides` expressions that set what each detector's panel claims. Those are presentation, not
+# rules, but they are the sentences a reader actually sees, so a version the report has never
+# heard of is a report that describes the decision wrongly while looking complete.
+#
+# Asserted from the sources rather than by rendering them, which is how this repository already
+# checks properties of the web application from the backend suite (`test_shadow_mode`). What is
+# being checked is a mapping, and the mapping is visible in the text.
+
+WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
+WEB_ANALYSIS = WEB_ROOT / "app" / "analysis.ts"
+WEB_REPORT = WEB_ROOT / "app" / "report" / "[id]" / "page.tsx"
+
+requires_web = pytest.mark.skipif(
+    not WEB_ROOT.exists(), reason="the web application is not present"
+)
+
+
+def _decides_expressions(source: str) -> list[str]:
+    """Every `const decides = …;` in the report, in the order the file declares them.
+
+    Two of them: the face-manipulation panel's and the mouth-dynamics panel's, in that order.
+    Each says which rulesets that panel may describe as having decided anything.
+    """
+    return [chunk.split(";", 1)[0] for chunk in source.split("const decides =")[1:]]
+
+
+def _v4_rationale_rule_ids(source: str) -> set[str]:
+    """The rule ids `V4_RATIONALES` gives a description for."""
+    block = source.split("const V4_RATIONALES", 1)[1].split("\n};", 1)[0]
+    return set(re.findall(r"^  (R\d{3}): \{", block, flags=re.MULTILINE))
+
+
+@requires_web
+def test_the_report_knows_the_ruleset_the_engine_now_writes():
+    """A version the report has no entry for renders every new analysis unexplained."""
+    source = WEB_ANALYSIS.read_text(encoding="utf-8")
+
+    assert f'export const RULES_VERSION_V4 = "{risk_engine.RULES_VERSION}";' in source
+    assert "[RULES_VERSION_V4]: V4_RATIONALES," in source
+
+    # The historical entries are still registered, and still keyed by their own versions.
+    for constant, version in (
+        ("RULES_VERSION_V1", V1_VERSION),
+        ("RULES_VERSION_V2", V2_VERSION),
+        ("RULES_VERSION_V3", V3_VERSION),
+    ):
+        assert f'export const {constant} = "{version}";' in source
+        assert f"[{constant}]: V" in source
+
+
+@requires_web
+def test_the_reports_v4_rationales_cover_every_rule_v4_can_fire_and_no_others():
+    """The report explains exactly the rules that exist, which is what excludes `R103`.
+
+    An entry for a rule the engine cannot fire would be dead prose; a missing entry is a real
+    decision rendered with no explanation beside it. `R103` is the one that must be absent: it
+    is v3's rule id, its description lives in `V3_RATIONALES` for the stored rows that name it,
+    and a v4 entry would be a second and contradictory meaning for the same four characters.
+    """
+    rule_ids = _v4_rationale_rule_ids(WEB_ANALYSIS.read_text(encoding="utf-8"))
+
+    declared = {
+        value
+        for name, value in vars(risk_engine).items()
+        if name.startswith("RULE_") and isinstance(value, str)
+    }
+
+    assert rule_ids == declared
+    assert "R103" not in rule_ids
+
+
+@requires_web
+def test_the_report_treats_the_two_deciding_detectors_as_deciding_under_v4():
+    """Which panels may say they decided, per ruleset, read off the report itself.
+
+    The face-manipulation panel decides under v2, v3 and v4 — R7-T6 changed nothing about that
+    detector. The mouth-dynamics panel decides under v3 alone: not under the rulesets that had
+    no threshold for it, and not under v4, which measured one and withdrew it.
+    """
+    face_decides, lip_decides = _decides_expressions(
+        WEB_REPORT.read_text(encoding="utf-8")
+    )
+
+    assert "RULES_VERSION_V2" in face_decides
+    assert "RULES_VERSION_V3" in face_decides
+    assert "RULES_VERSION_V4" in face_decides
+
+    assert "RULES_VERSION_V3" in lip_decides
+    assert "RULES_VERSION_V4" not in lip_decides
+    assert "RULES_VERSION_V2" not in lip_decides
+
+
+@requires_web
+def test_a_v4_report_never_falls_back_to_the_p7_wording():
+    """The two places the report describes the ruleset's scope in prose.
+
+    Both were written as a chain ending in v1's sentence — "only the synthetic-video detector
+    contributes" — which is what an unrecognised version would have rendered. It is true of a
+    `p7-v1.0.0` decision and false of a v4 one, and a fallback that is false while reading as
+    deliberate is worse than no description at all.
+
+    The count is the assertion: each chain must test `RULES_VERSION_V4` before it can reach its
+    final branch.
+    """
+    source = WEB_REPORT.read_text(encoding="utf-8")
+
+    # The import, the scope-of-the-model chain, and two `analysis.risk_rules_version` chains:
+    # the face-manipulation panel's `decides`, and the independent-evidence introduction.
+    assert source.count("RULES_VERSION_V4") == 4
+    assert source.count("ruleset === RULES_VERSION_V4") == 1
+    assert source.count("analysis.risk_rules_version === RULES_VERSION_V4") == 2
+
+    # The sentence a v4 decision must never reach. It is still there, and still the last branch
+    # for the version it is true of.
+    assert "Only the synthetic-video detector contributes" in source
+
+
+@requires_web
+def test_the_report_never_says_the_mouth_dynamics_model_reached_this_level_under_v4():
+    """The one claim R7-T6 exists to stop the report from making.
+
+    v4's table may describe this detector as evidence and must never mark it `decided`. The
+    check is on the role, which is the field the panel renders as a contribution: `decided` is
+    the vocabulary's word for "this is what produced the level", and v4 has no rule that can.
+    `V3_RATIONALES` keeps its own `decided` entry for `R103`, untouched, and this does not look
+    at it.
+    """
+    source = WEB_ANALYSIS.read_text(encoding="utf-8")
+    v4_block = source.split("const V4_RATIONALES", 1)[1].split("\n};", 1)[0]
+
+    mouth_entries = re.findall(
+        r"mouthDynamics: \{\s*role: \"(\w+)\"", v4_block
+    ) + re.findall(r"mouthDynamics: \{\s*\n\s*role: \"(\w+)\"", v4_block)
+
+    assert mouth_entries
+    assert "decided" not in mouth_entries
+
+    # `evidence` on every rule that could have taken a level, and it is its own role for a
+    # reason. `unread` renders as "Not read by this ruleset", which is false — v4 reads this
+    # detector, and its readability is what separates an `R200` from an `R201`. `below` and
+    # `quiet` would be false too, on exactly the reports that matter: the R7-T5 regression is a
+    # score *above* the threshold measured for it.
+    assert set(mouth_entries) == {"evidence", "unreadable", "unavailable"}
+    assert "unread" not in mouth_entries
+
+    # v3 is untouched: its `R103` still says this detector decided, because it did.
+    v3_block = source.split("const V3_RATIONALES", 1)[1].split("\n};", 1)[0]
+    assert 'role: "decided"' in v3_block.split("R103:", 1)[1]

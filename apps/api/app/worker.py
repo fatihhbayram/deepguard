@@ -1061,11 +1061,14 @@ def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision | None:
     above names one provider and one signal type, so the queries cannot see them even by
     accident.
 
-    The mouth-dynamics row is the one that changed. Under r4-v2.0.0 it was fetched by nothing and
-    could not move a band; R5-T3 measured an operating point for it, and ruleset r5-v3.0.0 reads
-    it against that threshold and against nothing else. Adding it to an analysis can therefore
-    change that analysis's band now, which is the whole of this task and is exactly what a
-    calibration buys — a scale never did.
+    The mouth-dynamics row is the one that has moved twice. Under r4-v2.0.0 it was fetched by
+    nothing; r5-v3.0.0 read it against R5-T3's operating point and could take a HIGH from it
+    alone; r7-v4.0.0 fetches it still, and reads it still, but takes no HIGH from it — R7-T5
+    measured a 7.17% false HIGH rate on independent genuine media, 21 of the 22 from that rule,
+    and it was withdrawn (`app.risk_engine`). It is fetched here regardless, because the engine
+    reads it for how much of the evidence could be read and because a decision has to be taken
+    on the evidence the database holds; which of the three may conclude anything is the engine's
+    business and not this function's.
 
     The three are fetched separately and handed over separately. Nothing here compares, combines
     or reconciles them: the engine holds the rules, and this function's whole responsibility is

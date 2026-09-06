@@ -1,0 +1,520 @@
+{
+  "fixture": "r7t5-private-regression-readings",
+  "schema_version": 1,
+  "produced_by": "R7-T5 replay (scripts/eval/replay.py) over the R7-T5 corpus",
+  "what_this_is": "The detector readings R7-T5 measured for the two private benign lineages, numbers only. The one that matters is `private:regression-1` as captured: the consumer phone video that produced the production HIGH under r5-v3.0.0's R103, with LipForensics as the sole responsible detector.",
+  "privacy": "No media, no frames, no filenames and no personal metadata. Each lineage is identified only by the opaque identifier R7-T5 tracked it under, exactly as in docs/ai/reviews/R7_T5/r7-t5-robustness-report.md. Tests replay these figures through the risk engine and never touch the private clips, which stay outside the repository.",
+  "immutability": "Measured values. Nothing here is ever edited to make a test pass: a change to these numbers is a claim that a detector was re-run, and re-running detectors is not something a test suite does.",
+  "recorded_under": {
+    "rules_version": "r5-v3.0.0",
+    "calibration_id": "a74f6b9dbc64cead34cb8e31a03791228cdeb19497e8e5e0bc1a67c0337fc5f7",
+    "svd_t_high": 0.9550971388816833,
+    "face_t_high": 0.9867589175701141,
+    "lip_t_high": 0.22962537594139576
+  },
+  "deployments": {
+    "svd": "847b6e53-0133-452d-ab85-d7acf3ace723",
+    "face": "tomas-gajarsky/facetorch-deepfake-efficientnet-b7@4acc494f37eb63d7457166eff2acb45c5b04b9a6",
+    "lip": "https://github.com/ahaliassos/LipForensics@d0bf5553bfb9676f1771d590472b26a3a76de894+4b7790bc8e02d0c25ecfa0d8d6a2907123c2206cc32e2bad6044e50f013c253d"
+  },
+  "readings": [
+    {
+      "reading_id": "private_regression-1",
+      "lineage": "private:regression-1",
+      "derivation": "none",
+      "label": "real",
+      "scores": {
+        "svd": 0.0403398722410202,
+        "face": 0.048418719321489334,
+        "lip": 0.6584498286247253
+      },
+      "counts": {
+        "svd_total_clips": 566,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 3
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-1__camera_motion",
+      "lineage": "private:regression-1",
+      "derivation": "camera_motion",
+      "label": "real",
+      "scores": {
+        "svd": 0.09921722859144211,
+        "face": 0.0951862707734108,
+        "lip": 0.7117292881011963
+      },
+      "counts": {
+        "svd_total_clips": 566,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 3
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-1__heavy_compression",
+      "lineage": "private:regression-1",
+      "derivation": "heavy_compression",
+      "label": "real",
+      "scores": {
+        "svd": 0.14776462316513062,
+        "face": 0.10768114775419235,
+        "lip": 0.46473222970962524
+      },
+      "counts": {
+        "svd_total_clips": 566,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 3
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-1__low_framerate",
+      "lineage": "private:regression-1",
+      "derivation": "low_framerate",
+      "label": "real",
+      "scores": {
+        "svd": 0.056277815252542496,
+        "face": 0.08803142607212067,
+        "lip": 0.2908743917942047
+      },
+      "counts": {
+        "svd_total_clips": 283,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 3
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-1__low_light",
+      "lineage": "private:regression-1",
+      "derivation": "low_light",
+      "label": "real",
+      "scores": {
+        "svd": 0.13768427073955536,
+        "face": 0.27911457419395447,
+        "lip": 0.2812621295452118
+      },
+      "counts": {
+        "svd_total_clips": 566,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 3
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-1__phone_reencode",
+      "lineage": "private:regression-1",
+      "derivation": "phone_reencode",
+      "label": "real",
+      "scores": {
+        "svd": 0.10064057260751724,
+        "face": 0.06309885531663895,
+        "lip": 0.8278490900993347
+      },
+      "counts": {
+        "svd_total_clips": 566,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 3
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-1__small_face",
+      "lineage": "private:regression-1",
+      "derivation": "small_face",
+      "label": "real",
+      "scores": {
+        "svd": 0.06372901052236557,
+        "face": 0.08698247373104095,
+        "lip": 0.7775160074234009
+      },
+      "counts": {
+        "svd_total_clips": 566,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 3
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-1__social_transcode_reels",
+      "lineage": "private:regression-1",
+      "derivation": "social_transcode_reels",
+      "label": "real",
+      "scores": {
+        "svd": 0.12740759551525116,
+        "face": 0.09611814469099045,
+        "lip": 0.294136643409729
+      },
+      "counts": {
+        "svd_total_clips": 566,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 1
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-1__social_transcode_shorts",
+      "lineage": "private:regression-1",
+      "derivation": "social_transcode_shorts",
+      "label": "real",
+      "scores": {
+        "svd": 0.16814495623111725,
+        "face": 0.12410156428813934,
+        "lip": 0.47291702032089233
+      },
+      "counts": {
+        "svd_total_clips": 566,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 2
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-2",
+      "lineage": "private:regression-2",
+      "derivation": "none",
+      "label": "real",
+      "scores": {
+        "svd": 0.10984448343515396,
+        "face": 0.01268992479890585,
+        "lip": 0.5129587650299072
+      },
+      "counts": {
+        "svd_total_clips": 284,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 4
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-2__camera_motion",
+      "lineage": "private:regression-2",
+      "derivation": "camera_motion",
+      "label": "real",
+      "scores": {
+        "svd": 0.1577358990907669,
+        "face": 0.02280382439494133,
+        "lip": 0.9266283512115479
+      },
+      "counts": {
+        "svd_total_clips": 284,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 4
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-2__heavy_compression",
+      "lineage": "private:regression-2",
+      "derivation": "heavy_compression",
+      "label": "real",
+      "scores": {
+        "svd": 0.10518232733011246,
+        "face": 0.1567678451538086,
+        "lip": 0.31626230478286743
+      },
+      "counts": {
+        "svd_total_clips": 284,
+        "face_frames_scored": 8,
+        "lip_windows_scored": 3
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-2__low_framerate",
+      "lineage": "private:regression-2",
+      "derivation": "low_framerate",
+      "label": "real",
+      "scores": {
+        "svd": 0.08501526713371277,
+        "face": 0.03797418996691704,
+        "lip": 0.8846561908721924
+      },
+      "counts": {
+        "svd_total_clips": 284,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 4
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-2__low_light",
+      "lineage": "private:regression-2",
+      "derivation": "low_light",
+      "label": "real",
+      "scores": {
+        "svd": 0.10615114867687225,
+        "face": 0.016587182879447937,
+        "lip": 0.7533472776412964
+      },
+      "counts": {
+        "svd_total_clips": 284,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 4
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-2__phone_reencode",
+      "lineage": "private:regression-2",
+      "derivation": "phone_reencode",
+      "label": "real",
+      "scores": {
+        "svd": 0.06899207830429077,
+        "face": 0.08970178663730621,
+        "lip": 0.6542076468467712
+      },
+      "counts": {
+        "svd_total_clips": 284,
+        "face_frames_scored": 8,
+        "lip_windows_scored": 4
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": [
+          "lipforensics"
+        ]
+      }
+    },
+    {
+      "reading_id": "private_regression-2__small_face",
+      "lineage": "private:regression-2",
+      "derivation": "small_face",
+      "label": "real",
+      "scores": {
+        "svd": 0.10376843065023422,
+        "face": 0.23425710201263428,
+        "lip": 0.0763145387172699
+      },
+      "counts": {
+        "svd_total_clips": 284,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 2
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "MEDIUM",
+        "rule_id": "R200",
+        "responsible_detectors": []
+      }
+    },
+    {
+      "reading_id": "private_regression-2__social_transcode_reels",
+      "lineage": "private:regression-2",
+      "derivation": "social_transcode_reels",
+      "label": "real",
+      "scores": {
+        "svd": 0.15034730732440948,
+        "face": 0.08170342445373535,
+        "lip": 0.010321458801627159
+      },
+      "counts": {
+        "svd_total_clips": 568,
+        "face_frames_scored": 8,
+        "lip_windows_scored": 4
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "MEDIUM",
+        "rule_id": "R200",
+        "responsible_detectors": []
+      }
+    },
+    {
+      "reading_id": "private_regression-2__social_transcode_shorts",
+      "lineage": "private:regression-2",
+      "derivation": "social_transcode_shorts",
+      "label": "real",
+      "scores": {
+        "svd": 0.07704893499612808,
+        "face": 0.02989635430276394,
+        "lip": 0.16823580861091614
+      },
+      "counts": {
+        "svd_total_clips": 568,
+        "face_frames_scored": 7,
+        "lip_windows_scored": 4
+      },
+      "statuses": {
+        "svd": "SUCCESS",
+        "face": "SUCCESS",
+        "lip": "SUCCESS"
+      },
+      "observed_under_r5_v3": {
+        "risk_level": "MEDIUM",
+        "rule_id": "R200",
+        "responsible_detectors": []
+      }
+    }
+  ]
+}

@@ -2186,9 +2186,13 @@ def test_the_lip_forensics_signal_changes_the_coverage_of_a_medium(
 
     The same job is run twice — once with the mouth-dynamics model answering below its own
     threshold, once with it failing outright. Under `r4-v2.0.0` both were `R200`, because the
-    row was fetched by nothing. Under `r5-v3.0.0` the first is `R200` on three readings and the
-    second is `R201` on two, and the band is the same in both: a missing reading costs coverage,
-    never a level.
+    row was fetched by nothing. Under `r5-v3.0.0` and still under `r7-v4.0.0` the first is
+    `R200` on three readings and the second is `R201` on two, and the band is the same in both:
+    a missing reading costs coverage, never a level.
+
+    v4 withdrew this detector from the HIGH rules and not from the ruleset, and this is the test
+    that says so at the level of the stored decision. A build that had dropped the reader would
+    report `R200` twice and would be claiming coverage it did not have.
     """
     fake_nvidia.probability = 0.4646
 
@@ -2217,14 +2221,16 @@ def test_the_lip_forensics_signal_changes_the_coverage_of_a_medium(
 
 
 @pytest.mark.integration
-def test_an_emphatic_lip_forensics_score_raises_the_band_on_its_own(
+def test_an_emphatic_lip_forensics_score_does_not_raise_the_band_on_its_own(
     queue, fake_storage, fake_nvidia, fake_face_detector, fake_lip_forensics
 ):
-    """Both R4-T1 detectors silent, the third above its own threshold: HIGH by `R103`.
+    """Both R4-T1 detectors silent, the third at the ceiling of its scale: not a HIGH.
 
-    Under `r4-v2.0.0` this exact analysis was `R010` — an honest UNKNOWN, because nothing had
-    measured what the score meant. R5-T3 measured it, and this is the detection capability the
-    new ruleset adds: media neither of the other two could read at all.
+    Under `r4-v2.0.0` this exact analysis was `R010`; R5-T3 measured an operating point and
+    `r5-v3.0.0` made it a HIGH by `R103`; R7-T5 measured what that rule did to genuine media and
+    `r7-v4.0.0` withdrew it. The score of 1.0 is still detected, still persisted and still
+    readable on the analysis — the assertion on the signal row below is as load-bearing as the
+    one on the level.
     """
     analysis_id, _ = queue()
     fake_nvidia.error = nvidia_video.NvidiaProviderError("provider refused")
@@ -2240,8 +2246,8 @@ def test_an_emphatic_lip_forensics_score_raises_the_band_on_its_own(
     signals = read_signals(analysis_id)
 
     assert signals["lip_forensics"].score == 1.0
-    assert analysis.risk_level == "HIGH"
-    assert analysis.risk_rule_id == "R103"
+    assert analysis.risk_level == "MEDIUM"
+    assert analysis.risk_rule_id == "R201"
 
 
 @pytest.mark.integration
@@ -2516,7 +2522,7 @@ def test_a_completed_job_carries_a_risk_decision_and_its_trace(queue, fake_stora
     # threshold, and all three detectors read the media — the full-coverage indeterminate band.
     assert analysis.risk_level == "MEDIUM"
     assert analysis.risk_rule_id == "R200"
-    assert analysis.risk_rules_version == "r5-v3.0.0"
+    assert analysis.risk_rules_version == "r7-v4.0.0"
     assert analysis.risk_calibration_id == (
         "a74f6b9dbc64cead34cb8e31a03791228cdeb19497e8e5e0bc1a67c0337fc5f7"
     )

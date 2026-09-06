@@ -331,9 +331,11 @@ class LipForensicsSignal(BaseModel):
     not the production threshold, and neither that figure nor the one R5-T3 measured appears in
     this payload or in what renders it.
 
-    Since R5-T4 this signal is risk-eligible: under ruleset `r5-v3.0.0` it is one of the three
-    scores the engine bands, each against a threshold measured for it alone. Nothing here
-    relates it to `risk_level` even so — the decision was taken when the analysis ran, and the
+    R5-T4 made this signal risk-eligible under ruleset `r5-v3.0.0`, where it was one of three
+    scores the engine could take a HIGH from. R7-T6 withdrew that: under `r7-v4.0.0` the score
+    is still read and still banded for a reader, and no rule concludes from it, because R7-T5
+    measured what its operating point does to genuine media. Nothing here relates it to
+    `risk_level` under either version — the decision was taken when the analysis ran, and the
     rule that fired is what says which detector concluded it (`app.risk_engine`).
 
     It is emphatically not a second reading of the face-manipulation score beside it. That

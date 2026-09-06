@@ -174,11 +174,17 @@ def build_evidence(
 
 
 def responsible_detectors(engine: ModuleType, svd, face, lip) -> list[str]:
-    """Which detectors reached their own threshold, for attributing a HIGH to its source.
+    """Which detectors reached their own threshold, for attributing a finding to its source.
 
     Recomputed from the same eligibility and usability predicates the rules use, not guessed
     from the rule id: `R102` names no detector, and a genuine HIGH that nobody can attribute is
     a finding nobody can act on.
+
+    A crossing, not a verdict. Since `r7-v4.0.0` a detector can reach its own threshold without
+    the ruleset taking anything from it — the mouth-dynamics model does exactly that — so this
+    list can be non-empty beside a MEDIUM. That is the intended reading for an evaluation
+    harness, which is measuring what the detectors did: pairing this list with `rule_id` is what
+    let R7-T5 attribute 21 of 22 false HIGHs to one rule in the first place.
     """
     flagged = []
     if svd is not None and engine.is_eligible_svd(svd) and engine.is_usable_svd(svd):

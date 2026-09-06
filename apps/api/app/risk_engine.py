@@ -1,4 +1,4 @@
-"""DeepGuard's own classification of one analysis, from three independently calibrated signals.
+"""DeepGuard's own classification of one analysis, from the calibrated signals it may decide on.
 
 This is the first layer in the codebase entitled to say anything about what a detector's
 number *means*. Everything below it — `detection.py`, the provider integrations, the
@@ -12,13 +12,17 @@ Stateless and deterministic. It opens no connection, reads no configuration, con
 clock and holds nothing between calls: the same evidence always yields the same decision,
 which is what makes a persisted decision reproducible from the persisted evidence.
 
-**Three signals decide, and each decides alone.** Ruleset v3 reads NVIDIA's `synthetic_video`
-score, EfficientNet-B7's `face_manipulation` score and LipForensics' `lip_forensics`
-mouth-dynamics score. Each is compared against its own measured threshold and against nothing
-else. The three numbers never meet: they are not averaged, not weighted, not summed, not
-multiplied, not voted on, and none is ever used to adjust or discount another. What the rules
-combine is the three detectors' *separate decisions* about the same media, which is the only
-combination R4-T1 and R5-T3 measured and the only one rule 11 of AGENTS.md permits.
+**Two signals decide, and each decides alone.** Ruleset v4 takes a HIGH from NVIDIA's
+`synthetic_video` score and from EfficientNet-B7's `face_manipulation` score. Each is compared
+against its own measured threshold and against nothing else. The numbers never meet: they are
+not averaged, not weighted, not summed, not multiplied, not voted on, and neither is ever used
+to adjust or discount the other. What the rules combine is the detectors' *separate decisions*
+about the same media, which is the only combination R4-T1 measured and the only one rule 11 of
+AGENTS.md permits.
+
+LipForensics' `lip_forensics` mouth-dynamics score is still read here, and still bounds `R200`
+against `R201`, but it can no longer produce a HIGH on its own or with anyone else — see the
+next section for the measurement that withdrew it.
 
 C2PA provenance, the active-speaker timeline and AASIST's audio windows remain persisted as
 independent forensic evidence and still cannot move this classification by a single band. They
@@ -26,13 +30,41 @@ are not read here at all: `evaluate` takes three arguments, this module imports 
 would fetch a fourth signal, and an analysis carrying a provenance row is classified exactly as
 the same analysis without one. They have no calibration, and a scale is not a calibration.
 
-**What changed from v2, and why it was allowed to.** Under v2 the mouth-dynamics score was
-recorded and unread, for exactly one reason: nothing had measured an operating point for it,
-and a third detector admitted on the strength of its scale rather than its calibration is what
-this module refuses. R5-T1 benchmarked the detector and R5-T3 measured the operating point,
-under the two selection rules R4-T1 stated, applied unchanged. That measurement — and not the
-detector's plausibility, its provenance or its agreement with anything else — is what promotes
-it here from evidence to decider.
+**What changed from v3, and why it had to.** Under `r5-v3.0.0` the mouth-dynamics score was a
+decider: `R103` took a HIGH from it alone, on the strength of R5-T3's operating point. R7-T5
+replayed those unchanged rules over 307 independent genuine lineages drawn from outside the
+calibration corpus and observed 22 false HIGHs — 7.17%, against a target of at most 1%. Twenty-
+one of the 22 were `R103`, including the benign consumer phone capture that produced the
+production regression this ruleset was written to answer. The eight constructed degradations of
+that lineage made the outcome worse rather than better, so the finding is not an artifact of one
+clip.
+
+That is a measurement, and it withdraws `R103` by the same standard that admitted it. R5-T3
+placed the operating point on 20 genuine clips of one dataset that lies inside the model's
+training distribution; R7-T5 measured what that point does on genuine media that does not, and
+the answer is that this detector's own false-positive rate cannot carry a HIGH by itself. `R103`
+is therefore *removed* from v4 — not raised, not re-derived, not re-weighted, because none of
+those is something R7-T5 measured. A defensible new operating point would need a calibration
+study this ruleset does not have.
+
+**Withdrawn from the decision, not from the evidence.** LipForensics still runs, still persists
+its score, its window count and its deployment identity, and is still read by this module: its
+readability is what separates an `R200` from an `R201`, and `LIP_T_HIGH` is still the threshold
+the Risk Trace bands its stored score against for a reader. What it no longer does is conclude
+anything. A crossing is reported as a crossing and decides nothing, which is the honest position
+for a detector whose measured behaviour on genuine media is known and is not good enough to
+convict on.
+
+**Nor does it corroborate.** `R102` in v4 fires when both *deciding* detectors reached their own
+thresholds. A mouth-dynamics crossing alongside a synthetic-video crossing is an `R100` — the
+level is taken from NVIDIA's finding, and a detector that may not decide alone may not be
+credited with confirming someone else either. Counting it there would be `R103` re-entering
+through the rule that reads two flags at once.
+
+**The R100 finding R7-T5 carried forward.** The same study saw one genuine SVD false HIGH.
+NVIDIA's detector was run over the evaluation split only, so no new operating point can be
+derived from it and none is invented here: `R100` is unchanged in v4, and the finding is carried
+forward to whatever study can address it.
 
 **The third detector's operating point, and its honest limits.** R5-T3 scored 40 clips of
 FaceForensics++ C23 (20 genuine, 20 face swaps) and placed `LIP_T_HIGH` by the same rule as the
@@ -41,7 +73,8 @@ midpoint between the highest genuine score (0.0168) and the lowest score above i
 that point it flagged 20 of 20 face swaps and 0 of 20 genuine clips.
 
 Two things about that measurement are stated here rather than left to the artifact, because
-they bound what this rule may be read as saying:
+they bound what the threshold may be read as saying — and because they are what R7-T5 went on to
+measure directly:
 
 1. The corpus is small and drawn from one dataset that lies inside the model's training
    distribution. Zero false positives over 20 genuine clips is a 95% upper bound of 0.1391 on
@@ -72,34 +105,35 @@ Two things follow, and they are the whole design of this module:
    carries no information capable of contradicting another detector's finding, and it is never
    allowed to soften, downgrade or veto it.
 
-There is therefore no tie-break, because there is no tie: `R100`, `R101` and `R103` fire on
-their own detector's evidence irrespective of what the others said or whether they said
-anything. `R102` exists for the case where more than one detector reached its own threshold
-independently, so that the trace can record a corroborated finding honestly rather than
-attributing it to one source.
+There is therefore no tie-break, because there is no tie: `R100` and `R101` fire on their own
+detector's evidence irrespective of what the others said or whether they said anything. `R102`
+exists for the case where both deciding detectors reached their own thresholds independently, so
+that the trace can record a corroborated finding honestly rather than attributing it to one
+source.
 
 **The face model and the mouth-dynamics model ask different questions about the same family.**
 This is the one overlap the v2 pair did not have, and it is not a licence to combine them.
 EfficientNet-B7 judges the *appearance* of a face crop and never sees motion; LipForensics
 judges how the mouth *moves* across 25 consecutive frames and is never shown a still. Both were
-calibrated on face swaps, on different corpora, with separate operating points. Two consequences
-are load-bearing below: neither may stand in for the other when one is silent (a missing
-mouth-dynamics reading does not weaken a face finding, and vice versa), and the two agreeing is
-recorded as `R102` without the level being raised, because there is no band above HIGH and no
-measurement that says two flags mean more than one.
+calibrated on face swaps, on different corpora, with separate operating points. The consequence
+that is load-bearing below survives the withdrawal of `R103`: neither may stand in for the other
+when one is silent. A missing mouth-dynamics reading does not weaken a face finding, and a
+mouth-dynamics crossing does not strengthen one — under v4 it cannot reach the level at all.
 
 **The false-HIGH budget is spent per detector, and that is deliberate.** Each threshold was
 placed at the lowest point with zero observed false positives on its own genuine clips. Reading
-all three under OR means the bound on the *combined* rule is looser than any of them alone; no
-genuine clip in either corpus was flagged by any detector, so the joint rate is still 0
-observed, but the honest upper bound for a three-way disjunction is looser than for a two-way
-one, which was already looser than for either detector alone. That cost is accepted because the
-alternative — raising the thresholds to buy the difference back — would forfeit detection
-coverage entirely, and the error policy behind these calibrations gives up detection rate to
-protect genuine media only where the trade is real. It is not real here: no genuine clip in
-either corpus came near any boundary under any detector.
+the two deciding detectors under OR means the bound on the combined rule is looser than either
+alone; no genuine clip in the R4-T1 corpus was flagged by either, so the joint rate is still 0
+observed there. That cost is accepted because the alternative — raising the thresholds to buy
+the difference back — would forfeit detection coverage, and the error policy behind these
+calibrations gives up detection rate to protect genuine media only where the trade is real.
 
-**LOW does not exist in v3 either.** R4-T1 measured `T_LOW` for its two detectors and both are
+v3 spent that budget a third time, on a detector calibrated over 20 genuine clips of a single
+in-distribution dataset, and R7-T5 measured what the third term actually cost outside it. The
+disjunction is two terms wide again for that reason, and widening it further is a thing a
+calibration study may propose and this module may not assume.
+
+**LOW does not exist in v4 either.** R4-T1 measured `T_LOW` for its two detectors and both are
 useless as a reassurance: each would cover 1.85% of genuine media. R5-T3's `T_LOW` for the third
 landed on the same value as its `T_HIGH` — the two classes were separated by a single gap and
 both selection rules landed inside it — which says that corpus supports no ambiguous band at
@@ -114,7 +148,7 @@ from dataclasses import dataclass
 # package version or a git hash: it names *these rules*, and it changes when a rule,
 # threshold or ordering changes — never when unrelated code around it does. A stored
 # decision is only re-derivable if the version it names pins the logic exactly.
-RULES_VERSION = "r5-v3.0.0"
+RULES_VERSION = "r7-v4.0.0"
 
 # The two calibration artifacts these rules stand on, by the identity each one computed for
 # itself: the SHA-256 of its own identity fields. R4-T1 measured the synthetic-video and
@@ -125,12 +159,21 @@ SVD_FACE_CALIBRATION_ID = (
 )
 LIP_CALIBRATION_ID = "85cb7484ab74d5821b1f4fa7ba917588dcaa98354f5f7a82c3080b624c9b8a29"
 
-# Identity of the measurement behind a v3 decision, stored with every decision so a verdict
-# can be traced to the corpora, the detector deployments and the error policies it was made
-# under. A recalibration of either artifact produces a different id, and rows written under
+# Identity of the measurement behind a v3 or v4 decision, stored with every decision so a
+# verdict can be traced to the corpora, the detector deployments and the error policies it was
+# made under. A recalibration of either artifact produces a different id, and rows written under
 # r4-v2.0.0 or p7-v1.0.0 keep theirs.
 #
-# Derived rather than read off an artifact, because a v3 decision rests on two of them and
+# **Unchanged from r5-v3.0.0, deliberately.** This column names the measurements a decision was
+# taken under, not the rules that read them — the rules are named by `RULES_VERSION`, and the two
+# are stored separately for exactly this case. v4 changes which rules fire; it changes no
+# threshold, adopts no new artifact and drops none. Both ids below are still the operating points
+# in force: `SVD_T_HIGH` and `FACE_T_HIGH` still decide, and `LIP_T_HIGH` is still the point
+# R5-T3 measured and still the one the Risk Trace bands a stored mouth-dynamics score against.
+# Minting a new id here would assert a measurement that was never taken and would, worse, make
+# every v4 decision unresolvable against the artifacts it actually rests on.
+#
+# Derived rather than read off an artifact, because a decision rests on two of them and
 # `analyses.risk_calibration_id` holds one 64-character digest. The construction is fixed and
 # reproducible by anyone holding the two ids above:
 #
@@ -199,20 +242,28 @@ LIP_PROVIDER_VERSION = (
     "+4b7790bc8e02d0c25ecfa0d8d6a2907123c2206cc32e2bad6044e50f013c253d"
 )
 
-# Where HIGH begins for this detector, derived by the same rule as the two above against 20
-# genuine clips: the midpoint between the highest genuine score (0.0168) and the lowest score
-# above it (0.4424). At that point it flags 100% of the face swaps in its corpus and 0% of
-# genuine media. The margin over the highest genuine score is 0.2128 — see the module docstring
-# for what that margin does and does not buy.
+# R5-T3's operating point, derived by the same rule as the two above against 20 genuine clips:
+# the midpoint between the highest genuine score (0.0168) and the lowest score above it (0.4424).
+# At that point it flagged 100% of the face swaps in its corpus and 0% of genuine media.
 #
 # Not 0.5. That figure appears in the R5-T1 benchmark as a reporting convention fixed before any
 # score existed; on this corpus it sits above one real face swap and buys no reduction in
 # observed false positives, so R5-T3 rejected it by measurement rather than by assertion.
+#
+# **Nothing in v4 compares against it.** It is not "where HIGH begins" for this detector any
+# more, because under these rules HIGH does not begin here at all: R7-T5 measured a 7.17% false
+# HIGH rate on independent genuine media, 21 of the 22 from this detector alone, and `R103` was
+# withdrawn (see the module docstring). The constant stays, and stays exact, for two reasons that
+# are not decisions: it is one of the two artifacts `CALIBRATION_ID` is derived from and must
+# keep matching them, and `app.risk_trace` holds its own frozen copy to band a stored score for a
+# reader. Neither reads this name. A future ruleset that wants a mouth-dynamics HIGH back needs a
+# calibration study, not this number.
 LIP_T_HIGH = 0.22962537594139576
 
-# Measured and deliberately inert, like the two above. It coincides with `LIP_T_HIGH` because
-# both selection rules landed inside one clean gap between the classes; that is a fact about the
-# corpus and not a boundary, and nothing compares against it.
+# Measured and deliberately inert, like the two above — and now inert alongside a `LIP_T_HIGH`
+# that is too. It coincides with `LIP_T_HIGH` because both selection rules landed inside one
+# clean gap between the classes; that is a fact about the corpus and not a boundary, and nothing
+# compares against it.
 LIP_T_LOW = 0.22962537594139576
 
 # The lower and upper ends of all three providers' scales. Every score is a probability —
@@ -229,26 +280,35 @@ RISK_MEDIUM = "MEDIUM"
 RISK_UNKNOWN = "UNKNOWN"
 
 # The rules, in the order they are tried. The id is persisted with the decision, so reading a
-# stored row tells you not only what was concluded but which sentence concluded it, and — now
-# that there are three sources — which source or sources concluded it.
+# stored row tells you not only what was concluded but which sentence concluded it, and — when
+# more than one source could have — which source or sources concluded it.
 #
-# There are eight, and there are deliberately not more. Three detectors have 125 distinguishable
-# input states and 7 non-empty subsets that could flag; enumerating a rule per subset would name
-# conditions that decide identically and would leave a rule table nobody can hold in mind. What
-# earns an id here is a genuinely different decision condition:
+# There are seven. `R103` is absent: it was v3's id for a HIGH taken from the mouth-dynamics
+# score alone, and v4 has no such rule, so it has no constant here. The id is *not* reused for
+# anything else, ever — `app.risk_trace` still explains stored `r5-v3.0.0` rows through it, and
+# a v4 rule wearing that id would silently rewrite what those rows said.
+#
+# Three detectors still have 125 distinguishable input states; enumerating a rule per subset
+# would name conditions that decide identically and would leave a rule table nobody can hold in
+# mind. What earns an id here is a genuinely different decision condition:
 #
 #   * which single detector's evidence produced a HIGH, because that is what fixes the coverage
-#     claim behind it — generated video, face appearance, or mouth motion;
-#   * that more than one detector reached its own threshold independently, because attributing a
-#     corroborated finding to one source would credit it with evidence another produced;
+#     claim behind it — generated video, or face appearance;
+#   * that both deciding detectors reached their own thresholds independently, because
+#     attributing a corroborated finding to one source would credit it with evidence the other
+#     produced;
 #   * whether a MEDIUM was reached with every detector reporting or with only some of them,
 #     because those are the same band with materially different coverage;
 #   * and the two ways no rule could be applied at all.
 #
-# `R102` does not say *which* detectors agreed and `R201` does not say *which* were readable.
-# Neither needs to: the per-signal rows record exactly what each detector did, and the report
-# renders them beside the trace. An id per subset would move that detail into the rule table
-# without adding a decision.
+# `R201` does not say *which* detectors were readable. It does not need to: the per-signal rows
+# record exactly what each detector did, and the report renders them beside the trace. An id per
+# subset would move that detail into the rule table without adding a decision.
+#
+# `R200` and `R201` still count the mouth-dynamics reading among the readable ones. That is not a
+# decision taken on it — both ids are MEDIUM either way — but a statement of how much of the
+# evidence could be read, and a detector that answered legibly did answer legibly whether or not
+# its number may conclude anything.
 #
 # The two UNKNOWN ids are carried over from p7-v1.0.0 with their meanings intact: `R010` is
 # "no validated reading was ever obtained", `R012` is "one was obtained and its figures could
@@ -258,7 +318,6 @@ RULE_INVALID_CALIBRATED_EVIDENCE = "R012"
 RULE_HIGH_SYNTHETIC_VIDEO = "R100"
 RULE_HIGH_FACE_MANIPULATION = "R101"
 RULE_HIGH_MULTIPLE_SOURCES = "R102"
-RULE_HIGH_MOUTH_DYNAMICS = "R103"
 RULE_INDETERMINATE_ALL_SOURCES = "R200"
 RULE_INDETERMINATE_PARTIAL_SOURCES = "R201"
 
@@ -571,11 +630,17 @@ def evaluate(
 ) -> RiskDecision:
     """Classify one analysis from its three persisted calibrated signals.
 
+    All three are read. Two of them decide — the synthetic-video score and the
+    face-manipulation score — and the mouth-dynamics score does not, having been withdrawn from
+    the HIGH rules by R7-T5's measurement (see the module docstring). It is still read for how
+    much of the evidence could be read at all, which is the difference between `R200` and `R201`.
+
     Each detector is reduced to one of three states, entirely on its own evidence and its own
     threshold, without any detector's state depending on another's:
 
     - **flagged** — the calibrated deployment answered, its figures are readable, and its score
-      is at or above the threshold measured for it;
+      is at or above the threshold measured for it. Only the two deciding detectors have this
+      state here: the mouth-dynamics score is compared against no threshold in this module;
     - **below** — the same, but the score is under that threshold. Not a finding of authentic
       media: on the manipulation family this detector is blind to, `below` is what it reports
       for a manipulation as readily as for a genuine clip;
@@ -585,24 +650,24 @@ def evaluate(
       validated detector did answer.
 
     The rules are then tried in order and the first that fires decides. They are exhaustive over
-    the 125 combinations by construction rather than by a catch-all: two or more flagged land on
-    `R102` and exactly one on `R100`, `R101` or `R103`; with none flagged, three `below` land on
-    `R200` and one or two on `R201`; with none flagged and none `below` every detector is silent,
-    which is `R012` if any answered unreadably and `R010` otherwise. There is no default branch,
-    and the impossible remainder raises instead of classifying.
+    the 125 combinations by construction rather than by a catch-all: both deciding detectors
+    flagged lands on `R102` and exactly one on `R100` or `R101`; with neither flagged, three
+    readable detectors land on `R200` and one or two on `R201`; with neither flagged and nothing
+    readable every detector is silent, which is `R012` if any answered unreadably and `R010`
+    otherwise. There is no default branch, and the impossible remainder raises instead of
+    classifying.
 
     A `below` detector appears in no HIGH rule's condition. That is the disagreement policy
-    stated as code: `R100`, `R101` and `R103` do not mention the other detectors at all, so a
-    face model reporting 0.0053 cannot hold back a synthetic-video score of 0.9961, NVIDIA
-    reporting 0.1648 cannot hold back a face score of 0.9943, and neither of them reporting
-    anything can hold back a mouth-dynamics score of 1.0. The first two are real clips from the
-    R4-T1 corpus, both are genuine manipulations, and a rule that let the quiet detector speak
-    would have missed both.
+    stated as code: `R100` and `R101` do not mention the other detectors at all, so a face model
+    reporting 0.0053 cannot hold back a synthetic-video score of 0.9961, and NVIDIA reporting
+    0.1648 cannot hold back a face score of 0.9943. Both are real clips from the R4-T1 corpus,
+    both are genuine manipulations, and a rule that let the quiet detector speak would have
+    missed both.
 
     Nor may a *missing* detector hold one back, which is the case R5-T3's corpus makes concrete:
     LipForensics needs a trackable face through 25 consecutive frames, so it abstains on media
     the other two score without difficulty. An abstention is silence, and silence decides
-    nothing here.
+    nothing here — and neither, under v4, does a mouth-dynamics reading that is present and high.
 
     `UNKNOWN` is not a hedge and not a low-confidence HIGH. It is the honest statement that no
     validated rule could be applied — no detector was the calibrated one, none answered, or
@@ -633,11 +698,15 @@ def evaluate(
 
     svd_flagged = svd_usable and svd.score >= SVD_T_HIGH  # type: ignore[union-attr]
     face_flagged = face_usable and face.score >= FACE_T_HIGH  # type: ignore[union-attr]
-    lip_flagged = lip_usable and lip.score >= LIP_T_HIGH  # type: ignore[union-attr]
+
+    # There is deliberately no `lip_flagged`. `LIP_T_HIGH` is not compared against anywhere in
+    # this function: a variable holding whether the mouth-dynamics score crossed it would be a
+    # decision condition waiting to be read by the next rule anyone adds, and R7-T5 measured what
+    # that condition does to genuine media. Whether the reading crossed is a question for the
+    # Risk Trace, which bands the stored score for a reader without concluding from it.
 
     svd_below = svd_usable and not svd_flagged
     face_below = face_usable and not face_flagged
-    lip_below = lip_usable and not lip_flagged
 
     # An eligible detector whose figures could not be read. Kept apart from an ineligible or
     # absent one so `R012` keeps the meaning it had in v1.
@@ -646,10 +715,14 @@ def evaluate(
     lip_invalid = lip_eligible and not lip_usable
 
     # Counted rather than enumerated. Each detector's flag was reached on its own evidence
-    # against its own threshold, and what the rules need from the three of them is how many
+    # against its own threshold, and what the rules need from the deciding pair is how many
     # fired and — when exactly one did — which. Nothing is summed that a reader could mistake
     # for a score: these are counts of separate decisions, not a pooled number.
-    flagged = sum((svd_flagged, face_flagged, lip_flagged))
+    #
+    # `flagged` counts the two deciding detectors only. `readable` counts all three, because it
+    # answers a different question — how much of the evidence could be read — and the answer is
+    # the same whatever the mouth-dynamics number turned out to be.
+    flagged = sum((svd_flagged, face_flagged))
     readable = sum((svd_usable, face_usable, lip_usable))
 
     if flagged >= 2:
@@ -661,15 +734,18 @@ def evaluate(
     if face_flagged:
         return _decision(RISK_HIGH, RULE_HIGH_FACE_MANIPULATION)
 
-    if lip_flagged:
-        return _decision(RISK_HIGH, RULE_HIGH_MOUTH_DYNAMICS)
-
-    if svd_below and face_below and lip_below:
+    # Every detector in scope produced a reading and neither deciding detector reached its
+    # threshold. `lip_usable` rather than a comparison: the mouth-dynamics reading counts here
+    # for having been readable, and an `R200` is an `R200` whether that score was 0.01 or 0.99.
+    if svd_below and face_below and lip_usable:
         return _decision(RISK_MEDIUM, RULE_INDETERMINATE_ALL_SOURCES)
 
     if readable >= 1:
         return _decision(RISK_MEDIUM, RULE_INDETERMINATE_PARTIAL_SOURCES)
 
+    # Reached only when nothing was readable at all, so an eligible detector that answered
+    # illegibly is what separates `R012` from `R010` — including the mouth-dynamics one, whose
+    # eligibility and readability are unchanged by its withdrawal from the HIGH rules.
     if svd_invalid or face_invalid or lip_invalid:
         return _decision(RISK_UNKNOWN, RULE_INVALID_CALIBRATED_EVIDENCE)
 

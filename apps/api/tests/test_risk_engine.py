@@ -21,12 +21,22 @@ whole point of the isolation check.
 measurement behind them — two from the 159-clip R4-T1 study, one from the 40-clip R5-T3 study —
 not knobs; a test that patched one would be checking that comparison operators work rather than
 that DeepGuard classifies media the way it was calibrated to.
+
+**Two of the three decide.** `r7-v4.0.0` withdrew the mouth-dynamics score from the HIGH rules
+after R7-T5 measured a 7.17% false HIGH rate on 307 independent genuine lineages, 21 of the 22
+false positives coming from `R103` alone. The score is still read, still stored and still banded
+for a reader; what it may no longer do is conclude. A third section below replays the measured
+readings of the benign lineage that produced the production regression and asserts exactly that,
+from a fixture of numbers — never from the private media, which is not in this repository and
+which no test may need.
 """
 
 import dataclasses
 import hashlib
 import inspect
+import json
 import math
+from pathlib import Path
 
 import pytest
 from sqlalchemy.exc import MultipleResultsFound, SQLAlchemyError
@@ -59,7 +69,7 @@ VALIDATED_LIP_MODEL = (
     "@d0bf5553bfb9676f1771d590472b26a3a76de894"
     "+4b7790bc8e02d0c25ecfa0d8d6a2907123c2206cc32e2bad6044e50f013c253d"
 )
-EXPECTED_RULES_VERSION = "r5-v3.0.0"
+EXPECTED_RULES_VERSION = "r7-v4.0.0"
 
 # The two artifacts a v3 decision stands on, and the single identity it is stored under. The
 # composite is restated as a literal *and* recomputed from its parts below: the construction is
@@ -193,14 +203,14 @@ def test_the_ruleset_names_itself_and_the_calibration_behind_it():
 
 
 def test_the_ruleset_moved_off_every_earlier_calibration():
-    """v3 is a different measurement, and a stored row must be able to say which it was.
+    """Each measurement has its own identity, and a stored row must be able to say which.
 
     Rows written under `p7-v1.0.0` were classified from NVIDIA's score alone against a
     threshold of 0.98; rows written under `r4-v2.0.0` were classified from two detectors under
     R4-T1 alone. Reusing either identifier here would make those rows and these
     indistinguishable.
     """
-    assert risk_engine.RULES_VERSION not in {"p7-v1.0.0", "r4-v2.0.0"}
+    assert risk_engine.RULES_VERSION not in {"p7-v1.0.0", "r4-v2.0.0", "r5-v3.0.0"}
     assert risk_engine.CALIBRATION_ID not in {
         "3e362e8edfe253437234e3c291230a2921a6344555ab0861ee5871c53d20949c",
         EXPECTED_SVD_FACE_CALIBRATION_ID,
@@ -208,8 +218,32 @@ def test_the_ruleset_moved_off_every_earlier_calibration():
     }
 
 
+def test_the_ruleset_kept_the_calibration_v3_was_decided_under():
+    """v4 changed the rules and not one measurement, so the identity is v3's, deliberately.
+
+    The two columns answer different questions. `risk_rules_version` says which sentences could
+    fire; `risk_calibration_id` says which artifacts the thresholds came from. R7-T6 withdrew
+    `R103` on the strength of R7-T5's *observation* of the existing operating points — it
+    re-derived nothing, adopted no artifact and dropped none — so the artifacts behind a v4
+    decision are exactly the artifacts behind a v3 one.
+
+    Minting a fresh id here would assert a measurement nobody took, and would leave every v4
+    decision unresolvable against the two studies it actually rests on. The version string is
+    what separates the two, and it does (above).
+    """
+    assert risk_engine.CALIBRATION_ID == (
+        "a74f6b9dbc64cead34cb8e31a03791228cdeb19497e8e5e0bc1a67c0337fc5f7"
+    )
+
+    # The thresholds themselves, unchanged. This is the substance of the claim: the identity is
+    # honest only because the numbers it names are the ones still in force.
+    assert risk_engine.SVD_T_HIGH == EXPECTED_SVD_T_HIGH
+    assert risk_engine.FACE_T_HIGH == EXPECTED_FACE_T_HIGH
+    assert risk_engine.LIP_T_HIGH == EXPECTED_LIP_T_HIGH
+
+
 def test_the_stored_calibration_id_is_derived_from_both_artifacts():
-    """The one column holds one digest, and a v3 decision rests on two measurements.
+    """The one column holds one digest, and the decision rests on two measurements.
 
     The construction is what makes the stored id traceable back to both: anyone holding the two
     artifact identities can recompute it and confirm which measurements a stored verdict was
@@ -248,19 +282,27 @@ def test_the_mouth_dynamics_binding_is_the_measured_one():
     assert risk_engine.LIP_PROVIDER_VERSION == VALIDATED_LIP_MODEL
 
 
-def test_the_benchmark_reporting_threshold_is_not_the_operating_point():
-    """0.5 is the R5-T1 harness default, fixed before any score existed.
+def test_the_mouth_dynamics_operating_point_survives_unedited():
+    """R5-T3's number is kept exactly, and v4 decides nothing with it.
 
-    R5-T3 rejected it by measurement: on its corpus it sits above `Deepfakes_220_219` at 0.4424
-    and buys no reduction in observed false positives over the derived point. A build that
-    inherited it would classify that real face swap as not-HIGH.
+    Two properties at once, and they are the whole of what R7-T6 did to this constant.
+
+    It is not 0.5, the R5-T1 harness default fixed before any score existed, which R5-T3
+    rejected by measurement — on its corpus it sits above `Deepfakes_220_219` at 0.4424. And it
+    is not moved, raised or re-derived: R7-T5 measured that this operating point cannot carry a
+    HIGH on independent genuine media, which is a reason to withdraw the rule and not a
+    measurement of a better point. Editing it here would be inventing one.
+
+    What changed is the rule. The same face swap that was a HIGH under v3 is no longer one on
+    this evidence alone — a real loss of coverage, taken deliberately, and the reason `R103`'s
+    withdrawal is recorded as a cost rather than a fix.
     """
-    assert risk_engine.LIP_T_HIGH != 0.5
+    assert risk_engine.LIP_T_HIGH == EXPECTED_LIP_T_HIGH != 0.5
 
     decision = evaluate(lip=lip(score=CORPUS_LIP_FACESWAP_MIN))
 
-    assert decision.risk_level == "HIGH"
-    assert decision.rule_id == "R103"
+    assert decision.risk_level == "MEDIUM"
+    assert decision.rule_id == "R201"
 
 
 def test_each_detector_is_banded_on_its_own_threshold():
@@ -275,7 +317,9 @@ def test_each_detector_is_banded_on_its_own_threshold():
 
     assert evaluate(svd(score=0.96), None).risk_level == "HIGH"
     assert evaluate(None, face(score=0.96)).risk_level == "MEDIUM"
-    assert evaluate(lip=lip(score=0.96)).risk_level == "HIGH"
+    # 0.96 is far above the mouth-dynamics threshold and reaches nothing: under v4 that
+    # detector is read and does not decide.
+    assert evaluate(lip=lip(score=0.96)).risk_level == "MEDIUM"
 
 
 def test_a_low_score_on_one_scale_is_not_a_low_score_on_another():
@@ -283,10 +327,12 @@ def test_a_low_score_on_one_scale_is_not_a_low_score_on_another():
 
     The three scales are unrelated, and this is the test that fails the moment someone reads
     them as comparable — by sharing a threshold, by ranking the scores, or by treating the
-    lowest threshold as the most easily convinced detector.
+    lowest threshold as the most easily convinced detector. The scales stay unrelated under v4;
+    the difference is that crossing the third one now reaches no level at all, so the band is
+    the same on both lines for two quite different reasons.
     """
     assert evaluate(svd(score=0.25), face(score=0.25)).risk_level == "MEDIUM"
-    assert evaluate(lip=lip(score=0.25)).risk_level == "HIGH"
+    assert evaluate(lip=lip(score=0.25)).risk_level == "MEDIUM"
 
 
 def test_t_low_is_recorded_for_every_detector_but_is_not_a_boundary():
@@ -294,8 +340,8 @@ def test_t_low_is_recorded_for_every_detector_but_is_not_a_boundary():
 
     Both sides of each `T_LOW` must classify identically, because there is no LOW band. The
     mouth-dynamics `T_LOW` coincides with its `T_HIGH` — R5-T3 found one clean gap and both
-    selection rules landed in it — so it is checked at its own value rather than swept across:
-    everything under it is MEDIUM and everything at or above it is HIGH, decided by `T_HIGH`.
+    selection rules landed in it — and under v4 neither of them is a boundary in this module at
+    all, so a score at that value classifies exactly as a score below it.
     """
     assert risk_engine.SVD_T_LOW == 0.030267621390521526
     assert risk_engine.FACE_T_LOW == 0.0047953922767192125
@@ -308,7 +354,11 @@ def test_t_low_is_recorded_for_every_detector_but_is_not_a_boundary():
         assert below.risk_level == above.risk_level == "MEDIUM"
         assert below.rule_id == above.rule_id == "R201"
 
-    assert evaluate(lip=lip(score=EXPECTED_LIP_T_HIGH)).risk_level == "HIGH"
+    at_the_point = evaluate(lip=lip(score=EXPECTED_LIP_T_HIGH))
+    under_it = evaluate(lip=lip(score=0.0154))
+
+    assert at_the_point.risk_level == under_it.risk_level == "MEDIUM"
+    assert at_the_point.rule_id == under_it.rule_id == "R201"
 
 
 # --------------------------------------------------------------------------------------
@@ -349,123 +399,141 @@ LIP_STATES = {
     "absent": None,
 }
 
-# What the ruleset must conclude for each of the 125 combinations, written out rather than
+# What this ruleset must conclude for each of the 125 combinations, written out rather than
 # computed, and grouped by the rule that has to fire. Reading a group is the fastest way to see
 # the properties that matter most:
 #
-#   * every combination with a `flagged` in it is HIGH. Nothing the other detectors say —
-#     quiet, broken, uncalibrated or missing — softens a finding.
-#   * exactly one flag is attributed to the detector that produced it; two or more are `R102`,
-#     which credits none of them with another's evidence.
+#   * every combination with a `flagged` in the first two positions is HIGH. Nothing the other
+#     detectors say — quiet, broken, uncalibrated or missing — softens a finding.
+#   * exactly one of those two flags is attributed to the detector that produced it; both are
+#     `R102`, which credits neither with the other's evidence.
+#   * a `flagged` in the third position reaches no level of its own and raises none. `R103` is
+#     absent from this table because it is absent from the ruleset, and the 16 combinations it
+#     used to own are MEDIUM here — one `R200`, fifteen `R201`.
 #   * `R201` fills the band where some but not all detectors could be read. That is a MEDIUM
 #     with less coverage than an `R200`, and the trace says so rather than hiding it.
+#
+# The 16 rows that moved out of `R103` and the 8 that moved off `R102` are the entire behavioural
+# difference between v3 and v4. Everything else in this table is character-for-character what v3
+# concluded.
 DECISION_MATRIX = {
-    # HIGH by R102 — more than one detector reached its own threshold, independently. The rule
-    # does not name which; the signal rows do. (13 of 125)
+    # HIGH by R102 — both detectors this ruleset decides from reached their own thresholds,
+    # independently. The rule does not name which; the signal rows do. A mouth-dynamics crossing
+    # is not one of the two and never contributes to this count: `R103` re-entering through the
+    # rule that reads two flags at once is exactly what R7-T6 had to prevent. (5 of 125)
     ("flagged", "flagged", "flagged"): ("HIGH", "R102"),
     ("flagged", "flagged", "below"): ("HIGH", "R102"),
     ("flagged", "flagged", "invalid"): ("HIGH", "R102"),
     ("flagged", "flagged", "ineligible"): ("HIGH", "R102"),
     ("flagged", "flagged", "absent"): ("HIGH", "R102"),
-    ("flagged", "below", "flagged"): ("HIGH", "R102"),
-    ("flagged", "invalid", "flagged"): ("HIGH", "R102"),
-    ("flagged", "ineligible", "flagged"): ("HIGH", "R102"),
-    ("flagged", "absent", "flagged"): ("HIGH", "R102"),
-    ("below", "flagged", "flagged"): ("HIGH", "R102"),
-    ("invalid", "flagged", "flagged"): ("HIGH", "R102"),
-    ("ineligible", "flagged", "flagged"): ("HIGH", "R102"),
-    ("absent", "flagged", "flagged"): ("HIGH", "R102"),
-    # HIGH by R100 — NVIDIA alone. Nothing the other two say, quiet or broken or missing,
-    # softens it. (16 of 125)
+    # HIGH by R100 — NVIDIA alone among the deciding detectors. Nothing the other two say —
+    # quiet, broken, missing, or a mouth-dynamics score at the top of its scale — softens it or
+    # adds to it. The four rows ending `flagged` were `R102` under v3 and are `R100` here: the
+    # level is taken from NVIDIA's finding, and a detector that may not decide alone may not be
+    # credited with confirming one either. (20 of 125)
+    ("flagged", "below", "flagged"): ("HIGH", "R100"),
     ("flagged", "below", "below"): ("HIGH", "R100"),
     ("flagged", "below", "invalid"): ("HIGH", "R100"),
     ("flagged", "below", "ineligible"): ("HIGH", "R100"),
     ("flagged", "below", "absent"): ("HIGH", "R100"),
+    ("flagged", "invalid", "flagged"): ("HIGH", "R100"),
     ("flagged", "invalid", "below"): ("HIGH", "R100"),
     ("flagged", "invalid", "invalid"): ("HIGH", "R100"),
     ("flagged", "invalid", "ineligible"): ("HIGH", "R100"),
     ("flagged", "invalid", "absent"): ("HIGH", "R100"),
+    ("flagged", "ineligible", "flagged"): ("HIGH", "R100"),
     ("flagged", "ineligible", "below"): ("HIGH", "R100"),
     ("flagged", "ineligible", "invalid"): ("HIGH", "R100"),
     ("flagged", "ineligible", "ineligible"): ("HIGH", "R100"),
     ("flagged", "ineligible", "absent"): ("HIGH", "R100"),
+    ("flagged", "absent", "flagged"): ("HIGH", "R100"),
     ("flagged", "absent", "below"): ("HIGH", "R100"),
     ("flagged", "absent", "invalid"): ("HIGH", "R100"),
     ("flagged", "absent", "ineligible"): ("HIGH", "R100"),
     ("flagged", "absent", "absent"): ("HIGH", "R100"),
-    # HIGH by R101 — the face classifier alone. (16 of 125)
+    # HIGH by R101 — the face classifier alone among the deciding detectors, on the same terms
+    # and with the same four rows moved off `R102`. (20 of 125)
+    ("below", "flagged", "flagged"): ("HIGH", "R101"),
     ("below", "flagged", "below"): ("HIGH", "R101"),
     ("below", "flagged", "invalid"): ("HIGH", "R101"),
     ("below", "flagged", "ineligible"): ("HIGH", "R101"),
     ("below", "flagged", "absent"): ("HIGH", "R101"),
+    ("invalid", "flagged", "flagged"): ("HIGH", "R101"),
     ("invalid", "flagged", "below"): ("HIGH", "R101"),
     ("invalid", "flagged", "invalid"): ("HIGH", "R101"),
     ("invalid", "flagged", "ineligible"): ("HIGH", "R101"),
     ("invalid", "flagged", "absent"): ("HIGH", "R101"),
+    ("ineligible", "flagged", "flagged"): ("HIGH", "R101"),
     ("ineligible", "flagged", "below"): ("HIGH", "R101"),
     ("ineligible", "flagged", "invalid"): ("HIGH", "R101"),
     ("ineligible", "flagged", "ineligible"): ("HIGH", "R101"),
     ("ineligible", "flagged", "absent"): ("HIGH", "R101"),
+    ("absent", "flagged", "flagged"): ("HIGH", "R101"),
     ("absent", "flagged", "below"): ("HIGH", "R101"),
     ("absent", "flagged", "invalid"): ("HIGH", "R101"),
     ("absent", "flagged", "ineligible"): ("HIGH", "R101"),
     ("absent", "flagged", "absent"): ("HIGH", "R101"),
-    # HIGH by R103 — the mouth-dynamics model alone. The detection this ruleset adds. (16 of 125)
-    ("below", "below", "flagged"): ("HIGH", "R103"),
-    ("below", "invalid", "flagged"): ("HIGH", "R103"),
-    ("below", "ineligible", "flagged"): ("HIGH", "R103"),
-    ("below", "absent", "flagged"): ("HIGH", "R103"),
-    ("invalid", "below", "flagged"): ("HIGH", "R103"),
-    ("invalid", "invalid", "flagged"): ("HIGH", "R103"),
-    ("invalid", "ineligible", "flagged"): ("HIGH", "R103"),
-    ("invalid", "absent", "flagged"): ("HIGH", "R103"),
-    ("ineligible", "below", "flagged"): ("HIGH", "R103"),
-    ("ineligible", "invalid", "flagged"): ("HIGH", "R103"),
-    ("ineligible", "ineligible", "flagged"): ("HIGH", "R103"),
-    ("ineligible", "absent", "flagged"): ("HIGH", "R103"),
-    ("absent", "below", "flagged"): ("HIGH", "R103"),
-    ("absent", "invalid", "flagged"): ("HIGH", "R103"),
-    ("absent", "ineligible", "flagged"): ("HIGH", "R103"),
-    ("absent", "absent", "flagged"): ("HIGH", "R103"),
-    # MEDIUM by R200 — all three read this media and none reached its threshold. (1 of 125)
+    # MEDIUM by R200 — all three detectors read this media and neither deciding detector reached
+    # its threshold. The second row is the shape of the R7-T5 regression: the mouth-dynamics
+    # score is above its own threshold, the reading is reported as the crossing it is, and the
+    # level is MEDIUM because no detector entitled to conclude did. Under v3 that row was a HIGH
+    # by `R103`. (2 of 125)
+    ("below", "below", "flagged"): ("MEDIUM", "R200"),
     ("below", "below", "below"): ("MEDIUM", "R200"),
-    # MEDIUM by R201 — one or two read it, none reached its threshold. Less coverage than an
-    # R200, and the trace says so rather than hiding it. (36 of 125)
+    # MEDIUM by R201 — one or two detectors read it, and neither deciding detector reached its
+    # threshold. Less coverage than an `R200`, and the trace says so rather than hiding it. A
+    # mouth-dynamics reading counts toward that coverage whether or not it crossed its threshold,
+    # which is why the rows ending `flagged` are here rather than in a HIGH group. (51 of 125)
     ("below", "below", "invalid"): ("MEDIUM", "R201"),
     ("below", "below", "ineligible"): ("MEDIUM", "R201"),
     ("below", "below", "absent"): ("MEDIUM", "R201"),
+    ("below", "invalid", "flagged"): ("MEDIUM", "R201"),
     ("below", "invalid", "below"): ("MEDIUM", "R201"),
     ("below", "invalid", "invalid"): ("MEDIUM", "R201"),
     ("below", "invalid", "ineligible"): ("MEDIUM", "R201"),
     ("below", "invalid", "absent"): ("MEDIUM", "R201"),
+    ("below", "ineligible", "flagged"): ("MEDIUM", "R201"),
     ("below", "ineligible", "below"): ("MEDIUM", "R201"),
     ("below", "ineligible", "invalid"): ("MEDIUM", "R201"),
     ("below", "ineligible", "ineligible"): ("MEDIUM", "R201"),
     ("below", "ineligible", "absent"): ("MEDIUM", "R201"),
+    ("below", "absent", "flagged"): ("MEDIUM", "R201"),
     ("below", "absent", "below"): ("MEDIUM", "R201"),
     ("below", "absent", "invalid"): ("MEDIUM", "R201"),
     ("below", "absent", "ineligible"): ("MEDIUM", "R201"),
     ("below", "absent", "absent"): ("MEDIUM", "R201"),
+    ("invalid", "below", "flagged"): ("MEDIUM", "R201"),
     ("invalid", "below", "below"): ("MEDIUM", "R201"),
     ("invalid", "below", "invalid"): ("MEDIUM", "R201"),
     ("invalid", "below", "ineligible"): ("MEDIUM", "R201"),
     ("invalid", "below", "absent"): ("MEDIUM", "R201"),
+    ("invalid", "invalid", "flagged"): ("MEDIUM", "R201"),
     ("invalid", "invalid", "below"): ("MEDIUM", "R201"),
+    ("invalid", "ineligible", "flagged"): ("MEDIUM", "R201"),
     ("invalid", "ineligible", "below"): ("MEDIUM", "R201"),
+    ("invalid", "absent", "flagged"): ("MEDIUM", "R201"),
     ("invalid", "absent", "below"): ("MEDIUM", "R201"),
+    ("ineligible", "below", "flagged"): ("MEDIUM", "R201"),
     ("ineligible", "below", "below"): ("MEDIUM", "R201"),
     ("ineligible", "below", "invalid"): ("MEDIUM", "R201"),
     ("ineligible", "below", "ineligible"): ("MEDIUM", "R201"),
     ("ineligible", "below", "absent"): ("MEDIUM", "R201"),
+    ("ineligible", "invalid", "flagged"): ("MEDIUM", "R201"),
     ("ineligible", "invalid", "below"): ("MEDIUM", "R201"),
+    ("ineligible", "ineligible", "flagged"): ("MEDIUM", "R201"),
     ("ineligible", "ineligible", "below"): ("MEDIUM", "R201"),
+    ("ineligible", "absent", "flagged"): ("MEDIUM", "R201"),
     ("ineligible", "absent", "below"): ("MEDIUM", "R201"),
+    ("absent", "below", "flagged"): ("MEDIUM", "R201"),
     ("absent", "below", "below"): ("MEDIUM", "R201"),
     ("absent", "below", "invalid"): ("MEDIUM", "R201"),
     ("absent", "below", "ineligible"): ("MEDIUM", "R201"),
     ("absent", "below", "absent"): ("MEDIUM", "R201"),
+    ("absent", "invalid", "flagged"): ("MEDIUM", "R201"),
     ("absent", "invalid", "below"): ("MEDIUM", "R201"),
+    ("absent", "ineligible", "flagged"): ("MEDIUM", "R201"),
     ("absent", "ineligible", "below"): ("MEDIUM", "R201"),
+    ("absent", "absent", "flagged"): ("MEDIUM", "R201"),
     ("absent", "absent", "below"): ("MEDIUM", "R201"),
     # UNKNOWN by R012 — no readable evidence, but a calibrated detector did answer unreadably. (19 of 125)
     ("invalid", "invalid", "invalid"): ("UNKNOWN", "R012"),
@@ -618,51 +686,72 @@ def test_no_other_score_below_its_threshold_changes_a_face_high(other_svd, other
 
 @pytest.mark.parametrize("other_svd", [0.0, 0.1648, 0.4646, 0.9, EXPECTED_SVD_T_HIGH - 1e-9])
 @pytest.mark.parametrize("other_face", [0.0, 0.0053, 0.4646, 0.9, EXPECTED_FACE_T_HIGH - 1e-9])
-def test_no_other_score_below_its_threshold_changes_a_mouth_dynamics_high(
+def test_a_mouth_dynamics_crossing_reaches_no_level_whatever_the_others_say(
     other_svd, other_face
 ):
-    """The same invariance for the detector this ruleset added.
+    """The R7-T6 withdrawal, swept across the deciding detectors' quiet range.
 
-    The face classifier is the interesting one here: it was calibrated on face swaps too, so a
-    reader might expect it to be entitled to an opinion about this finding. It is not. It judges
-    the appearance of a still crop and this model judges motion, and no measurement says a low
-    score from one bears on the other.
+    A mouth-dynamics score of 0.9931 — four times its own threshold — against every quiet value
+    the other two take, including each one a hair under its own operating point. Not one of
+    these is a HIGH. Under `r5-v3.0.0` every one of them was, by `R103`, and R7-T5 measured what
+    that cost on genuine media: 21 false HIGHs out of 22, on 307 independent genuine lineages.
+
+    MEDIUM by `R200` rather than `R201` throughout, because all three detectors did read this
+    media. The crossing is not discarded and not disbelieved; it is read, recorded and not
+    permitted to conclude.
     """
     decision = evaluate(
         svd(score=other_svd), face(score=other_face), lip(score=0.9931)
     )
 
-    assert decision.risk_level == "HIGH"
-    assert decision.rule_id == "R103"
+    assert decision.risk_level == "MEDIUM"
+    assert decision.rule_id == "R200"
 
 
-@pytest.mark.parametrize(
-    ("flagged_svd", "flagged_face", "flagged_lip"),
-    [
-        (True, True, False),
-        (True, False, True),
-        (False, True, True),
-        (True, True, True),
-    ],
-)
-def test_more_than_one_detector_flagging_is_recorded_as_its_own_rule(
-    flagged_svd, flagged_face, flagged_lip
-):
+@pytest.mark.parametrize("flagged_lip", [True, False])
+def test_both_deciding_detectors_flagging_is_recorded_as_its_own_rule(flagged_lip):
     """R4-T1 never observed agreement on 159 clips. It is still a state the rules must name.
 
-    Attributing a joint finding to `R100`, `R101` or `R103` would credit one detector with
-    evidence another independently produced. `R102` deliberately does not say *which* agreed:
-    that is in the signal rows, and an id per subset would be a rule table nobody can hold in
-    mind for no decision it does not already make.
+    Attributing a joint finding to `R100` or `R101` would credit one detector with evidence the
+    other independently produced. `R102` deliberately does not say *which* two agreed: that is
+    in the signal rows, and an id per subset would be a rule table nobody can hold in mind for
+    no decision it does not already make.
+
+    The mouth-dynamics score is varied across the whole width of its scale and changes nothing,
+    which is the point of running it both ways: `R102` is about the two detectors this ruleset
+    decides from, and a third reading neither completes it nor dilutes it.
     """
     decision = evaluate(
-        svd(score=0.9931 if flagged_svd else 0.4646),
-        face(score=0.9931 if flagged_face else 0.4646),
+        svd(score=0.9931),
+        face(score=0.9931),
         lip(score=0.9931 if flagged_lip else 0.0154),
     )
 
     assert decision.risk_level == "HIGH"
     assert decision.rule_id == "R102"
+
+
+@pytest.mark.parametrize(
+    ("flagged_svd", "expected_rule"), [(True, "R100"), (False, "R101")]
+)
+def test_a_mouth_dynamics_crossing_never_makes_a_single_finding_a_corroborated_one(
+    flagged_svd, expected_rule
+):
+    """One deciding detector flagged and the mouth-dynamics score above its own threshold.
+
+    Under `r5-v3.0.0` this was `R102` — two detectors, independently, and the trace said so.
+    Under v4 it is the single rule of the detector that actually decided. The level is identical
+    either way; what would not be identical is the record, and a trace claiming a corroborated
+    finding on evidence that may not decide is `R103` re-entering by the back door.
+    """
+    decision = evaluate(
+        svd(score=0.9931 if flagged_svd else 0.4646),
+        face(score=0.4646 if flagged_svd else 0.9931),
+        lip(score=0.9931),
+    )
+
+    assert decision.risk_level == "HIGH"
+    assert decision.rule_id == expected_rule
 
 
 def test_a_medium_says_whether_every_detector_or_only_some_were_behind_it():
@@ -721,12 +810,17 @@ def test_an_abstaining_mouth_dynamics_model_cannot_hold_back_a_face_finding():
     assert decision.rule_id == "R101"
 
 
-def test_the_mouth_dynamics_model_can_decide_where_the_other_two_are_silent():
-    """The detection capability this ruleset adds, in one sentence.
+def test_the_mouth_dynamics_model_alone_decides_nothing_and_is_still_read():
+    """The capability this ruleset withdrew, and the one it kept, in one analysis.
 
-    Under `r4-v2.0.0` this analysis was `R010`: neither calibrated detector produced a reading,
-    and the mouth-dynamics score was recorded and unread. R5-T3 measured an operating point for
-    it, so the same evidence is now a HIGH that names the detector which concluded it.
+    Both R4-T1 detectors silent and the mouth-dynamics score at four times its own threshold.
+    Under `r4-v2.0.0` this was `R010`; under `r5-v3.0.0` R5-T3's operating point made it a HIGH
+    by `R103`; under v4 it is `R201` — MEDIUM, on partial coverage.
+
+    `R201` and not `R010` is the half that matters as much as the level. The detector answered,
+    its figures were readable, and the rules read them. What they did not do is conclude from
+    them. A ruleset that had dropped the detector instead of the rule would report this analysis
+    as having no evidence at all, which is a different and false statement.
     """
     decision = evaluate(
         svd(score=0.999, status="FAILED"),
@@ -734,8 +828,8 @@ def test_the_mouth_dynamics_model_can_decide_where_the_other_two_are_silent():
         lip(score=0.9931),
     )
 
-    assert decision.risk_level == "HIGH"
-    assert decision.rule_id == "R103"
+    assert decision.risk_level == "MEDIUM"
+    assert decision.rule_id == "R201"
 
 
 # --------------------------------------------------------------------------------------
@@ -758,11 +852,12 @@ def test_a_face_score_exactly_at_its_threshold_is_high():
     assert decision.rule_id == "R101"
 
 
-def test_a_mouth_dynamics_score_exactly_at_its_threshold_is_high():
+def test_a_mouth_dynamics_score_exactly_at_its_threshold_is_not_high():
+    """No boundary here at all any more: `LIP_T_HIGH` is compared against by nothing."""
     decision = evaluate(lip=lip(score=EXPECTED_LIP_T_HIGH))
 
-    assert decision.risk_level == "HIGH"
-    assert decision.rule_id == "R103"
+    assert decision.risk_level == "MEDIUM"
+    assert decision.rule_id == "R201"
 
 
 @pytest.mark.parametrize("score", [0.9551, 0.9704, 0.98, 0.9986, 1.0])
@@ -800,18 +895,29 @@ def test_a_face_score_below_its_threshold_is_medium(score):
 
 
 @pytest.mark.parametrize("score", [0.2297, 0.4424, 0.5, 0.9612, 1.0])
-def test_a_mouth_dynamics_score_above_its_threshold_is_high(score):
-    """Including 0.4424 — the lowest score any face swap reached, and 0.5, which the R5-T1
-    harness reported at and would have missed it with."""
+def test_a_mouth_dynamics_score_above_its_threshold_is_not_high(score):
+    """The whole span above R5-T3's operating point, up to the ceiling of the scale.
+
+    Including 0.4424, the lowest score any face swap in that corpus reached — a real
+    manipulation this ruleset no longer flags on this evidence alone. That is the coverage
+    R7-T6 gave up, and it is asserted here rather than left implicit: the trade was made
+    against a measured 7.17% false HIGH rate on genuine media, and pretending it was free would
+    misdescribe it.
+    """
     decision = evaluate(lip=lip(score=score))
 
-    assert decision.risk_level == "HIGH"
-    assert decision.rule_id == "R103"
+    assert decision.risk_level == "MEDIUM"
+    assert decision.rule_id == "R201"
 
 
 @pytest.mark.parametrize("score", [0.2296253, 0.0168, 0.01, 0.0001, 0.0])
 def test_a_mouth_dynamics_score_below_its_threshold_is_medium(score):
-    """Including 0.0168 — the highest score any genuine clip reached on this detector."""
+    """Including 0.0168 — the highest score any genuine clip reached on this detector.
+
+    Identical to the band above it under v4, and deliberately kept as its own test: the two
+    sides of that threshold must classify the same, and a build where they diverge has put the
+    comparison back.
+    """
     decision = evaluate(lip=lip(score=score))
 
     assert decision.risk_level == "MEDIUM"
@@ -819,7 +925,12 @@ def test_a_mouth_dynamics_score_below_its_threshold_is_medium(score):
 
 
 def test_the_highest_genuine_score_r5_t3_observed_is_not_high():
-    """`real_695`, as R5-T3 actually measured it: 0.0168, and 0.2128 clear of the threshold."""
+    """`real_695`, as R5-T3 actually measured it: 0.0168, and 0.2128 clear of the threshold.
+
+    R7-T5 then measured genuine media that lay outside that corpus and found the margin does
+    not survive it, which is why the clip below and one four times over the threshold now
+    classify alike.
+    """
     decision = evaluate(lip=lip(score=CORPUS_LIP_GENUINE_MAX))
 
     assert decision.risk_level == "MEDIUM"
@@ -1134,8 +1245,9 @@ def test_one_detectors_unreadable_figures_do_not_sink_the_others_reading():
     """`R012` is the last resort, not a poison pill.
 
     A broken synthetic-video row beside a face score above its threshold is still a HIGH: the
-    face model's evidence is intact and was measured on its own. So is a broken face row beside
-    a mouth-dynamics score above its own threshold.
+    face model's evidence is intact and was measured on its own. And two broken rows beside a
+    readable mouth-dynamics score are not `R012` either — that reading is not a level, but it is
+    a reading, and `R012` would report an analysis where nothing could be read.
     """
     decision = evaluate(svd(score=math.nan), face(score=0.9931))
 
@@ -1146,8 +1258,8 @@ def test_one_detectors_unreadable_figures_do_not_sink_the_others_reading():
         svd(score=math.nan), face(score=math.nan), lip(score=0.9931)
     )
 
-    assert on_the_third.risk_level == "HIGH"
-    assert on_the_third.rule_id == "R103"
+    assert on_the_third.risk_level == "MEDIUM"
+    assert on_the_third.rule_id == "R201"
 
 
 # --------------------------------------------------------------------------------------
@@ -1206,10 +1318,14 @@ def test_only_the_eight_documented_rules_can_fire():
         "R100",
         "R101",
         "R102",
-        "R103",
         "R200",
         "R201",
     }
+
+    # The id v3 used for a mouth-dynamics HIGH. No arrangement of evidence can produce it here,
+    # and no rule in this ruleset may ever wear it: `app.risk_trace` still explains stored
+    # `r5-v3.0.0` rows through that sentence, and reusing the id would rewrite what they said.
+    assert "R103" not in rules
 
 
 def test_every_rule_id_the_module_names_is_reachable():
@@ -1354,6 +1470,249 @@ def test_each_detector_keeps_its_own_degeneracy_count():
     assert "total_clips" in svd_fields and "total_clips" not in face_fields | lip_fields
     assert "frames_scored" in face_fields and "frames_scored" not in svd_fields | lip_fields
     assert "windows_scored" in lip_fields and "windows_scored" not in svd_fields | face_fields
+
+
+# --------------------------------------------------------------------------------------
+# The R7-T5 regression lineages, replayed from their measured readings
+# --------------------------------------------------------------------------------------
+#
+# R7-T5 replayed the unchanged v3 rules over 307 independent genuine lineages and found 22 false
+# HIGHs, 21 of them `R103`. Two of the 307 are private benign phone captures, and one of those
+# two is the production regression that started this. Its readings — and its eight constructed
+# degradations, and the second lineage's — are in the fixture below.
+#
+# **Numbers, and only numbers.** The clips are not in this repository and never will be: the
+# fixture holds each lineage's scores, its aggregate counts and its detector statuses under the
+# opaque identifier R7-T5 tracked it by, which is the same thing the published report holds. No
+# media, no frames, no filenames.
+#
+# **Nothing is re-run and nothing is re-measured.** These readings came off the detectors once,
+# during R7-T5, on the deployments the calibrations bind to. A test that re-ran inference would
+# be measuring today's GPU rather than checking a rule, and a test that adjusted a reading to
+# get a level it liked would be fabricating evidence. The fixture is replayed exactly as
+# recorded and the *rules* are what is under test.
+
+REGRESSION_FIXTURE = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "r7t5_private_regression_readings.json"
+)
+
+
+def _regression_readings():
+    """The R7-T5 readings, checked against the identity they were measured under.
+
+    The guard is the point of the loader. These figures are only evidence about this ruleset if
+    they came off the deployments its thresholds were measured on and were read against those
+    thresholds; a fixture recorded under some other calibration would be a different study, and
+    replaying it here would prove nothing about anything.
+    """
+    payload = json.loads(REGRESSION_FIXTURE.read_text(encoding="utf-8"))
+
+    assert payload["recorded_under"]["calibration_id"] == EXPECTED_CALIBRATION_ID
+    assert payload["recorded_under"]["rules_version"] == "r5-v3.0.0"
+    assert payload["recorded_under"]["svd_t_high"] == EXPECTED_SVD_T_HIGH
+    assert payload["recorded_under"]["face_t_high"] == EXPECTED_FACE_T_HIGH
+    assert payload["recorded_under"]["lip_t_high"] == EXPECTED_LIP_T_HIGH
+    assert payload["deployments"] == {
+        "svd": VALIDATED_FUNCTION_ID,
+        "face": VALIDATED_FACE_CHECKPOINT,
+        "lip": VALIDATED_LIP_MODEL,
+    }
+
+    return payload["readings"]
+
+
+def _as_evidence(reading):
+    """One recorded reading as the three evidence rows the worker would have persisted."""
+    scores, counts, statuses = (
+        reading["scores"],
+        reading["counts"],
+        reading["statuses"],
+    )
+    return (
+        svd(
+            score=scores["svd"],
+            status=statuses["svd"],
+            total_clips=counts["svd_total_clips"],
+        ),
+        face(
+            score=scores["face"],
+            status=statuses["face"],
+            frames_scored=counts["face_frames_scored"],
+        ),
+        lip(
+            score=scores["lip"],
+            status=statuses["lip"],
+            windows_scored=counts["lip_windows_scored"],
+        ),
+    )
+
+
+REGRESSION_READINGS = _regression_readings()
+AS_CAPTURED = [r for r in REGRESSION_READINGS if r["derivation"] == "none"]
+
+
+def test_the_fixture_holds_the_readings_r7_t5_reported_and_no_media():
+    """A guard on the fixture itself, before anything is concluded from it.
+
+    Two lineages as captured plus eight degradations each, every one of them recorded as a HIGH
+    by `R103` under v3 with LipForensics as the sole responsible detector — which is exactly
+    what §7.5 of the R7-T5 report says, and is why this fixture is the right evidence for the
+    rule that was withdrawn. Three of the second lineage's variants fell to MEDIUM and are here
+    too, unedited: a fixture trimmed to its convenient rows is not a replay.
+
+    The last two assertions are the privacy contract. Nothing in this file is media, a path or a
+    filename, and the lineage identifiers are the opaque ones the report published.
+    """
+    assert len(AS_CAPTURED) == 2
+    assert {r["lineage"] for r in AS_CAPTURED} == {
+        "private:regression-1",
+        "private:regression-2",
+    }
+
+    observed = [r["observed_under_r5_v3"] for r in REGRESSION_READINGS]
+    high_by_r103 = [o for o in observed if o["rule_id"] == "R103"]
+
+    assert len(high_by_r103) == 15
+    assert all(o["risk_level"] == "HIGH" for o in high_by_r103)
+    assert all(o["responsible_detectors"] == ["lipforensics"] for o in high_by_r103)
+    assert all(r["label"] == "real" for r in REGRESSION_READINGS)
+
+    assert not any(
+        key in reading for reading in REGRESSION_READINGS for key in ("path", "filename")
+    )
+
+
+def test_the_production_regression_no_longer_evaluates_high():
+    """The clip this task exists for, replayed through the rules that replaced v3.
+
+    `private:regression-1` as it was captured: a benign consumer phone video, LipForensics at
+    0.6584 — nearly three times its operating point — and both R4-T1 detectors at their floor,
+    0.0403 and 0.0484. Under `r5-v3.0.0` this was a HIGH by `R103`, and it is the false positive
+    that was reported from production.
+
+    Under v4 it is `R200`: all three detectors read the media, neither detector entitled to
+    decide reached its threshold, and the level says the evidence did not support a
+    classification. The mouth-dynamics score is unchanged, still above its threshold, and still
+    on the analysis — what changed is that no rule concludes from it.
+    """
+    reading = next(r for r in AS_CAPTURED if r["lineage"] == "private:regression-1")
+    svd_evidence, face_evidence, lip_evidence = _as_evidence(reading)
+
+    # The evidence really is what made the production HIGH: the withdrawn rule's detector above
+    # its own threshold, and neither other detector anywhere near its own.
+    assert lip_evidence.score >= EXPECTED_LIP_T_HIGH
+    assert svd_evidence.score < EXPECTED_SVD_T_HIGH
+    assert face_evidence.score < EXPECTED_FACE_T_HIGH
+    assert reading["observed_under_r5_v3"] == {
+        "risk_level": "HIGH",
+        "rule_id": "R103",
+        "responsible_detectors": ["lipforensics"],
+    }
+
+    decision = evaluate(svd_evidence, face_evidence, lip_evidence)
+
+    assert decision.risk_level == "MEDIUM"
+    assert decision.rule_id == "R200"
+    assert decision.rules_version == EXPECTED_RULES_VERSION
+    assert decision.calibration_id == EXPECTED_CALIBRATION_ID
+
+
+@pytest.mark.parametrize(
+    "reading", REGRESSION_READINGS, ids=lambda r: r["reading_id"]
+)
+def test_no_r7_t5_regression_reading_evaluates_high_under_the_new_ruleset(reading):
+    """All 18 recorded readings, both lineages, every degradation.
+
+    R7-T5 measured that the degradations make the mouth-dynamics score *worse*, not better —
+    seven of `regression-1`'s eight scored above its as-captured value, one of them at 0.8278.
+    Every one of them was a HIGH under v3 and none of them may be one here.
+
+    Sweeping the whole fixture rather than the two as-captured rows is deliberate: a rule that
+    happened to spare one clip and not its re-encode would not be a fix, and this is the test
+    that would say so.
+    """
+    decision = evaluate(*_as_evidence(reading))
+
+    assert decision.risk_level != "HIGH"
+    assert decision.rule_id not in {"R100", "R101", "R102"}
+
+
+def test_the_regression_readings_are_still_high_under_the_rules_that_flagged_them():
+    """The other half of the claim: v3's arithmetic is reproduced, not disputed.
+
+    R7-T6 did not find a bug in v3's comparisons — it found that the rule those comparisons fed
+    was wrong for production. Re-deriving each recorded outcome from the frozen v3 thresholds
+    here proves the fixture is the same evidence v3 saw, so the difference measured above is the
+    ruleset and nothing else.
+
+    The v3 conditions are spelled out rather than imported: `app.risk_engine` no longer holds
+    them, and reaching for a historical rule through today's module is the thing the whole
+    version-aware design exists to prevent.
+    """
+    for reading in REGRESSION_READINGS:
+        svd_evidence, face_evidence, lip_evidence = _as_evidence(reading)
+        observed = reading["observed_under_r5_v3"]
+
+        flagged_under_v3 = {
+            "nvidia": svd_evidence.score >= EXPECTED_SVD_T_HIGH,
+            "efficientnet-b7": face_evidence.score >= EXPECTED_FACE_T_HIGH,
+            "lipforensics": lip_evidence.score >= EXPECTED_LIP_T_HIGH,
+        }
+        responsible = sorted(name for name, hit in flagged_under_v3.items() if hit)
+
+        assert responsible == sorted(observed["responsible_detectors"])
+        assert (observed["risk_level"] == "HIGH") is bool(responsible)
+
+
+def test_the_withdrawal_is_what_changed_the_regression_and_not_the_other_evidence():
+    """The mouth-dynamics reading is the only thing standing between v3 and v4 here.
+
+    Both R4-T1 detectors are replayed exactly as measured, and the mouth-dynamics reading is
+    varied across its whole scale: from the top, through its operating point, to the floor. Not
+    one of those readings changes the decision. Under v3 the same sweep crossed a band boundary
+    at 0.2296.
+
+    This is also the isolation check the task turns on. If some *other* detector had drifted
+    into deciding this analysis, the level would move somewhere in this sweep, and it does not.
+    """
+    reading = next(r for r in AS_CAPTURED if r["lineage"] == "private:regression-1")
+    svd_evidence, face_evidence, _ = _as_evidence(reading)
+
+    decisions = {
+        score: evaluate(svd_evidence, face_evidence, lip(score=score))
+        for score in (1.0, 0.9931, 0.6584, 0.4424, EXPECTED_LIP_T_HIGH, 0.0168, 0.0)
+    }
+
+    assert {(d.risk_level, d.rule_id) for d in decisions.values()} == {
+        ("MEDIUM", "R200")
+    }
+
+
+def test_an_unreadable_mouth_dynamics_row_does_not_disturb_the_regression_evidence():
+    """A failed third detector costs coverage on this analysis and nothing else.
+
+    The same two R4-T1 readings, with the mouth-dynamics detector failing, returning nothing
+    readable, and coming from an uncalibrated deployment in turn. The band never moves; the rule
+    id records that one of the three questions went unanswered, which is a smaller claim than
+    `R200` and is the honest one.
+    """
+    reading = next(r for r in AS_CAPTURED if r["lineage"] == "private:regression-1")
+    svd_evidence, face_evidence, _ = _as_evidence(reading)
+
+    for broken in (
+        lip(score=None, status="FAILED"),
+        lip(score=0.6584, status="TIMEOUT"),
+        lip(score=math.nan),
+        lip(score=0.6584, windows_scored=0),
+        lip(score=0.6584, provider_version="some-other-checkpoint"),
+        None,
+    ):
+        decision = evaluate(svd_evidence, face_evidence, broken)
+
+        assert decision.risk_level == "MEDIUM"
+        assert decision.rule_id == "R201"
 
 
 # --------------------------------------------------------------------------------------
@@ -1661,11 +2020,14 @@ def test_a_missing_signal_reads_back_as_absent(analysed):
     [
         # All three above their thresholds.
         ({"score": 0.9931}, {"score": 0.9931}, {"score": 0.9931}, "HIGH", "R102"),
-        # Two of the three, in each of the three pairings. None of them is attributed to one
-        # detector, and the trace does not pretend to say which two.
+        # Both deciding detectors, with the third quiet. The finding is not attributed to one
+        # of them, and the trace does not pretend to say which two.
         ({"score": 0.9931}, {"score": 0.9931}, {"score": 0.0154}, "HIGH", "R102"),
-        ({"score": 0.9931}, {"score": 0.4646}, {"score": 0.9931}, "HIGH", "R102"),
-        ({"score": 0.4646}, {"score": 0.9931}, {"score": 0.9931}, "HIGH", "R102"),
+        # One deciding detector with the mouth-dynamics score at the top of its scale. `R102`
+        # under v3, and the single detector's own rule here: a reading that may not decide may
+        # not corroborate either, and the stored rule id is where that would show.
+        ({"score": 0.9931}, {"score": 0.4646}, {"score": 0.9931}, "HIGH", "R100"),
+        ({"score": 0.4646}, {"score": 0.9931}, {"score": 0.9931}, "HIGH", "R101"),
         # Synthetic video alone, with the other two quiet — `sonic_en_03`.
         (
             {"score": CORPUS_SYNTHETIC_SVD},
@@ -1683,12 +2045,13 @@ def test_a_missing_signal_reads_back_as_absent(analysed):
             "R101",
         ),
         # Mouth dynamics alone, at the lowest score any face swap in R5-T3's corpus reached.
+        # A HIGH by `R103` under v3 and a full-coverage MEDIUM here, through the database.
         (
             {"score": CORPUS_FACESWAP_SVD},
             {"score": 0.4646},
             {"score": CORPUS_LIP_FACESWAP_MIN},
-            "HIGH",
-            "R103",
+            "MEDIUM",
+            "R200",
         ),
         # All three readable, none flagged.
         ({"score": 0.9541}, {"score": 0.9865}, {"score": 0.0168}, "MEDIUM", "R200"),
@@ -1803,12 +2166,16 @@ def test_an_analysis_with_no_calibrated_evidence_at_all_is_unknown(analysed):
 
 
 @pytest.mark.integration
-def test_a_stored_mouth_dynamics_finding_alone_completes_high(analysed):
-    """The capability r4-v2.0.0 did not have, end to end through the database.
+def test_a_stored_mouth_dynamics_finding_alone_does_not_complete_high(analysed):
+    """The capability r7-v4.0.0 withdrew, end to end through the database.
 
     No synthetic-video row and no face row at all, a mouth-dynamics score above its calibrated
-    threshold, and the analysis classifies HIGH by `R103`. Under the previous ruleset this exact
-    evidence was `R010` — an honest UNKNOWN, because nothing had measured what the score meant.
+    threshold. Under `r5-v3.0.0` the stored decision was HIGH by `R103`; here it is MEDIUM by
+    `R201`, and the row says so in all four columns.
+
+    The signal is written either way, and the assertion below is on the *decision*, not on the
+    evidence: what R7-T6 removed is a rule, and a build that removed the detector instead would
+    pass a level check and fail this analysis's readers.
     """
     claimed = analysed(
         svd_signal=False,
@@ -1822,8 +2189,8 @@ def test_a_stored_mouth_dynamics_finding_alone_completes_high(analysed):
 
     analysis = read_analysis(claimed.analysis_id)
 
-    assert analysis.risk_level == "HIGH"
-    assert analysis.risk_rule_id == "R103"
+    assert analysis.risk_level == "MEDIUM"
+    assert analysis.risk_rule_id == "R201"
     assert analysis.risk_rules_version == EXPECTED_RULES_VERSION
     assert analysis.risk_calibration_id == EXPECTED_CALIBRATION_ID
 
@@ -1908,7 +2275,7 @@ CONTEXT_ARRANGEMENTS = {
     [
         (0.9931, 0.4646, 0.0154, "HIGH", "R100"),
         (0.4646, 0.9931, 0.0154, "HIGH", "R101"),
-        (0.4646, 0.4646, 0.9931, "HIGH", "R103"),
+        (0.4646, 0.4646, 0.9931, "MEDIUM", "R200"),
         (0.4646, 0.4646, 0.0154, "MEDIUM", "R200"),
     ],
 )
