@@ -1,0 +1,40 @@
+{
+  "schema_version": "r7-t5-acceptance-1",
+  "task": "R7-T5",
+  "declared_at": "2026-09-06",
+  "declared_before_evaluation": true,
+  "why_this_file_exists": "The acceptance target for genuine-media false positives is fixed here, in its own file, before any clip of the final evaluation split has been scored. A target chosen after the numbers are known is not a target, it is a description of the result; committing it separately is what makes the distinction checkable by a reader rather than assertable by the author.",
+  "primary_target": {
+    "id": "GENUINE-FPR-UB",
+    "statement": "Over the final evaluation split's independent genuine lineages, the one-sided 95% upper confidence bound on the genuine-media false-positive rate must be at or below 0.01 (1%).",
+    "estimator": "Clopper-Pearson exact one-sided upper bound, 95%",
+    "threshold": 0.01,
+    "unit_of_observation": "one independent genuine source_lineage_id, represented by its base (non-derivative) clip",
+    "required_n_for_zero_observed": 299,
+    "n_rationale": "With k = 0 observed false positives the exact one-sided 95% upper bound is 1 - 0.05^(1/n); this first falls at or below 0.01 at n = 299. The corpus is therefore built to carry approximately 300 independent genuine evaluation lineages.",
+    "applies_to": [
+      "lipforensics",
+      "efficientnet-b7",
+      "nvidia-svd",
+      "risk-engine-v3-system-level-HIGH"
+    ]
+  },
+  "secondary_targets": [
+    {
+      "id": "STRATUM-REPORTING",
+      "statement": "Every per-stratum figure is reported with its exact n and a one-sided 95% upper bound. No stratum result is generalised beyond the stratum it was measured in, and no stratum is declared safe on the strength of zero observed false positives alone."
+    },
+    {
+      "id": "REGRESSION-CASE",
+      "statement": "The known benign real-world regression lineages are evaluated and reported by stable lineage identifier and measured outputs only. They are counted in the genuine evaluation denominator like any other genuine lineage; they are not excluded to improve a rate."
+    }
+  ],
+  "failure_policy": {
+    "insufficient_power": "If the assembled corpus cannot supply the required n, the measurements are still reported, the shortfall is stated explicitly, and no detector or rule may be described as validated or safe on the basis of zero observed false positives.",
+    "no_retargeting": "This target is not revised after the evaluation results are seen. A result that misses it is reported as a miss."
+  },
+  "out_of_scope": [
+    "Changing any production threshold, rule, calibration constant or API response.",
+    "Implementing any recommendation this task produces."
+  ]
+}
