@@ -1,0 +1,135 @@
+{
+  "schema_version": "r7-t8-protocol-1",
+  "task": "R7-T8",
+  "title": "Effort Calibration Stability & Risk-Eligibility Study",
+  "declared_at": "2026-09-07",
+  "declared_before_corpus_was_scored": true,
+  "declared_before_validation_split_was_opened": true,
+  "why_this_file_exists": "R7-T7 derived a candidate operating threshold of 0.96612 from one calibration sample and reported zero false positives at it on one evaluation sample. Both numbers came from a single corpus. This task asks whether that operating region is a property of Effort or a property of that sample, and the only way to ask it honestly is to fix, in advance and in one artifact, what would count as an answer. Every rule below is written before any clip of the R7-T8 corpus has been scored. None of it may be revised after the validation split is opened. A result that misses a criterion is reported as a miss.",
+  "immutability": {
+    "statement": "The model, its checkpoint, and every preprocessing and inference semantic are taken from R7-T7 unchanged. This task changes the data and nothing else.",
+    "inherited_from": "scripts/eval/effort_freeze.json (schema r7-t7-effort-freeze-1)",
+    "checkpoint_sha256": "8d86711f098d16b49c048962fc3e16a906380f7bb17b8a0e89bd545b926943ee",
+    "upstream_revision": "96f5dea2b534d400cfd7003f053c7e93c8e16461",
+    "runner": "scripts/eval/models/effort_shadow.py, unmodified",
+    "frozen_and_not_revisited": [
+      "dlib 81-landmark detection, largest face, ArcFace 5-point alignment at scale 1.3 to 224x224",
+      "8 deterministic frames per clip via numpy.linspace over the decodable range",
+      "CLIP normalisation constants and INTER_LINEAR resize",
+      "softmax(...)[:, 1] as the frame score",
+      "arithmetic mean over frames that produced a score, as the clip score",
+      "abstention semantics: a clip with no readable face produces no reading and leaves both the numerator and the denominator of every rate"
+    ],
+    "explicitly_not_done": "No preprocessing optimisation of any kind. Frame count, face detector, aggregation, batching and device placement are not tuned, compared, or selected. Improving any of them would make the R7-T7 comparison meaningless, which is the entire point of the study."
+  },
+  "independence_requirement": {
+    "statement": "Every lineage in the R7-T8 corpus must be new. No lineage used to derive the R7-T7 candidate threshold, to evaluate R7-T7, or to build a derivative in either R7-T7 split may appear here.",
+    "lineage_identity_rule": "A source_lineage_id names the underlying recording. Two clips are the same lineage when they came from the same recording, including across a re-encode, a resolution change or a manipulation applied to it.",
+    "ffpp_derived_manipulations": "The FaceForensics++-sourced swap families in this corpus name a clip after its FaceForensics++ target and source original (`<target>_<source>.mp4`). The lineage is keyed on the target original, because the target supplies the video. Any candidate clip whose target OR source original id appears anywhere in the R7-T7 corpus is refused at build time, so a new manipulation method applied to an original R7-T7 already used cannot enter.",
+    "checks_that_must_pass": [
+      "no source_lineage_id of the R7-T8 corpus appears in the R7-T7 corpus",
+      "no sha256 of the R7-T8 corpus appears in the R7-T7 corpus",
+      "no FaceForensics++ original id used by R7-T7 is reachable from any R7-T8 lineage",
+      "the within-corpus calibration/validation split is itself leak-free by lineage and by digest",
+      "a perceptual difference-hash pass across the split boundary reports its pairs for a reader to judge"
+    ],
+    "gate": "The first four are gating and are automated in scripts/eval/independence_check_r7t8.py, which exits non-zero on any finding. The perceptual pass reports and does not gate, as in R7-T5: a small Hamming distance between two independent recordings of one event is possible and is a reader's judgement, not a build failure.",
+    "declared_reuse_of_regression_lineages": {
+      "lineages": [
+        "private:regression-1",
+        "private:regression-2"
+      ],
+      "statement": "The two benign real-world regression lineages ARE re-used from R7-T5/R7-T7. That re-use is deliberate, declared here in advance, and is the only re-use permitted anywhere in this corpus.",
+      "why": "Section 9 of the task requires these lineages to be re-evaluated under the newly derived threshold. They are the cases that motivated the whole line of work, and a stability study that could not say what the new operating point does to them would leave the question that matters unanswered.",
+      "how_independence_is_preserved": "They are excluded from the primary genuine denominator and from every headline false-positive figure, which are computed over the new independent lineages only. They are reported in their own regression section. The automated independence check whitelists exactly these two lineage ids and fails on any other re-used lineage, so the exemption cannot silently widen.",
+      "counted_toward_required_n": false
+    }
+  },
+  "statistical_power": {
+    "primary_unit": "one independent readable genuine source lineage in the FINAL VALIDATION split, represented by its base clip",
+    "target": {
+      "id": "GENUINE-FPR-UB",
+      "statement": "one-sided 95% upper confidence bound on genuine-media FPR at or below 1%",
+      "threshold": 0.01,
+      "source": "scripts/eval/acceptance_target.json, declared in R7-T5, carried forward unrevised"
+    },
+    "estimator": "Clopper-Pearson exact one-sided 95% bound, scripts/eval/stats.py, unchanged",
+    "required_readable_genuine_n": 299,
+    "required_n_provenance": "stats.required_n_for_zero_observed(0.01) = 299. With zero observed false positives, 299 independent readable lineages is the smallest n whose exact one-sided 95% upper bound falls at or below 1%. Any k > 0 requires more.",
+    "abstentions": "An abstention is not a negative. Abstained lineages are excluded from the readable n and reported in their own rate. The corpus therefore targets enough TOTAL genuine validation lineages to leave at least 299 readable after abstention.",
+    "consequence_if_short": "If the readable genuine n in the final validation split is below 299, the measurements are still reported, the shortfall is reported as insufficient statistical power, and Recommendation A is forbidden regardless of how favourable the point estimate is."
+  },
+  "threshold_derivation": {
+    "rule": "Place the candidate operating threshold at the midpoint between the highest readable genuine base-clip score on the CALIBRATION split and the lowest readable manipulated base-clip score above it, on the calibration split.",
+    "implementation": "scripts/eval/analyze_effort.py::calibration_candidate, called on R7-T8 calibration records only. The function is reused rather than reimplemented so that the R7-T7 and R7-T8 thresholds are produced by identical arithmetic.",
+    "provenance": "The same selection rule used by R4-T1, R5-T3, R7-T5 and R7-T7.",
+    "manipulated_scores_included": "All manipulated base clips on the calibration split, face manipulation and out-of-distribution generated alike, exactly as R7-T7's calibration candidate was computed. Restricting the rule to the primary families here would be a change of rule, not a refinement.",
+    "no_anchoring": "The derivation is run on the new calibration split and its output is whatever that split produces. It is not compared to 0.96612 until after it is frozen, it is not nudged toward it, and no acceptance criterion below is stated in terms of proximity to it.",
+    "freezing": "The derived value is written to r7t8_threshold_frozen.json together with the calibration digest it came from, BEFORE any validation clip is scored. The validation split is then scored exactly once at that threshold. There is no second pass and no post-hoc adjustment."
+  },
+  "threshold_stability_handling": {
+    "option_taken": "B",
+    "decision": "DESCRIPTIVE ONLY. Threshold drift between 0.96612 and the newly derived candidate is measured and reported, and is NOT a pass/fail criterion.",
+    "why": "A drift tolerance would have to answer 'how many points of movement in this score is too much', and nothing available before the measurement can answer it. The score is an uncalibrated softmax posterior, not a physical quantity; upstream defines no calibrated semantics for it; the midpoint rule places the threshold in the gap between two order statistics, so its movement is dominated by which two clips happen to be the extremes of two finite samples rather than by any property of the detector; and no prior task established a distribution for it. Any number chosen here would be arbitrary, and a criterion invented after the result is seen is not a criterion at all. The honest form of this question is what the FALSE POSITIVE RATE does at the frozen threshold on independent data, which is criterion 1 below and is measured directly.",
+    "what_is_reported_descriptively": [
+      "the new candidate threshold and its absolute and signed difference from 0.96612",
+      "the highest genuine calibration score and the lowest manipulated score above it, on both tasks, so the reader can see what moved the midpoint",
+      "the genuine score distribution on both corpora (min, p05, p25, median, p75, p95, p99, max, mean), so distribution shift is visible rather than inferred",
+      "what the R7-T8 validation split would have produced under the R7-T7 threshold of 0.96612, and what the R7-T7 evaluation split produced, as a cross-tabulation"
+    ],
+    "forbidden": "No pass/fail boundary on threshold movement may be introduced in the report or in the analysis code. If the drift is large, that is a descriptive finding and it may inform the narrative reasoning behind a B or C recommendation, but it may not be presented as a criterion that was failed."
+  },
+  "decision_gate": {
+    "statement": "Exactly one of A, B or C is recommended. The criteria below are frozen now and are evaluated in order after the validation split is scored.",
+    "A": {
+      "label": "ELIGIBILITY STUDY PASSED",
+      "meaning": "The evidence supports opening a separate, properly scoped risk-eligibility task. It does not itself make Effort risk-eligible and it does not authorise any production change.",
+      "all_of_these_must_hold": [
+        {
+          "id": "A1",
+          "criterion": "One-sided 95% upper bound on genuine FPR in the final validation split, at the frozen threshold, over readable independent genuine lineages, is <= 0.01."
+        },
+        {
+          "id": "A2",
+          "criterion": "Readable genuine lineage n in the final validation split is >= 299."
+        },
+        {
+          "id": "A3",
+          "criterion": "The gating independence checks pass with zero findings, and no unresolved independence defect is outstanding."
+        },
+        {
+          "id": "A4",
+          "criterion": "Neither known benign regression lineage crosses the frozen threshold as acquired. An abstention on a regression lineage is not a pass of this criterion; it is recorded as a non-observation and A4 is then judged on the remaining regression evidence, which if empty fails A4."
+        },
+        {
+          "id": "A5",
+          "criterion": "Face-manipulation detection at the frozen threshold on the final validation split is non-zero AND its one-sided 95% LOWER bound is above 0.05, over readable primary-family lineages. A detector that reaches a 1% false-positive budget by flagging nothing is not evidence of anything and must not pass."
+        }
+      ],
+      "note": "Threshold drift is deliberately absent from this list. See threshold_stability_handling."
+    },
+    "B": {
+      "label": "CONTINUE SHADOW",
+      "meaning": "The detector remains informative but the evidence does not support A.",
+      "when": "Any A criterion fails while the detector still shows a materially better false-positive/detection trade than the incumbent evidence-only arrangement, or while the shortfall is one of sample size or study construction rather than of detector behaviour."
+    },
+    "C": {
+      "label": "REJECT",
+      "meaning": "Further eligibility work is not justified.",
+      "when": "Cross-dataset false-positive behaviour, or intended-target signal, does not justify continuing: specifically, if the genuine FPR upper bound at the frozen threshold exceeds 0.05 on independent data, or if face-manipulation detection at the frozen threshold is not distinguishable from zero (upper bound of the detection rate below 0.10), or if an independence defect makes the study's measurements uninterpretable."
+    },
+    "tie_break": "If the criteria admit more than one reading, the more conservative recommendation is taken (C over B, B over A)."
+  },
+  "reporting_rules": {
+    "no_pooling": "Face manipulation and generated/out-of-distribution video are never added into one accuracy figure. Effort's face-deepfake checkpoint was trained on FaceForensics++ face manipulations; generated video is outside that distribution and is reported in its own section.",
+    "lineage_counted": "Every rate is counted over distinct lineages, never over files.",
+    "derivatives": "Constructed degradations are robustness observations at clip level. They add no lineage to any headline denominator and a lineage does not become a false positive because one of its derivatives crossed the threshold.",
+    "detector_vs_system": "Effort figures are threshold crossings by an offline detector. They are not risk verdicts and are never presented alongside LipForensics' production HIGH rates as if they measured the same thing.",
+    "privacy": "Private media stays outside the repository and outside the corpus directory. No filename, no container metadata and no personal detail from it reaches any artifact. Lineage id, digest and measured score are all that travel."
+  },
+  "scope": {
+    "shadow_only": "Effort is scored by the offline runner under scripts/eval/. It is not wired into the risk engine, is not risk-eligible, is not exposed through any API, report or dashboard, and changes no production file or threshold.",
+    "production_files_touched": "none",
+    "not_implemented": "This task produces a recommendation and does not implement it. No threshold is adopted, no rule is added, no calibration_id is written."
+  }
+}
