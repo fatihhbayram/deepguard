@@ -1,0 +1,131 @@
+{
+  "schema_version": "r7-t7-effort-freeze-1",
+  "task": "R7-T7",
+  "declared_at": "2026-09-06",
+  "declared_before_evaluation_split_opened": true,
+  "why_this_file_exists": "Effort is a spatial, frame-based, single-image detector. The R7-T5 corpus is video. Every choice that bridges that gap - which frames are read, whether a face is cropped out of them, how frame outputs become one clip reading, and where the operating point sits - is a degree of freedom that could be tuned against the answer. This file fixes all of them in advance, in one artifact, so that a reader can check the protocol was frozen rather than take the author's word for it. Every value below is taken from upstream semantics; none of it was derived from this corpus, and none of it may be revised after the evaluation split is scored.",
+  "candidate": {
+    "name": "Effort (CLIP-L14 + orthogonal subspace decomposition)",
+    "paper": "Orthogonal Subspace Decomposition for Generalizable AI-Generated Image Detection (ICML 2025 Oral), arXiv:2411.15633",
+    "upstream_repository": "https://github.com/YZY-stack/Effort-AIGI-Detection",
+    "upstream_revision": "96f5dea2b534d400cfd7003f053c7e93c8e16461",
+    "revision_resolved_by": "git ls-remote https://github.com/YZY-stack/Effort-AIGI-Detection.git HEAD, 2026-09-06",
+    "checkpoint": {
+      "filename": "effort_clip_L14_trainOn_FaceForensic.pth",
+      "variant": "face-deepfake",
+      "trained_on": "FaceForensics++ (c23)",
+      "source": "Google Drive file id 1m4fyJecABU-Yk3bJ4b1WhUwQa0xCkMLI",
+      "source_declared_in": "README.md of the pinned revision, section 'Download checkpoints', the entry beginning 'If you are a deepfake player, more interested in face deepfake detection'",
+      "bytes": 1213769519,
+      "sha256": "8d86711f098d16b49c048962fc3e16a906380f7bb17b8a0e89bd545b926943ee",
+      "local_path": "../deepguard-corpus/models/effort/effort_clip_L14_trainOn_FaceForensic.pth",
+      "sha256_verified_at": "2026-09-06",
+      "integrity": "downloaded from the pinned Drive id, byte count matches the server's declared content-length (1213769519), torch zip archive opens and passes testzip()"
+    },
+    "explicitly_not_used": [
+      "Google Drive 1UXf1hC9FC1yV93uKwXSkdtepsgpIAU9d - Effort trained on GenImage (sdv1.4), a general AIGI checkpoint",
+      "Google Drive 1GlJ1y4xmTdqV0FfIcyBwNNU6cQird9DR - Effort trained on Chameleon (sdv1.4), a general AIGI checkpoint"
+    ],
+    "architecture": {
+      "backbone": "openai/clip-vit-large-patch14 vision tower",
+      "backbone_source": "HuggingFace openai/clip-vit-large-patch14",
+      "modification": "apply_svd_residual_to_self_attn(vision_model, r=1023) - every nn.Linear inside a self_attn module is replaced by SVDResidualLinear, which splits the original weight into a fixed top-1023 singular component and a trainable residual",
+      "head": "nn.Linear(1024, 2) over the vision tower's pooler_output",
+      "definition_source": "DeepfakeBench/training/detectors/effort_detector.py at the pinned revision",
+      "config_source": "DeepfakeBench/training/config/detector/effort.yaml at the pinned revision"
+    }
+  },
+  "intended_detection_target": {
+    "statement": "Effort's face-deepfake checkpoint is trained on FaceForensics++ as a binary real/fake classifier over cropped, aligned single face images. Its intended primary task in this corpus is face manipulation of a real face.",
+    "primary_families_in_this_corpus": [
+      "faceswap_inswapper",
+      "faceswap_roop",
+      "ffpp_deepfakes",
+      "ffpp_faceswap"
+    ],
+    "primary_label": "face_swap",
+    "cross_family_ood_in_this_corpus": {
+      "label": "synthetic",
+      "families": [
+        "echomimic",
+        "sonic",
+        "memo",
+        "liveportrait",
+        "veo3",
+        "sora2",
+        "kling"
+      ],
+      "note": "Fully generated or audio-driven video. Outside the checkpoint's training distribution. Reported separately and never pooled into a primary-task figure."
+    },
+    "not_equivalent_to_lipforensics": "LipForensics is temporal and reads mouth dynamics over 25 consecutive frames. Effort is spatial and reads one aligned face crop at a time. They are not interchangeable and no figure in the report treats them as measuring the same quantity."
+  },
+  "frozen_protocol": {
+    "1_frame_sampling": {
+      "frames_per_clip": 8,
+      "rule": "Eight frame indices evenly spaced over [0, frame_count - 1] via numpy.linspace, rounded to int, deduplicated. Deterministic: no seed, no randomness, same clip gives the same frames on every run.",
+      "provenance": "effort.yaml at the pinned revision declares frame_num: {'train': 8, 'test': 8}. Eight frames per video at test time is upstream's own figure, not a choice made here.",
+      "short_clip_rule": "A clip with fewer than 8 decodable frames contributes every frame it has."
+    },
+    "2_face_detection_and_cropping": {
+      "used": true,
+      "why": "Upstream requires it for this checkpoint. README.md at the pinned revision: 'Note, you are processing a face image, please add the --landmark_model ./preprocessing/shape_predictor_81_face_landmarks.dat to extract the facial region for inference, as our model (trained on face deepfakes) used this face extractor for processing faces.' The cropping is therefore part of the official preprocessing for the face-deepfake variant, not an addition made because the task sounds face-shaped. The GenImage and Chameleon checkpoints, which are not used here, are the ones that run on full frames.",
+      "detector": "dlib.get_frontal_face_detector(), called on the RGB frame with upsample=1",
+      "landmark_model": "dlib shape_predictor_81_face_landmarks.dat",
+      "face_selection": "the largest detected face by bounding-box area (max by rect.width() * rect.height())",
+      "keypoints": "five points taken from the 81-point shape: part 37 (left eye), part 44 (right eye), part 30 (nose), part 49 (left mouth corner), part 55 (right mouth corner)",
+      "alignment": "skimage SimilarityTransform onto the ArcFace canonical 5-point template, scale 1.3, output 224x224, exactly as extract_aligned_face_dlib in DeepfakeBench/training/demo.py at the pinned revision",
+      "implementation": "the alignment arithmetic is transcribed verbatim from upstream demo.py; it is not reimplemented from the description above",
+      "landmark_model_file": {
+        "filename": "shape_predictor_81_face_landmarks.dat",
+        "source": "DeepfakeBench/preprocessing/shape_predictor_81_face_landmarks.dat at the pinned upstream revision",
+        "bytes": 19743860,
+        "sha256": "8cae4375589dd915d9a0a881101bed1bbb4e9887e35e63b024388f1ca25ff869"
+      }
+    },
+    "3_tensor_preprocessing": {
+      "rule": "aligned crop BGR -> RGB, cv2.resize to 224x224 with INTER_LINEAR, torchvision ToTensor, Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])",
+      "provenance": "preprocess_face in demo.py, and the mean/std declared in effort.yaml, at the pinned revision"
+    },
+    "4_frame_level_output_semantics": {
+      "value": "softmax(head(pooler_output), dim=1)[:, 1]",
+      "meaning": "the model's posterior for class 1 under a two-class cross-entropy head, where class 1 is 'fake'. Higher means more likely manipulated.",
+      "provenance": "EffortDetector.forward at the pinned revision",
+      "not_a_confidence": "Upstream defines no calibrated confidence semantics for this number. It is reported as a score throughout and is never described as a confidence."
+    },
+    "5_frame_to_clip_aggregation": {
+      "rule": "arithmetic mean of the frame-level fake probabilities over the frames that produced one",
+      "provenance": "get_video_metrics in DeepfakeBench/training/metrics/utils.py at the pinned revision computes a video's prediction as pred_sum / leng over its frames. Mean is upstream's video-level aggregation for frame-level detectors, not a rule invented here.",
+      "alternatives_considered_and_rejected_in_advance": "Max, median, and quantile aggregations are not evaluated. Comparing aggregations and keeping the best one is the specific failure this freeze exists to prevent. Per-frame scores are persisted so that a future, separately approved task could study alternatives on the calibration split, but no alternative appears in this task's report."
+    },
+    "6_abstention": {
+      "frame_level": "A sampled frame in which dlib finds no face yields no score and is dropped.",
+      "clip_level": "A clip in which no sampled frame yielded a face produces no reading at all and is recorded as an abstention.",
+      "treatment_in_statistics": "An abstention is removed from both the numerator and the denominator of every rate and counted in its own abstention rate. This matches the R7-T5 treatment. Folding abstentions into the negatives would let the detector improve its false-positive rate by failing to run.",
+      "decode_failure": "A clip that cannot be decoded at all is likewise an abstention and is reported under the same rate, distinguished by its recorded error."
+    },
+    "7_operating_threshold": {
+      "value": 0.5,
+      "rule": "a clip is flagged manipulated when its aggregated score is strictly greater than 0.5",
+      "provenance": "Upstream, twice over. demo.py reports the predicted label as argmax over the two-class head, which for a two-class softmax is exactly the 0.5 crossing; and get_video_metrics computes video-level accuracy as (video_pred > 0.5). No threshold is derived from any split for the headline figures.",
+      "calibration_derived_candidates": "A candidate operating point derived from the CALIBRATION split alone may additionally be reported for context, as R7-T5 did for LipForensics. Any such candidate is labelled a candidate, is computed on calibration data only, and is not used to produce any headline evaluation figure."
+    }
+  },
+  "statistical_protocol": {
+    "primary_unit": "one independent genuine source_lineage_id, represented by its designated base (non-derivative) clip",
+    "primary_genuine_evaluation": "Genuine false positives are counted over base clips of independent genuine lineages in the evaluation split, one observation per lineage.",
+    "derivatives": "Constructed degradations are robustness observations only. A lineage does not become a primary false positive because one of its derivatives crossed the threshold. Derivative results are reported in their own section, at clip level, with the number of distinct lineages behind them stated.",
+    "interval_estimator": "Clopper-Pearson exact one-sided 95% bound, via scripts/eval/stats.py, unchanged from R7-T5",
+    "carried_forward_target": {
+      "id": "GENUINE-FPR-UB",
+      "statement": "one-sided 95% upper bound on genuine-media FPR at or below 1%",
+      "threshold": 0.01,
+      "source": "scripts/eval/acceptance_target.json, declared in R7-T5 and not revised here"
+    },
+    "no_retargeting": "This protocol is not revised after the evaluation results are seen. A result that misses the target is reported as a miss."
+  },
+  "scope": {
+    "shadow_only": "Effort is scored by an offline runner under scripts/eval/. It is not wired into the risk engine, is not risk-eligible, is not exposed through any API, report or dashboard, and changes no production file or threshold. R7-T6 behaviour is untouched.",
+    "baseline_comparison": "LipForensics and EfficientNet-B7 are compared against using the frozen R7-T5 findings only. Neither is rerun.",
+    "not_implemented": "This task produces a recommendation and does not implement it."
+  }
+}
