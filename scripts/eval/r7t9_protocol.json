@@ -1,0 +1,243 @@
+{
+  "schema_version": "r7-t9-protocol-1",
+  "task": "R7-T9",
+  "title": "Effort FPR-Constrained Operating Point Study",
+  "declared_at": "2026-09-07",
+  "declared_before_corpus_was_scored": true,
+  "declared_before_validation_split_was_opened": true,
+  "why_this_file_exists": "R7-T8 established two things about Effort on independent media. Its low-false-positive region is real: zero false positives over 361 readable genuine lineages, a one-sided 95% upper bound of 0.83%. And the midpoint rule that chose the operating point inside that region delivered 4 detections out of 110, an upper bound of 8.13%, which the predeclared reject condition defines as not distinguishable from zero. R7-T8 recommended C and said explicitly that the unresolved problem was the selection rule rather than the detector's ranking ability. This task tests that claim once, on a third and completely new corpus, with the selection rule replaced by a false-positive-constrained one and everything else held fixed. Every rule below is written before any clip of the R7-T9 corpus has been scored. None may be revised after the validation split is opened. A result that misses a criterion is reported as a miss.",
+  "immutability": {
+    "statement": "The model, its checkpoint, and every preprocessing and inference semantic are taken from R7-T7 and R7-T8 unchanged. This task changes the data and the threshold-selection arithmetic, and nothing else.",
+    "inherited_from": "scripts/eval/effort_freeze.json (schema r7-t7-effort-freeze-1)",
+    "checkpoint_sha256": "8d86711f098d16b49c048962fc3e16a906380f7bb17b8a0e89bd545b926943ee",
+    "landmark_model_sha256": "8cae4375589dd915d9a0a881101bed1bbb4e9887e35e63b024388f1ca25ff869",
+    "upstream_repository": "https://github.com/YZY-stack/Effort-AIGI-Detection",
+    "upstream_revision": "96f5dea2b534d400cfd7003f053c7e93c8e16461",
+    "runner": "scripts/eval/models/effort_shadow.py, unmodified",
+    "frozen_and_not_revisited": [
+      "dlib 81-landmark detection, largest face, ArcFace 5-point alignment at scale 1.3 to 224x224",
+      "8 deterministic frames per clip via numpy.linspace over the decodable range",
+      "CLIP normalisation constants and INTER_LINEAR resize",
+      "softmax(...)[:, 1] as the frame score",
+      "arithmetic mean over frames that produced a score, as the clip score",
+      "abstention semantics: a clip with no readable face produces no reading and leaves both the numerator and the denominator of every rate"
+    ],
+    "explicitly_not_done": "No preprocessing optimisation of any kind. Face detection, frame count, aggregation, checkpoint, model and inference semantics are not tuned, compared, replaced or selected. This task studies operating-point selection only; improving anything else would make the R7-T7 and R7-T8 comparisons meaningless, which is the entire point.",
+    "comparison_semantic": "A clip is a candidate positive when its aggregated score is STRICTLY GREATER than the operating threshold. One semantic, used identically in threshold construction, in calibration, in final validation and in the regression replay: eval.analyze_effort._flagged, unmodified."
+  },
+  "independence_requirement": {
+    "statement": "Every headline lineage in the R7-T9 corpus must be new. No lineage used by R7-T5, R7-T7 or R7-T8 - in any split, as a base clip or as a constructed derivative - may appear in the R7-T9 calibration or final-validation populations.",
+    "lineage_identity_rule": "A source_lineage_id names the underlying recording. Two clips are the same lineage when they came from the same recording, including across a re-encode, a resolution change, a cut, or a manipulation applied to it.",
+    "prior_corpora_screened": [
+      "../deepguard-corpus/r7t5/corpus.json (the R7-T5 / R7-T7 corpus)",
+      "../deepguard-corpus/r7t8/corpus.json (the R7-T8 corpus)"
+    ],
+    "ffpp_derived_manipulations": "Several manipulated families here are built on FaceForensics++ originals and name a clip `<target>_<source>.mp4`. The lineage is keyed on the target original, which supplies the video, and BOTH ids a member names are consumed by that member: FaceForensics++ pairs videos chosen for visual similarity and pairs them reciprocally, so claiming only the target let `433_498` and `498_433` land on opposite sides of a split boundary in R7-T8. Any candidate clip naming an original that R7-T5, R7-T7 or R7-T8 reached is refused at build time and re-screened against the finished artifact.",
+    "calibration_and_validation_are_mutually_independent": "The two splits are disjoint by underlying source lineage, and are separated by whole source pools and whole manipulation families rather than by slicing one pool. The validation side therefore carries genuine acquisition domains and manipulation methods the threshold was never shown.",
+    "checks_that_must_pass": [
+      "no source_lineage_id of the R7-T9 corpus appears in any prior corpus",
+      "no sha256 of the R7-T9 corpus appears in any prior corpus",
+      "no FaceForensics++ original id reachable from any prior corpus is reachable from any R7-T9 lineage or recorded member name",
+      "no R7-T9 pool declares a parent dataset that a prior corpus read (source-family relationships that identifiers alone cannot express)",
+      "the within-corpus calibration/validation split is leak-free by lineage, by digest, and by base/derivative attachment",
+      "no unresolved pair of base clips within 5 bits of 64 on a perceptual difference hash, either against a prior corpus or across the split boundary"
+    ],
+    "gate": "ALL SIX GATE. scripts/eval/independence_check_r7t9.py exits non-zero on any finding and cannot return a pass with the perceptual pass skipped. Unlike R7-T8, where the perceptual pass reported and a reader judged, high perceptual similarity FAILS CLOSED here: an unresolved pair inside the gating band stops the study. The 6-10 bit band remains descriptive, because R7-T8 measured that band over 1034 clips against 637 and found 244 unrelated pairs in it and nothing related; gating there would fail on noise.",
+    "no_silent_whitelisting": "The only resolvable high-similarity pair is a declared regression fixture matching itself. Nothing else may be whitelisted, by this protocol or by the checker, and the whitelist is read from this file rather than written in code so it cannot widen without editing the predeclaration.",
+    "declared_reuse_of_regression_lineages": {
+      "lineages": [
+        "private:regression-1",
+        "private:regression-2"
+      ],
+      "statement": "The two benign real-world regression lineages ARE re-used from R7-T5/R7-T7/R7-T8. That re-use is deliberate, declared here in advance, and is the only re-use permitted anywhere in this corpus.",
+      "why": "The task requires these lineages to be re-read under the newly derived operating point. They are the cases that motivated the line of work, and a study that could not say what a new threshold does to them would leave the question that matters unanswered.",
+      "how_independence_is_preserved": "They are excluded from the calibration population, so they cannot influence threshold selection; they are excluded from every final-validation headline denominator, including the false-positive rate, the abstention rate and the core-stratum coverage gate; and they are reported in their own regression section. The automated check whitelists exactly these two lineage ids and fails on any other re-used lineage.",
+      "counted_toward_required_n": false,
+      "influences_threshold_selection": false,
+      "media_handling": "The media stays outside the repository and outside the corpus directory, is referenced where it already lives, and is never copied or committed. Only an opaque lineage id, a digest and measured results reach any artifact - no filename, no path, no container metadata, no personal detail."
+    },
+    "perceptual_corroboration": {
+      "why": "A 64-bit difference hash summarises one frame in eight bytes. Eight bytes cannot separate 'the same recording' from 'two recordings whose coarse luminance layout happens to agree', so a single coarse collision inside the gating band is a candidate and not a finding. The band therefore does not decide anything on its own.",
+      "rule": "Every pair inside the gating band is re-tested with a 256-bit difference hash (16x16) over the same sampled frames. Confirmed as a shared recording if the closest pair of frames agrees to within 64 of 256 bits; refuted if not; unresolved if the media cannot be read. Confirmed and unresolved both fail the check. Refuted is recorded with its evidence.",
+      "threshold_provenance": "Set from the two populations rather than from any pair it judges: two encodings of one frame agree to within roughly 10-15% of their bits, unrelated frames sit near 50%, and a quarter of 256 bits sits far from both.",
+      "when_this_was_added": "After the first run of the gate, which failed closed on 22 cross-task and 2 within-corpus candidates, and BEFORE any clip of this corpus had been scored by the detector. No Effort score, no threshold and no split result existed when this was written, so the refinement cannot have been selected against a measurement. It refines the INSTRUMENT, in the same way R7-T8 excluded uninformative frames after its own perceptual pass returned two hundred black-leader collisions. The rule is stated in full before it is run and it is not permitted to be revised again after its verdicts are seen.",
+      "positive_control": "The declared regression fixtures appear at Hamming distance 0 against both prior corpora and must be CONFIRMED by the corroboration test. An instrument that refuted them would be refuting a known true positive and could not be trusted to find a real one."
+    }
+  },
+  "corpus_construction": {
+    "pool_selection": "Source pools are chosen to represent genuine acquisition domains, and their sizes are set so that the predeclared power and coverage requirements are reachable. Pool composition, counts and split assignment are written in scripts/eval/build_corpus_r7t9.py before any clip is scored.",
+    "declared_pre_build_readability_probe": {
+      "what_it_was": "Before pool selection was fixed, a deterministic sample of about ten members from each candidate archive was decoded and passed through the frozen dlib 81-landmark preprocessing, and the number of the eight sampled frames that yielded a face was recorded.",
+      "what_it_computed": "Face detection counts only. The Effort model was not loaded and no score was computed anywhere in the probe.",
+      "why_it_is_declared": "It is a data-dependent input to corpus design and is therefore stated rather than hidden. It exists because a face-deepfake detector's false-positive rate can only be measured on media that contains a face, and two candidate pools - broadcast sports wide shots and a consumer fall-detection pool - returned faces in 1 of 10 and 2 of 10 clips. Sizing the core acquisition strata from pools with essentially no faces would have made the coverage gate a measurement of the pools rather than of the detector.",
+      "what_it_may_not_do": "It may not be used to choose between pools by their expected SCORES, which it does not compute, and it may not remove a pool from the corpus after that pool has been scored. A low-readability pool is retained as a declared NON-CORE long-tail stratum so that the abstention finding R7-T8 reported on surveillance-grade media stays visible here."
+    }
+  },
+  "statistical_power": {
+    "primary_unit": "one independent readable genuine source lineage, represented by its base clip",
+    "target": {
+      "id": "GENUINE-FPR-UB",
+      "statement": "one-sided 95% upper confidence bound on genuine-media FPR at or below 1%",
+      "threshold": 0.01,
+      "source": "scripts/eval/acceptance_target.json, declared in R7-T5, carried forward unrevised"
+    },
+    "estimator": "Clopper-Pearson exact one-sided 95% bound, scripts/eval/stats.py, unchanged",
+    "bound_method_is_exclusive": "Exact one-sided 95% Clopper-Pearson bounds are used for EVERY decision gate in this task: the genuine FPR upper bound, the intended-target TPR lower bound and the intended-target TPR upper bound. Wilson intervals, the rule of three and normal approximations may appear in descriptive prose and may not appear in a gate.",
+    "required_readable_genuine_n": 299,
+    "required_n_provenance": "stats.required_n_for_zero_observed(0.01) = 299. With zero observed false positives, 299 independent readable lineages is the smallest n whose exact one-sided 95% upper bound falls at or below 1%. Any k > 0 requires more.",
+    "required_in_both_splits": "BOTH the new calibration split and the new final-validation split must retain at least 299 readable independent genuine lineages. The calibration requirement is not decorative: a threshold selected under an FPR constraint measured on too few lineages is a threshold selected under no constraint at all.",
+    "abstentions": "An abstention is not a negative and not a positive. Abstained lineages are excluded from the readable n and reported in their own rate. The corpus therefore targets enough TOTAL genuine lineages per split to leave at least 299 readable after abstention.",
+    "always_reported_separately": [
+      "total genuine lineages",
+      "readable genuine lineages",
+      "abstained genuine lineages",
+      "false positives",
+      "observed FPR",
+      "one-sided 95% Clopper-Pearson upper bound on FPR"
+    ],
+    "consequence_if_short": "If the readable genuine n in either split is below 299, the measurements are still reported, the shortfall is reported as insufficient statistical power, Recommendation A is forbidden regardless of how favourable the point estimate is, and abstentions are not reinterpreted as negatives to close the gap."
+  },
+  "threshold_derivation": {
+    "rule": "On the CALIBRATION split only: enumerate the complete deterministic set of decision-equivalent operating thresholds induced by the observed readable base-clip scores; discard every candidate whose exact one-sided 95% Clopper-Pearson upper bound on the genuine false-positive rate exceeds 1%; among the survivors take the candidate with the highest observed intended-target TPR; break ties on lower observed genuine FPR and then on higher threshold.",
+    "candidate_set_construction": {
+      "statement": "Under the frozen semantic `score > threshold`, two thresholds are decision-equivalent on a finite sample exactly when no observed score separates them. The m distinct observed readable calibration base-clip scores s_1 < ... < s_m therefore partition the real line into exactly m + 1 equivalence classes, and the candidate set holds one representative of each.",
+      "representatives": [
+        "math.nextafter(s_1, -inf) for the class t < s_1, which flags every observation",
+        "s_i for each observed score, representing the class [s_i, s_{i+1}), which flags everything strictly above s_i"
+      ],
+      "induced_by": "every readable base clip of the calibration split, genuine and manipulated alike, excluding the declared regression fixtures and excluding constructed derivatives",
+      "forbidden": "No numeric grid. No 0.001 increments. No decimal quantisation. No rounding of a selected threshold. A candidate that is not induced by an observation is not a candidate.",
+      "size_is_data_determined": "The candidate set size is whatever the calibration sample produces and is recorded in the frozen artifact."
+    },
+    "per_candidate_measurements": [
+      "readable genuine false-positive count",
+      "observed genuine FPR",
+      "exact one-sided 95% Clopper-Pearson FPR upper bound",
+      "intended face-manipulation TPR",
+      "exact one-sided 95% Clopper-Pearson TPR lower bound",
+      "exact one-sided 95% Clopper-Pearson TPR upper bound"
+    ],
+    "safety_filter": "Retain only candidates whose genuine-media FPR one-sided 95% upper bound is <= 0.01. The filter is applied before any detection figure is consulted, so an operating point can never be bought with false positives.",
+    "selection_among_survivors": [
+      "1. highest observed intended-target TPR",
+      "2. if tied, lowest observed genuine FPR",
+      "3. if still tied, highest threshold"
+    ],
+    "implementation": "scripts/eval/analyze_effort_r7t9.py::candidate_thresholds, ::evaluate_candidates and ::select_operating_point, called on R7-T9 calibration records only.",
+    "no_anchoring": "The derivation runs on the new calibration split and its output is whatever that split produces. The historical candidates 0.96612 (R7-T7) and 0.9874524883925915 (R7-T8) are not a starting point, are not compared to the new value before it is fixed, and no acceptance criterion is stated in terms of either.",
+    "freezing": "The selected threshold, the complete candidate table, the calibration digests and the protocol digest are written to r7t9_threshold_frozen.json BEFORE any validation clip is scored. The freeze step refuses to overwrite an existing artifact. The validation split is then scored exactly once at that threshold. There is no second pass and no post-hoc adjustment.",
+    "if_no_candidate_survives": "If no calibration candidate satisfies the FPR safety constraint, no threshold is invented, the constraint is not weakened, Recommendation A is impossible, the eligibility path fails under this selection rule, and the final validation split is NOT opened to search for a usable threshold. The frozen artifact records the empty surviving set and the study reports it."
+  },
+  "abstention_gate": {
+    "statement": "Abstentions are neither false positives nor true negatives. A false-positive bound computed over the media the detector consented to read is a claim about that media only, so the size of the population it declined to read is a gate on the scope of any claim.",
+    "core_strata": {
+      "genuine_phone_direct": "direct_phone_consumer_capture",
+      "genuine_web_social": "web_social_acquired",
+      "genuine_broadcast_tv": "broadcast_television"
+    },
+    "core_strata_are_predeclared": "The three core acquisition strata are named here, before execution, and the mapping from a corpus stratum label to a core stratum is read from this file by the analyser. Which strata are core may not be decided after results are seen.",
+    "minimum_independent_lineages_per_core_stratum": 30,
+    "maximum_abstention_in_a_core_stratum": 0.25,
+    "gate": "Recommendation A is BLOCKED if a core stratum carries fewer than 30 independent genuine lineages in final validation, OR if abstention exceeds 25% in any core stratum that carries at least 30. Both conditions are evaluated; neither is skipped because the other passed.",
+    "reported_for_every_stratum": [
+      "total independent genuine lineages",
+      "readable lineages",
+      "abstained lineages",
+      "abstention percentage"
+    ],
+    "non_core_strata": "Non-core and out-of-distribution acquisition strata may abstain at any rate. They are still reported, and a high abstention rate there limits the scope of any eventual claim rather than blocking the gate.",
+    "what_a_core_stratum_samples": "Each core stratum samples an acquisition domain as it reaches a forensic pipeline, drawn from media in which a human face is the subject. That scope is stated here rather than discovered later, because it is the scope of the claim the study can make: a face-deepfake detector's false-positive rate is only defined on media that contains a face, and a stratum stocked with footage in which no face is visible would measure the sampling rather than the detector. Consumer and phone-captured media in which a face is present but is not the subject is carried in the declared NON-CORE long-tail strata, is inside every headline genuine denominator, and is reported with its own abstention rate, so the cost of that scope is visible in the same report.",
+    "core_stratum_pools": "Each core stratum carries at least two independent source pools per split where the mirror supplies them. Where it does not - broadcast television, for which one pool with faces exists - the upstream subsets of that one dataset are used as the split boundary, the lineage is the scene, and the shared production is declared in the corpus record as this corpus's one intra-corpus source-family overlap."
+  },
+  "decision_gate": {
+    "statement": "Exactly one of A, B or C is recommended. The criteria below are frozen now, are evaluated mechanically in analyze_effort_r7t9.py::evaluate_gate after the validation split is scored, and may not be changed once results are visible.",
+    "A": {
+      "label": "ELIGIBILITY STUDY PASSED",
+      "meaning": "The evidence justifies opening a separate, Architect-approved production integration DESIGN task. It does NOT itself make Effort risk-eligible, does not authorise any production change, and does not adopt the candidate threshold.",
+      "all_of_these_must_hold": [
+        {
+          "id": "A1",
+          "criterion": "Final-validation one-sided 95% Clopper-Pearson upper bound on genuine FPR at the frozen threshold, over readable independent genuine lineages, is <= 0.01."
+        },
+        {
+          "id": "A2",
+          "criterion": "Readable independent genuine lineage n in the final validation split is >= 299."
+        },
+        {
+          "id": "A3",
+          "criterion": "Every gating independence and leakage check passes with zero findings, and no unresolved high-similarity candidate is outstanding."
+        },
+        {
+          "id": "A4",
+          "criterion": "No known benign regression lineage produces a candidate-positive result when readable. An abstention on a regression lineage is reported as a non-observation, is not a pass, and A4 is then judged on the remaining regression evidence, which if empty fails A4."
+        },
+        {
+          "id": "A5",
+          "criterion": "Intended face-manipulation usefulness passes BOTH exact one-sided 95% Clopper-Pearson bounds: TPR lower bound > 0.05 AND TPR upper bound >= 0.10."
+        },
+        {
+          "id": "A6",
+          "criterion": "Core genuine acquisition coverage passes the predeclared abstention gate: each of the three core strata carries >= 30 independent genuine lineages in final validation and none exceeds 25% abstention."
+        }
+      ],
+      "usefulness_constraint": {
+        "tpr_lower_bound_above": 0.05,
+        "tpr_upper_bound_at_least": 0.1,
+        "why_both": "The lower bound above 5% is the requirement that the detection rate is distinguishable from a negligible one. The upper bound at or above 10% preserves R7-T8's usefulness rejection logic verbatim: a detection rate whose exact one-sided 95% upper bound sits below 10% is the predeclared definition of not distinguishable from zero, and it rejects the eligibility path rather than merely failing a criterion."
+      }
+    },
+    "B": {
+      "label": "CONTINUE SHADOW",
+      "meaning": "The signal remains potentially useful but the evidence is insufficient for A.",
+      "when": "Any A criterion fails while no predeclared reject condition is met - for example a shortfall of sample size, of coverage, or of study construction rather than of detector behaviour."
+    },
+    "C": {
+      "label": "REJECT EFFORT ELIGIBILITY",
+      "meaning": "Safety and usefulness cannot be jointly demonstrated under this FPR-constrained selection rule, and further eligibility work is not justified.",
+      "reject_conditions": {
+        "genuine_fpr_upper_bound_above": 0.05,
+        "primary_tpr_upper_bound_below": 0.1,
+        "independence_defect": "any gating independence or leakage check fails, making the study's measurements uninterpretable",
+        "no_safe_calibration_threshold_existed": "no calibration candidate satisfied the FPR safety constraint, so no operating point could be frozen"
+      },
+      "preserved_from_r7t8": "The usefulness rejection logic is carried over unchanged: if the exact one-sided 95% upper bound on intended-target TPR is below 10%, the eligibility path is rejected."
+    },
+    "tie_break": "If the criteria admit more than one reading, the more conservative recommendation is taken (C over B, B over A).",
+    "frozen": "These criteria are not modified after results are visible. A criterion invented or softened after the measurement is not a criterion."
+  },
+  "reporting_rules": {
+    "no_pooling": "Face manipulation and generated / out-of-distribution video are never added into one accuracy figure. Effort's checkpoint was trained on FaceForensics++ face manipulations; generated video is outside that distribution and is reported in its own section. Manipulation sub-types with different mechanics - identity swap, reenactment, lip-sync - are reported per family and broken out rather than silently averaged.",
+    "lineage_counted": "Every rate is counted over distinct lineages, never over files.",
+    "derivatives": "Constructed degradations are clip-level robustness observations. They add no lineage to any headline denominator, and a lineage does not become a false positive because one of its derivatives crossed the threshold. Base / as-acquired outcomes are reported separately from derivative robustness.",
+    "detector_vs_system": "Effort figures are threshold crossings by an offline detector. They are not risk verdicts and are never presented alongside production HIGH rates as if they measured the same thing.",
+    "abstention_is_not_a_pass": "An abstention is reported as a non-observation everywhere it occurs, including on the regression fixtures.",
+    "privacy": "Private media stays outside the repository and outside the corpus directory. No filename, no container metadata and no personal detail from it reaches any artifact. Lineage id, digest and measured score are all that travel.",
+    "minimum_final_report_contents": [
+      "total and readable genuine n",
+      "false positives, observed FPR, exact one-sided 95% FPR upper bound",
+      "overall genuine abstention and per-core-stratum abstention",
+      "intended face-manipulation TPR and FNR with exact one-sided 95% bounds",
+      "AUROC where semantically valid",
+      "per-family results",
+      "out-of-distribution results, separately",
+      "the false positives and false negatives themselves",
+      "score distributions",
+      "degradation robustness",
+      "regression results",
+      "runtime and compute observations"
+    ]
+  },
+  "scope": {
+    "shadow_only": "Effort is scored by the offline runner under scripts/eval/. It is not wired into the risk engine, is not risk-eligible, is not exposed through any API, report or dashboard, and changes no production file or threshold.",
+    "production_files_touched": "none",
+    "forbidden_even_if_a_passes": [
+      "adding Effort to the Risk Engine",
+      "inventing a standalone HIGH rule",
+      "exposing Effort through any API or UI",
+      "adopting the candidate threshold in production",
+      "modifying risk_engine.py, production thresholds, calibration_id, ingestion, the frontend, the report or the dashboard",
+      "changing LipForensics evidence-only status, EfficientNet-B7 behaviour or NVIDIA SVD behaviour"
+    ],
+    "not_implemented": "This task produces a recommendation and does not implement it. No threshold is adopted, no rule is added, no calibration_id is written. A Recommendation A authorises only a separate Architect-approved design task."
+  }
+}
