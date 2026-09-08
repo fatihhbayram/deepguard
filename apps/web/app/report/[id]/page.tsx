@@ -81,9 +81,14 @@ function riskAccent(level: string | null): string {
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="break-inside-avoid">
-      <dt className="text-xs uppercase tracking-wide opacity-60">{label}</dt>
-      <dd className="mt-0.5 font-mono text-xs break-all">{value}</dd>
+    <div className="min-w-0 break-inside-avoid">
+      {/* The label names a reading; the reading is a machine value. Only the second gets the
+          figure typeface, and `break-all` on it is what keeps a hash from widening the
+          document past the viewport on a phone. */}
+      <dt className="text-[11px] font-medium tracking-[0.06em] uppercase opacity-70">
+        {label}
+      </dt>
+      <dd className="mt-1 font-mono text-xs leading-relaxed break-all">{value}</dd>
     </div>
   );
 }
@@ -98,10 +103,15 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="mt-6 break-inside-avoid rounded border border-black/15 p-4 dark:border-white/20">
-      <h2 className="text-base font-semibold">{title}</h2>
-      {subtitle && <p className="mt-0.5 text-xs opacity-70">{subtitle}</p>}
-      <div className="mt-3">{children}</div>
+    // An evidence block: a hairline, a half-step of tone off the page, and no shadow. The
+    // tint is dropped for print — a filled block costs toner on every section and separates
+    // nothing the rule does not already separate.
+    <section className="mt-5 break-inside-avoid rounded-lg border border-black/12 bg-paper-2 px-5 py-4 dark:border-white/20 print:bg-transparent print:px-4">
+      <h2 className="text-[15px] font-semibold tracking-[-0.01em]">{title}</h2>
+      {subtitle && (
+        <p className="mt-1 max-w-[72ch] text-xs leading-relaxed opacity-70">{subtitle}</p>
+      )}
+      <div className="mt-3.5">{children}</div>
     </section>
   );
 }
@@ -536,22 +546,28 @@ function SyntheticVideoSection({ signal }: { signal: SyntheticVideoSignal | null
               No clip evidence is stored for this signal.
             </p>
           ) : (
-            <table className="mt-2 w-full table-fixed text-left text-xs">
-              <thead>
-                <tr className="border-b border-black/15 dark:border-white/20">
-                  <th className="py-1 font-medium">Frame index</th>
-                  <th className="py-1 font-medium">Raw logit</th>
-                </tr>
-              </thead>
-              <tbody>
-                {signal.segments.map((segment) => (
-                  <tr key={segment.clip_index} className="border-b border-black/5 last:border-b-0 dark:border-white/10">
-                    <td className="py-1 font-mono">{segment.clip_index}</td>
-                    <td className="py-1 font-mono">{segment.logit}</td>
+            <div className="mt-2 overflow-x-auto print:overflow-x-visible">
+              {/* A table of figures does not reflow: at a phone width `table-fixed` would
+                  wrap a logit mid-number to fit a column narrower than the value in it.
+                  It scrolls in its own box instead, so the document itself never
+                  scrolls sideways. Print gets the whole table, unscrolled. */}
+              <table className="w-full min-w-[22rem] table-fixed text-left text-xs">
+                <thead>
+                  <tr className="border-b border-black/15 dark:border-white/20">
+                    <th className="py-1 font-medium">Frame index</th>
+                    <th className="py-1 font-medium">Raw logit</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {signal.segments.map((segment) => (
+                    <tr key={segment.clip_index} className="border-b border-black/5 last:border-b-0 dark:border-white/10">
+                      <td className="py-1 font-mono">{segment.clip_index}</td>
+                      <td className="py-1 font-mono">{segment.logit}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
           <p className="mt-2 text-xs opacity-70">
             The frame index is NVIDIA&apos;s own index for the clip&apos;s middle frame. These
@@ -676,31 +692,37 @@ function ActiveSpeakerSection({ signal }: { signal: ActiveSpeakerSignal | null }
                 : "No speaking timeline is stored for this signal."}
             </p>
           ) : (
-            <table className="mt-3 w-full table-fixed text-left text-xs">
-              <thead>
-                <tr className="border-b border-black/15 dark:border-white/20">
-                  <th className="py-1 font-medium">Start</th>
-                  <th className="py-1 font-medium">End</th>
-                  <th className="py-1 font-medium">Face ID</th>
-                  <th className="py-1 font-medium">Diarized speaker</th>
-                </tr>
-              </thead>
-              <tbody>
-                {signal.segments.map((segment, index) => (
-                  <tr
-                    key={`${segment.start_time}-${segment.face_id}-${index}`}
-                    className="border-b border-black/5 last:border-b-0 dark:border-white/10"
-                  >
-                    <td className="py-1 font-mono">{segment.start_time.toFixed(2)}s</td>
-                    <td className="py-1 font-mono">{segment.end_time.toFixed(2)}s</td>
-                    <td className="py-1 font-mono">{segment.face_id}</td>
-                    <td className="py-1 font-mono">
-                      {segment.speaker_label ?? "no matched voice"}
-                    </td>
+            <div className="mt-3 overflow-x-auto print:overflow-x-visible">
+              {/* A table of figures does not reflow: at a phone width `table-fixed` would
+                  wrap a logit mid-number to fit a column narrower than the value in it.
+                  It scrolls in its own box instead, so the document itself never
+                  scrolls sideways. Print gets the whole table, unscrolled. */}
+              <table className="w-full min-w-[30rem] table-fixed text-left text-xs">
+                <thead>
+                  <tr className="border-b border-black/15 dark:border-white/20">
+                    <th className="py-1 font-medium">Start</th>
+                    <th className="py-1 font-medium">End</th>
+                    <th className="py-1 font-medium">Face ID</th>
+                    <th className="py-1 font-medium">Diarized speaker</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {signal.segments.map((segment, index) => (
+                    <tr
+                      key={`${segment.start_time}-${segment.face_id}-${index}`}
+                      className="border-b border-black/5 last:border-b-0 dark:border-white/10"
+                    >
+                      <td className="py-1 font-mono">{segment.start_time.toFixed(2)}s</td>
+                      <td className="py-1 font-mono">{segment.end_time.toFixed(2)}s</td>
+                      <td className="py-1 font-mono">{segment.face_id}</td>
+                      <td className="py-1 font-mono">
+                        {segment.speaker_label ?? "no matched voice"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
 
           <p className="mt-2 text-xs opacity-70">
@@ -763,31 +785,37 @@ function AudioSection({ signal }: { signal: AudioAuthenticitySignal | null }) {
                 : "No audio evidence windows are stored for this signal."}
             </p>
           ) : (
-            <table className="mt-3 w-full table-fixed text-left text-xs">
-              <thead>
-                <tr className="border-b border-black/15 dark:border-white/20">
-                  <th className="py-1 font-medium">Window</th>
-                  <th className="py-1 font-medium">Start</th>
-                  <th className="py-1 font-medium">End</th>
-                  <th className="py-1 font-medium">Raw logit[0]</th>
-                  <th className="py-1 font-medium">Bona fide logit</th>
-                </tr>
-              </thead>
-              <tbody>
-                {signal.windows.map((window) => (
-                  <tr
-                    key={window.clip_index}
-                    className="border-b border-black/5 last:border-b-0 dark:border-white/10"
-                  >
-                    <td className="py-1 font-mono">{window.clip_index}</td>
-                    <td className="py-1 font-mono">{window.start_time.toFixed(2)}s</td>
-                    <td className="py-1 font-mono">{window.end_time.toFixed(2)}s</td>
-                    <td className="py-1 font-mono">{window.logit.toFixed(4)}</td>
-                    <td className="py-1 font-mono">{window.bona_fide_logit.toFixed(4)}</td>
+            <div className="mt-3 overflow-x-auto print:overflow-x-visible">
+              {/* A table of figures does not reflow: at a phone width `table-fixed` would
+                  wrap a logit mid-number to fit a column narrower than the value in it.
+                  It scrolls in its own box instead, so the document itself never
+                  scrolls sideways. Print gets the whole table, unscrolled. */}
+              <table className="w-full min-w-[34rem] table-fixed text-left text-xs">
+                <thead>
+                  <tr className="border-b border-black/15 dark:border-white/20">
+                    <th className="py-1 font-medium">Window</th>
+                    <th className="py-1 font-medium">Start</th>
+                    <th className="py-1 font-medium">End</th>
+                    <th className="py-1 font-medium">Raw logit[0]</th>
+                    <th className="py-1 font-medium">Bona fide logit</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {signal.windows.map((window) => (
+                    <tr
+                      key={window.clip_index}
+                      className="border-b border-black/5 last:border-b-0 dark:border-white/10"
+                    >
+                      <td className="py-1 font-mono">{window.clip_index}</td>
+                      <td className="py-1 font-mono">{window.start_time.toFixed(2)}s</td>
+                      <td className="py-1 font-mono">{window.end_time.toFixed(2)}s</td>
+                      <td className="py-1 font-mono">{window.logit.toFixed(4)}</td>
+                      <td className="py-1 font-mono">{window.bona_fide_logit.toFixed(4)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
 
           <p className="mt-3 text-xs opacity-80">
@@ -1049,45 +1077,69 @@ export default async function Report({ params }: { params: Promise<{ id: string 
 
   if (!result.ok) {
     return (
-      <main className="mx-auto w-full max-w-3xl p-8">
-        <Link href="/" className="text-sm underline print:hidden">
-          ← Back to dashboard
-        </Link>
-        <h1 className="mt-6 text-xl font-semibold">Report unavailable</h1>
-        <p className="mt-2 text-sm opacity-70">{result.error}</p>
-        <p className="mt-1 font-mono text-xs break-all opacity-60">{id}</p>
-      </main>
+      // The same document surface as a report that resolved. A failure to load one is still
+      // read on the page the reader navigated to, and switching grounds underneath them would
+      // suggest they had landed somewhere else.
+      <div className="light flex flex-1 flex-col bg-paper text-doc">
+        <main className="mx-auto w-full max-w-3xl px-6 py-10 sm:px-8">
+          <Link href="/" className="text-sm underline print:hidden">
+            ← Back to dashboard
+          </Link>
+          <h1 className="mt-6 text-xl font-semibold">Report unavailable</h1>
+          <p className="mt-2 text-sm opacity-70">{result.error}</p>
+          <p className="mt-1 font-mono text-xs break-all opacity-60">{id}</p>
+        </main>
+      </div>
     );
   }
 
   const analysis = result.analysis;
 
   return (
-    <main className="mx-auto w-full max-w-3xl p-8 print:max-w-none print:p-0">
-      {/* Page setup for printing. Plain CSS because @page has no Tailwind equivalent, and
-          the report must print correctly with JavaScript disabled. */}
-      <style>{`
-        @page { size: A4; margin: 14mm; }
-        @media print {
-          html, body { background: #fff !important; color: #000 !important; }
-        }
-      `}</style>
+    /*
+     * `light` opts this subtree out of the `dark:` variant defined in `globals.css`, which
+     * makes the light half of every colour pair already written on this page the one that
+     * applies — including the risk palette's, which keeps one definition for both surfaces.
+     *
+     * That is deliberate and is the whole visual argument of this route. The dashboard is an
+     * operational instrument and is dark; the report is a document, it is read on paper as
+     * often as on a screen, and a document whose screen rendering is the photographic
+     * negative of its printed one is two documents. The wrapper takes the full column of the
+     * page rather than sitting inside it, so a report shorter than the viewport is not framed
+     * top and bottom by the instrument's graphite.
+     */
+    <div className="light flex flex-1 flex-col bg-paper text-doc">
+      <main className="mx-auto w-full max-w-3xl px-6 py-10 sm:px-8 sm:py-12 print:max-w-none print:p-0">
+        {/* Page setup for printing. Plain CSS because @page has no Tailwind equivalent, and
+            the report must print correctly with JavaScript disabled. */}
+        <style>{`
+          @page { size: A4; margin: 14mm; }
+          @media print {
+            html, body { background: #fff !important; color: #000 !important; }
+          }
+        `}</style>
 
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm font-semibold tracking-wide">InspectRoot</p>
-          <h1 className="text-xl font-semibold">Forensic Evidence Report</h1>
+        {/* The masthead. A document states what it is and who issued it before it states
+            anything else, and the rule under it is where the document proper begins. */}
+        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4 border-b border-black/15 pb-5 print:border-black/40">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold tracking-[0.16em] uppercase opacity-70">
+              InspectRoot
+            </p>
+            <h1 className="mt-1.5 text-2xl font-semibold tracking-[-0.02em]">
+              Forensic Evidence Report
+            </h1>
+          </div>
+          {/* Screen-only controls. Hidden in print so the document carries no dead UI. */}
+          <div className="flex shrink-0 items-center gap-4 print:hidden">
+            <Link href="/" className="text-sm underline">
+              ← Dashboard
+            </Link>
+            <PrintButton />
+          </div>
         </div>
-        {/* Screen-only controls. Hidden in print so the document carries no dead UI. */}
-        <div className="flex items-center gap-4 print:hidden">
-          <Link href="/" className="text-sm underline">
-            ← Dashboard
-          </Link>
-          <PrintButton />
-        </div>
-      </div>
 
-      <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
         <Field label="Analysis ID" value={analysis.id} />
         <Field label="Analysis status" value={analysis.status} />
         <Field label="Analysis timestamp (UTC)" value={analysis.created_at} />
@@ -1097,44 +1149,45 @@ export default async function Report({ params }: { params: Promise<{ id: string 
         />
       </dl>
 
-      <ScopeDisclosure analysis={analysis} />
+        <ScopeDisclosure analysis={analysis} />
 
-      <RiskSection analysis={analysis} />
+        <RiskSection analysis={analysis} />
 
-      <MediaSection analysis={analysis} media={analysis.media} />
+        <MediaSection analysis={analysis} media={analysis.media} />
 
-      <h2 className="mt-8 text-sm font-semibold uppercase tracking-wide">
-        Independent forensic evidence
-      </h2>
-      <p className="mt-1 text-xs opacity-70">
-        Each source is recorded separately and none of them is combined into the other.
-        {analysis.risk_rules_version === RULES_VERSION_V4
-          ? " Two of them can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. The mouth-dynamics model is calibrated and is recorded here as independent evidence, but under this ruleset it cannot change that classification. Neither can provenance, speaking evidence or audio evidence, which have no calibrated threshold at all."
-          : analysis.risk_rules_version === RULES_VERSION_V3
-          ? " Three of them are calibrated and can reach the risk classification above — the synthetic-video detector, the face-manipulation classifier and the mouth-dynamics model — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence and audio evidence have no calibrated threshold and cannot change that classification."
-          : analysis.risk_rules_version === RULES_VERSION_V2
-            ? " Two of them are calibrated and can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence, mouth-dynamics evidence and audio evidence have no calibrated threshold and cannot change that classification."
-            : " Only the synthetic-video detector contributes to the risk classification above; provenance, speaking evidence, face-manipulation evidence, mouth-dynamics evidence and audio evidence are recorded as independent forensic facts and cannot change that classification."}
-      </p>
-
-      <SyntheticVideoSection signal={analysis.synthetic_video} />
-      <ProvenanceSection signal={analysis.provenance} analysis={analysis} />
-      <ActiveSpeakerSection signal={analysis.active_speaker} />
-      <FaceManipulationSection signal={analysis.face_manipulation} analysis={analysis} />
-      <LipForensicsSection signal={analysis.lip_forensics} analysis={analysis} />
-      <AudioSection signal={analysis.audio_authenticity} />
-
-      <footer className="mt-8 break-inside-avoid border-t border-black/15 pt-4 text-xs opacity-70 dark:border-white/20">
-        <p>
-          This report is a rendering of forensic evidence persisted by InspectRoot for the
-          analysis named above. It is not cryptographically signed, and reproducing it does
-          not establish that its contents are unaltered. The SHA-256 shown is the hash of the
-          analysed media, not of this report.
+        <h2 className="mt-10 border-b border-black/15 pb-2 text-[13px] font-semibold tracking-[0.1em] uppercase print:border-black/40">
+          Independent forensic evidence
+        </h2>
+        <p className="mt-3 max-w-[76ch] text-xs leading-relaxed opacity-70">
+          Each source is recorded separately and none of them is combined into the other.
+          {analysis.risk_rules_version === RULES_VERSION_V4
+            ? " Two of them can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. The mouth-dynamics model is calibrated and is recorded here as independent evidence, but under this ruleset it cannot change that classification. Neither can provenance, speaking evidence or audio evidence, which have no calibrated threshold at all."
+            : analysis.risk_rules_version === RULES_VERSION_V3
+            ? " Three of them are calibrated and can reach the risk classification above — the synthetic-video detector, the face-manipulation classifier and the mouth-dynamics model — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence and audio evidence have no calibrated threshold and cannot change that classification."
+            : analysis.risk_rules_version === RULES_VERSION_V2
+              ? " Two of them are calibrated and can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence, mouth-dynamics evidence and audio evidence have no calibrated threshold and cannot change that classification."
+              : " Only the synthetic-video detector contributes to the risk classification above; provenance, speaking evidence, face-manipulation evidence, mouth-dynamics evidence and audio evidence are recorded as independent forensic facts and cannot change that classification."}
         </p>
-        <p className="mt-2">
-          Nothing in this document states that the analysed media is genuine or manipulated.
-        </p>
-      </footer>
-    </main>
+
+        <SyntheticVideoSection signal={analysis.synthetic_video} />
+        <ProvenanceSection signal={analysis.provenance} analysis={analysis} />
+        <ActiveSpeakerSection signal={analysis.active_speaker} />
+        <FaceManipulationSection signal={analysis.face_manipulation} analysis={analysis} />
+        <LipForensicsSection signal={analysis.lip_forensics} analysis={analysis} />
+        <AudioSection signal={analysis.audio_authenticity} />
+
+        <footer className="mt-10 break-inside-avoid border-t border-black/15 pt-4 text-xs leading-relaxed opacity-70 dark:border-white/20 print:border-black/40">
+          <p className="max-w-[76ch]">
+            This report is a rendering of forensic evidence persisted by InspectRoot for the
+            analysis named above. It is not cryptographically signed, and reproducing it does
+            not establish that its contents are unaltered. The SHA-256 shown is the hash of the
+            analysed media, not of this report.
+          </p>
+          <p className="mt-2 max-w-[76ch] font-medium">
+            Nothing in this document states that the analysed media is genuine or manipulated.
+          </p>
+        </footer>
+      </main>
+    </div>
   );
 }

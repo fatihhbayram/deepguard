@@ -13,7 +13,7 @@ export function PrintButton() {
     <button
       type="button"
       onClick={() => window.print()}
-      className="rounded border border-black/20 px-2 py-1 text-sm dark:border-white/25"
+      className="cursor-pointer rounded-md border border-black/20 px-2.5 py-1 text-sm transition-colors duration-150 hover:border-black/45 dark:border-white/25"
     >
       Print / Save as PDF
     </button>

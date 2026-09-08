@@ -1,40 +1,58 @@
 @import "tailwindcss";
 
 /*
- * `dark:` resolves off the class on <html>, not off the system theme. DeepGuard ships one
- * theme, and the risk palette in `analysis.ts` states its legible foreground in `dark:`
- * variants — leaving those to `prefers-color-scheme` would drop rose-700 onto an ink
- * background for anyone whose machine is set to light.
+ * `dark:` resolves off the class on <html>, not off the system theme. InspectRoot ships one
+ * operational theme, and the risk palette in `analysis.ts` states its legible foreground in
+ * `dark:` variants — leaving those to `prefers-color-scheme` would drop rose-700 onto a
+ * graphite background for anyone whose machine is set to light.
+ *
+ * The `:not()` is the report's opt-out. The evidence report is a document rather than an
+ * instrument: it is light on screen and on paper, and it says so by putting `light` on its
+ * own wrapper instead of by restating every colour it needs. Inside that subtree the `dark:`
+ * variants stop resolving, so the light halves of the pairs already written throughout the
+ * report — `border-black/15 dark:border-white/20`, `text-rose-700 dark:text-rose-300` — are
+ * the ones that apply, and the risk palette keeps one definition for both surfaces.
  */
-@custom-variant dark (&:where(.dark, .dark *));
+@custom-variant dark (&:where(.dark, .dark *):not(:where(.light, .light *)));
 
 @theme {
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", monospace;
 
   /*
-   * A warm base, not a cool one. The greys are tinted toward the ink so the surface reads
-   * as one material under long viewing rather than as a neutral chrome the evidence sits
-   * on top of.
+   * A cool base. Graphite tinted toward navy, not black: a pure-black instrument reads as a
+   * demo surface, and the greys here are close enough in hue to sit as one material under
+   * long viewing while still separating the raised plate from the ground it sits on.
    *
    * `accent` is reserved for the system speaking — focus, interaction, ingest, live state.
-   * It is never used on an evidence surface: it sits between rose and amber in hue, and a
-   * forensic figure tinted with it would read as a risk signal the engine never emitted.
-   * Colour on evidence belongs to `RISK_STYLES` alone.
+   * It is never used on an evidence surface. It is a muted steel-blue, deliberately far in
+   * hue from rose and amber: an accent that sat between them would make an ordinary control
+   * read as a risk signal the engine never emitted. Colour on evidence belongs to
+   * `RISK_STYLES` alone.
    */
-  --color-ink: #141311;
-  --color-ink-2: #1a1917;
-  --color-bone: #ece9e2;
-  --color-muted: #8d8779;
-  --color-line: #2b2925;
-  --color-accent: #ff4a00;
+  --color-ink: #12161d;
+  --color-ink-2: #171c25;
+  --color-bone: #e4e8ef;
+  --color-muted: #8a93a3;
+  --color-line: #2a313c;
+  --color-accent: #7d9dc4;
+
+  /*
+   * The document surface. The report is light-first on screen and on paper, so its ground
+   * and its foreground are named here rather than assembled out of the instrument's tokens
+   * — the two surfaces are different materials and are not shades of one another.
+   */
+  --color-paper: #ffffff;
+  --color-paper-2: #f4f6f8;
+  --color-doc: #15181e;
+  --color-doc-muted: #545b67;
 
   /* Hairlines tinted from the foreground rather than flat greys, so they hold their weight
      against both the base and the raised plate. */
-  --color-hair: rgba(236, 233, 226, 0.08);
-  --color-plate: rgba(236, 233, 226, 0.1);
-  --color-chip: rgba(236, 233, 226, 0.15);
-  --color-rule: rgba(236, 233, 226, 0.3);
+  --color-hair: rgba(228, 232, 239, 0.08);
+  --color-plate: rgba(228, 232, 239, 0.1);
+  --color-chip: rgba(228, 232, 239, 0.14);
+  --color-rule: rgba(228, 232, 239, 0.3);
 }
 
 html {
@@ -45,6 +63,15 @@ html {
 body {
   color: var(--color-bone);
   font-family: var(--font-sans);
+}
+
+/* The report's own ground, so a document longer or shorter than the viewport is not framed
+   by the instrument's graphite at either end. `color-scheme` follows, or the browser draws
+   the form controls and the scrollbar of a light document in dark chrome. */
+.light {
+  background: var(--color-paper);
+  color: var(--color-doc);
+  color-scheme: light;
 }
 
 /*
@@ -65,12 +92,18 @@ html {
 
 :focus-visible {
   outline: 2px solid var(--color-accent);
-  outline-offset: 3px;
+  outline-offset: 2px;
 
   /* Tailwind's `transition-colors` animates `outline-color`, which fades the ring in over
      the hover duration. Focus indication is the one thing that must never lag the input
      that caused it, so transitions are dropped for as long as the ring is showing. */
   transition-property: none;
+}
+
+/* The document's ring is drawn against paper, where the instrument's steel-blue is too pale
+   to be the only thing marking where the keyboard is. */
+.light :focus-visible {
+  outline-color: #2f4f75;
 }
 
 a {

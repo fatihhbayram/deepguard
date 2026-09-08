@@ -102,23 +102,30 @@ async function fetchHealth(): Promise<HealthResult> {
  * ------------------------------------------------------------------ */
 
 /**
- * The small mono label that names a region of the instrument.
+ * The small label that names a region of the instrument.
  *
  * Not a decorative kicker. Every one of these labels a control surface or an evidence
- * region the way a panel legend does, which is why they are set in the figure typeface and
- * carry the accent: on this page the accent is the system speaking about itself, and the
- * legend is the system naming its own parts.
+ * region the way a panel legend does, which is why it carries the accent: on this page the
+ * accent is the system speaking about itself, and the legend is the system naming its own
+ * parts.
+ *
+ * Set in the UI typeface, not the figure one. Monospace on this product means "this is a
+ * value a machine produced" — a hash, an id, a score, a status the pipeline committed — and
+ * a region name is none of those. Spending the figure typeface on section furniture is what
+ * makes it stop reading as a signal where it actually matters.
  */
 function Legend({ children }: { children: React.ReactNode }) {
   return (
-    <p className="font-mono text-[11px] tracking-[0.18em] text-accent">— {children}</p>
+    <p className="text-[11px] font-medium tracking-[0.16em] text-accent uppercase">
+      {children}
+    </p>
   );
 }
 
 /** A section heading. Tight, semibold, at the scale the reference sets display type. */
 function Heading({ children }: { children: React.ReactNode }) {
   return (
-    <h2 className="mt-3 text-2xl font-semibold tracking-[-0.03em] text-bone sm:text-3xl">
+    <h2 className="mt-2.5 text-2xl font-semibold tracking-[-0.02em] text-bone sm:text-[28px]">
       {children}
     </h2>
   );
@@ -158,11 +165,12 @@ function Chevron({ className = "" }: { className?: string }) {
 function StatusRow({ label, ok, detail }: { label: string; ok: boolean; detail: string }) {
   return (
     <div className="flex items-center justify-between gap-6 py-2">
-      <span className="font-mono text-[11px] tracking-[0.14em] text-muted">{label}</span>
+      <span className="text-[12px] text-muted">{label}</span>
+      {/* The component's own word for its state, so it stays in the figure typeface. */}
       <span className="flex items-center gap-2 font-mono text-[11px] text-bone">
         <span
           aria-hidden
-          className={`inline-block size-1.5 ${ok ? "bg-bone" : "bg-rose-400"}`}
+          className={`inline-block size-1.5 rounded-full ${ok ? "bg-bone" : "bg-rose-400"}`}
         />
         {detail}
       </span>
@@ -199,32 +207,33 @@ function HealthControl({
 }) {
   return (
     <details className="group relative">
-      <summary className="flex cursor-pointer list-none items-center gap-2.5 border border-line px-3 py-1.5 font-mono text-[11px] tracking-[0.16em] transition-colors duration-150 select-none hover:border-rule [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md border border-line px-2.5 py-1.5 text-[12px] font-medium transition-colors duration-150 select-none hover:border-rule [&::-webkit-details-marker]:hidden">
         <span className="sr-only">System status: </span>
         <span
           aria-hidden
-          className={`inline-block size-1.5 ${systemOk ? "bg-bone" : "bg-rose-400"}`}
+          className={`inline-block size-1.5 rounded-full ${systemOk ? "bg-bone" : "bg-rose-400"}`}
         />
         <span className={systemOk ? "text-bone" : "text-rose-300"}>
-          {systemOk ? "OPERATIONAL" : "DEGRADED"}
+          {systemOk ? "Operational" : "Degraded"}
         </span>
         <Chevron className="text-muted" />
       </summary>
 
-      <div className="absolute right-0 z-30 mt-2 w-80 border border-line bg-ink-2 p-4 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)]">
-        <p className="font-mono text-[10px] tracking-[0.14em] text-muted">
-          Web → API → DB connectivity check
-        </p>
+      {/* A restrained plate, not a lifted card. The panel is raised by one step of surface
+          and a hairline; the deep drop shadow it used to carry made a connectivity check
+          read as the most urgent thing on the page. */}
+      <div className="absolute right-0 z-30 mt-2 w-80 rounded-lg border border-line bg-ink-2 p-4">
+        <p className="text-[12px] text-muted">Web → API → DB connectivity check</p>
 
         <div className="mt-3 divide-y divide-hair">
-          <StatusRow label="WEB" ok detail="running" />
+          <StatusRow label="Web" ok detail="running" />
           <StatusRow
             label="API"
             ok={apiOk}
             detail={result.reachable ? result.health.status : "unreachable"}
           />
           <StatusRow
-            label="DATABASE"
+            label="Database"
             ok={dbOk}
             detail={result.reachable ? result.health.database : "unknown"}
           />
@@ -252,22 +261,23 @@ function HealthControl({
  */
 function SessionControl({ user }: { user: SessionUser }) {
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex items-center gap-2.5">
       <span
-        className="hidden max-w-[24ch] truncate font-mono text-[11px] text-muted sm:inline"
+        className="hidden max-w-[24ch] truncate font-mono text-[11px] text-muted md:inline"
         title={user.email}
       >
         {user.email}
       </span>
-      <span className="border border-line px-2 py-1 font-mono text-[10px] tracking-[0.16em] text-bone">
+      {/* The API's own word for the role, so it stays in the figure typeface. */}
+      <span className="rounded-md border border-line px-2 py-1 font-mono text-[10px] tracking-[0.12em] text-bone">
         {user.role}
       </span>
       <form action="/logout" method="post">
         <button
           type="submit"
-          className="border border-line px-3 py-1.5 font-mono text-[11px] tracking-[0.16em] text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+          className="rounded-md border border-line px-2.5 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
         >
-          SIGN OUT
+          Sign out
         </button>
       </form>
     </div>
@@ -699,7 +709,7 @@ function Risk({ analysis }: { analysis: AnalysisSummary }) {
         <span className={`px-1.5 py-0.5 ${RISK_STYLES[level]}`}>{RISK_LABELS[level]}</span>
       </div>
       {analysis.risk_rules_version && (
-        <div className="mt-1.5 text-[10px] tracking-[0.08em] text-muted">
+        <div className="mt-1.5 text-[10px] tracking-[0.04em] text-muted">
           ruleset {analysis.risk_rules_version}
         </div>
       )}
@@ -707,8 +717,8 @@ function Risk({ analysis }: { analysis: AnalysisSummary }) {
           the rule that produced it and the measurement that rule was calibrated on, so
           all three stay reachable without a detail page or any client-side state. */}
       <details className="group/inner mt-1.5">
-        <summary className="cursor-pointer text-[10px] tracking-[0.14em] text-muted transition-colors duration-150 select-none hover:text-accent">
-          TRACE
+        <summary className="cursor-pointer text-[11px] text-muted transition-colors duration-150 select-none hover:text-bone">
+          Trace
         </summary>
         <ul className="mt-1.5 space-y-1 text-[10px] text-muted">
           <li>Rule: {analysis.risk_rule_id ?? ABSENT}</li>
@@ -782,8 +792,14 @@ function Field({
 }) {
   return (
     <div className={className}>
-      <dt className="font-mono text-[10px] tracking-[0.16em] text-muted">{term}</dt>
-      <dd className="mt-2 font-mono text-[11px] leading-relaxed text-bone">{children}</dd>
+      {/* The label names a reading and is set in the UI typeface; the reading itself is a
+          machine value and keeps the figure typeface below it. */}
+      <dt className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
+        {term}
+      </dt>
+      <dd className="mt-1.5 font-mono text-[11px] leading-relaxed break-words text-bone">
+        {children}
+      </dd>
     </div>
   );
 }
@@ -798,41 +814,71 @@ function Status({ status }: { status: string }) {
         : "text-muted";
 
   return (
-    <span className={`font-mono text-[11px] tracking-[0.14em] ${tone}`}>{status}</span>
+    <span className={`font-mono text-[11px] tracking-[0.08em] ${tone}`}>{status}</span>
   );
 }
 
 /**
  * One analysis as a record in the log.
  *
- * The row states the four things a reader needs to act — what the media is, where the
- * pipeline got to, what DeepGuard classified it at, and where the report is — and puts the
- * eleven remaining readings one disclosure below it. Nothing is dropped: the drawer holds
- * every figure the table used to spread across sixteen columns, in the same words, and it
- * opens with no JavaScript at all.
+ * The row states the five things a reader triaging a queue needs — what the media is, how
+ * it was acquired, where the pipeline got to, what DeepGuard classified it at, and when it
+ * was taken — and puts the remaining readings one disclosure below it. Nothing is dropped:
+ * the drawer holds every figure the table used to spread across sixteen columns, in the same
+ * words, and it opens with no JavaScript at all.
  *
- * The columns are declared once on the list and repeated here, so the four primary fields
- * still line up down the page. A record that could not be compared against the record above
- * it would not be a log.
+ * Acquisition and the timestamp were promoted out of that drawer by R7-T13. Both are triage
+ * context rather than detector evidence — which artifact this is and when it was taken — and
+ * a reader scanning for one row among many was being made to open every drawer to find them.
+ *
+ * The columns are declared once on the list and repeated here, so the primary fields still
+ * line up down the page. A record that could not be compared against the record above it
+ * would not be a log.
  */
 function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: number }) {
   return (
-    <li className="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-x-5 gap-y-4 border-b border-hair px-4 py-6 transition-colors duration-150 hover:bg-ink-2 lg:grid-cols-[3.5rem_minmax(0,1fr)_8rem_15rem_7rem] lg:items-start lg:gap-x-8">
-      <span className="font-mono text-[11px] text-muted tabular-nums">
+    <li className="grid grid-cols-[2rem_minmax(0,1fr)] gap-x-4 gap-y-3 border-b border-hair px-3 py-4 last:border-b-0 transition-colors duration-150 hover:bg-ink-2 lg:grid-cols-[2.5rem_minmax(0,1fr)_6.5rem_12rem_11rem] lg:items-start lg:gap-x-6 lg:px-4">
+      <span className="mt-0.5 font-mono text-[11px] text-muted tabular-nums">
         {String(index + 1).padStart(2, "0")}
       </span>
 
       <div className="min-w-0">
-        {/* The full id stays in the title so it remains available without a detail page. */}
-        <div
-          className="truncate text-[15px] font-medium tracking-[-0.01em] text-bone"
+        {/* The row's affordance. The media identity is what a reader is looking for and what
+            they mean to open, so it is the link — a whole-row anchor cannot wrap the evidence
+            disclosure below without nesting one control inside another, and the risk level is
+            deliberately never the control: a finding that navigated would read as a button.
+
+            The arrow is part of the link text rather than a decoration beside it, so what is
+            clickable and what it does are one target at any width. */}
+        <Link
+          href={`/report/${analysis.id}`}
+          className="group/row inline-flex max-w-full items-baseline gap-1.5 text-[15px] font-medium tracking-[-0.01em] text-bone transition-colors duration-150 hover:text-accent"
           title={analysis.original_filename ?? undefined}
         >
-          {analysis.original_filename ?? "—"}
-        </div>
-        <div className="mt-1.5 font-mono text-[11px] text-muted" title={analysis.id}>
+          <span className="truncate">{analysis.original_filename ?? "—"}</span>
+          <span
+            aria-hidden
+            className="shrink-0 text-muted transition-transform duration-150 group-hover/row:translate-x-0.5 group-hover/row:text-accent"
+          >
+            →
+          </span>
+          <span className="sr-only">— open report</span>
+        </Link>
+
+        {/* The full id stays in the title so it remains available without a detail page. */}
+        <div className="mt-1 font-mono text-[11px] text-muted" title={analysis.id}>
           {analysis.id.slice(0, 8)}
         </div>
+
+        {/* How the artifact reached DeepGuard, promoted out of the evidence drawer and into
+            the queue row. It is the same sentence `acquisitionStatement` gives the report
+            (R7-T12), reproduced in full and never abbreviated for the column: the difference
+            between a single served file and one assembled here is exactly what the wording
+            exists to carry, and a truncation would drop it. It is not a finding about the
+            media. */}
+        <p className="mt-1.5 text-[12px] leading-relaxed text-muted">
+          {acquisitionStatement(analysis)}
+        </p>
       </div>
 
       <div className="col-start-2 lg:col-start-auto">
@@ -846,38 +892,38 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
         <Risk analysis={analysis} />
       </div>
 
-      {/* A separate link, deliberately not the risk classification: a level that navigated
-          would make the finding look like a control. */}
-      <div className="col-start-2 lg:col-start-auto lg:text-right">
-        <Link
-          href={`/report/${analysis.id}`}
-          className="font-mono text-[11px] tracking-[0.14em] text-bone underline decoration-line transition-colors duration-150 hover:text-accent hover:decoration-accent"
-        >
-          REPORT
-        </Link>
+      {/* When the analysis was taken. The API's own timestamp, so it keeps the figure
+          typeface and is shown as stored rather than reformatted into a local rendering the
+          record does not hold. */}
+      <div className="col-start-2 lg:col-start-auto">
+        <div className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase lg:hidden">
+          Submitted
+        </div>
+        <div className="mt-1 font-mono text-[11px] break-words text-muted lg:mt-0">
+          {analysis.created_at}
+        </div>
       </div>
 
       <details className="group col-start-2 lg:col-span-4 lg:col-start-2">
-        <summary className="inline-flex cursor-pointer list-none items-center gap-2 font-mono text-[10px] tracking-[0.18em] text-muted transition-colors duration-150 select-none hover:text-bone [&::-webkit-details-marker]:hidden">
-          EVIDENCE
+        <summary className="inline-flex cursor-pointer list-none items-center gap-2 rounded-sm text-[12px] font-medium text-muted transition-colors duration-150 select-none hover:text-bone [&::-webkit-details-marker]:hidden">
+          Evidence
           <Chevron />
         </summary>
 
-        <dl className="mt-4 grid gap-x-8 gap-y-6 border-t border-hair pt-5 sm:grid-cols-2 lg:grid-cols-3">
-          <Field term="DECLARED TYPE">{analysis.declared_content_type}</Field>
+        <dl className="mt-3.5 grid gap-x-8 gap-y-5 border-t border-hair pt-4 sm:grid-cols-2 lg:grid-cols-3">
+          <Field term="Declared type">{analysis.declared_content_type}</Field>
 
           {/* What the bytes actually are, as opposed to what the client declared them to
               be. ffprobe established these before any detector ran. */}
-          <Field term="MEDIA (FFPROBE)">
+          <Field term="Media (ffprobe)">
             <Media media={analysis.media} />
           </Field>
 
-          <Field term="NORMALIZED">{analysis.was_normalized ? "yes" : "no"}</Field>
-          {/* How the artifact was obtained, in the same sentence the report gives (R7-T12).
-              The dashboard and the report read one row and must make one claim about it, so
-              the wording comes from `acquisitionStatement` rather than from a second
-              abbreviation written here. It is not a finding about the media. */}
-          <Field term="ACQUISITION">{acquisitionStatement(analysis)}</Field>
+          <Field term="Normalized">{analysis.was_normalized ? "yes" : "no"}</Field>
+          {/* Acquisition is no longer listed here: it is stated in full on the row above,
+              where a reader sees it without opening anything. It is still the one sentence
+              `acquisitionStatement` gives the report (R7-T12) — the dashboard and the report
+              read one row and must make one claim about it — and it is said once. */}
 
           {/* The detector's own state, verbatim: SUCCESS, FAILED or TIMEOUT are three
               different forensic facts, and an analysis may carry no signal at all. */}
@@ -893,34 +939,34 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
             </span>
           </Field>
 
-          <Field term="SYNTHETIC PROBABILITY">
+          <Field term="Synthetic probability">
             <span title={probabilityTitle(analysis.synthetic_video)}>
               {probabilityText(analysis.synthetic_video)}
             </span>
           </Field>
 
-          <Field term="CLIPS">{analysis.synthetic_video?.total_clips ?? ABSENT}</Field>
+          <Field term="Clips">{analysis.synthetic_video?.total_clips ?? ABSENT}</Field>
 
-          <Field term="STRONGEST CLIPS (LOGIT)">
+          <Field term="Strongest clips (logit)">
             <ClipEvidence signal={analysis.synthetic_video} />
           </Field>
 
           {/* When a tracked face was seen speaking. An absent, failed or empty timeline is
               never rendered as a finding about the media. */}
-          <Field term="ACTIVE SPEAKER">
+          <Field term="Active speaker">
             <ActiveSpeaker signal={analysis.active_speaker} />
           </Field>
 
           {/* The raw figures the local checkpoint emitted per window of audio, with the
               preprocessing bounds of the window each came from. Never aggregated, and never
               rendered as a verdict about the audio. */}
-          <Field term="AUDIO">
+          <Field term="Audio">
             <AudioEvidence signal={analysis.audio_authenticity} />
           </Field>
 
           {/* The local face classifier's own score for the clip, uncalibrated and outside
               the risk classification entirely. Shown as stored and never thresholded. */}
-          <Field term="FACE MANIPULATION">
+          <Field term="Face manipulation">
             <FaceManipulation signal={analysis.face_manipulation} />
           </Field>
 
@@ -928,17 +974,15 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
               risk classification entirely. A separate question from the row above it — mouth
               movement rather than the appearance of a face crop — on a separate scale, and
               never compared with it. Shown as stored and never thresholded. */}
-          <Field term="MOUTH DYNAMICS">
+          <Field term="Mouth dynamics">
             <LipForensics signal={analysis.lip_forensics} />
           </Field>
 
           {/* What the file itself claims, read from the forensic original. A missing or
               invalid manifest is never rendered as a verdict about the media. */}
-          <Field term="PROVENANCE (C2PA)">
+          <Field term="Provenance (C2PA)">
             <Provenance signal={analysis.provenance} />
           </Field>
-
-          <Field term="CREATED">{analysis.created_at}</Field>
         </dl>
       </details>
     </li>
@@ -947,14 +991,17 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
 
 function CaseLog({ analyses }: { analyses: AnalysisSummary[] }) {
   return (
-    <div className="border-t border-line">
+    // The queue is a plate of its own, so a long list reads as one bounded surface rather
+    // than as rows running off the page. `overflow-hidden` is what keeps the last row's
+    // hover fill inside the rounded corner.
+    <div className="overflow-hidden rounded-lg border border-line">
       {/* The column legend, on the viewports where there are columns to legend. */}
-      <div className="hidden border-b border-line px-4 py-2.5 font-mono text-[10px] tracking-[0.16em] text-muted lg:grid lg:grid-cols-[3.5rem_minmax(0,1fr)_8rem_15rem_7rem] lg:gap-x-8">
+      <div className="hidden border-b border-line bg-ink-2 px-4 py-2.5 text-[11px] font-medium tracking-[0.08em] text-muted uppercase lg:grid lg:grid-cols-[2.5rem_minmax(0,1fr)_6.5rem_12rem_11rem] lg:gap-x-6">
         <span>#</span>
-        <span>MEDIA</span>
-        <span>STATUS</span>
-        <span>RISK</span>
-        <span className="text-right">REPORT</span>
+        <span>Media</span>
+        <span>Status</span>
+        <span>Risk</span>
+        <span>Submitted</span>
       </div>
 
       <ol>
@@ -992,9 +1039,9 @@ function Alert({
   return (
     <p
       role="status"
-      className={`flex items-start gap-3 border px-4 py-3 font-mono text-[11px] leading-relaxed ${styles.field}`}
+      className={`flex items-start gap-3 rounded-md border px-4 py-3 text-[13px] leading-relaxed ${styles.field}`}
     >
-      <span aria-hidden className={`mt-1.5 size-1.5 shrink-0 ${styles.dot}`} />
+      <span aria-hidden className={`mt-1.5 size-1.5 shrink-0 rounded-full ${styles.dot}`} />
       <span>{children}</span>
     </p>
   );
@@ -1009,8 +1056,8 @@ function Alert({
  * the outcome arrives as a redirect rather than as an in-place update, which is why the
  * result of the last submission is read out of the query string here.
  *
- * Two channels, deliberately, on one form. The divider between them is presentation: the
- * route accepts either field, so splitting them into separate forms — or into a scripted
+ * Two channels, deliberately, on one form. Which of the two a reader uses is presentation:
+ * the route accepts either field, so splitting them into separate forms — or into a scripted
  * toggle this page has no JavaScript for — would change the submission, not just the look.
  *
  * There is no queue view, no progress and no history of submissions: an accepted submission
@@ -1028,51 +1075,61 @@ function IngestBay({
 }) {
   return (
     <section>
-      <Legend>INGEST</Legend>
+      <Legend>Ingest</Legend>
       <Heading>Analyse media</Heading>
-      <p className="mt-4 max-w-[62ch] text-[15px] leading-relaxed text-muted">
+      <p className="mt-3 max-w-[68ch] text-[15px] leading-relaxed text-muted">
         An MP4 or MOV file, or a link to one. A URL is downloaded by the API first, so the
         page waits for the download before the analysis is queued; both then go through the
-        same pipeline and appear in the case log below. Live streams cannot be analysed.
+        same pipeline and appear in the queue below. Live streams cannot be analysed.
       </p>
 
-      <form action="/submit" method="post" encType="multipart/form-data" className="mt-8">
-        <div className="grid border border-line bg-ink-2 sm:grid-cols-2">
-          <label className="flex flex-col gap-3 border-b border-hair p-5 sm:border-r sm:border-b-0">
-            <span className="font-mono text-[10px] tracking-[0.18em] text-muted">
-              CH.01 — FILE
-            </span>
-            <input
-              type="file"
-              name="file"
-              accept="video/mp4,video/quicktime"
-              className="w-full cursor-pointer border border-line bg-ink px-3 py-2.5 font-mono text-[11px] text-muted transition-colors duration-150 file:mr-3 file:cursor-pointer file:border-0 file:bg-chip file:px-3 file:py-1.5 file:font-mono file:text-[10px] file:tracking-[0.14em] file:text-bone hover:border-rule"
-            />
-          </label>
+      {/* One workspace, not two channels facing each other across a divider.
+          The two inputs used to sit in equal halves of a split panel, which gave a URL field
+          and a file picker the same weight as two alternative instruments and pushed the only
+          button on the page out of the panel entirely. They are two ways of naming the same
+          artifact, so they stack inside one plate and the action closes it — the button is
+          attached to the form it submits rather than floating below it. */}
+      <form action="/submit" method="post" encType="multipart/form-data" className="mt-6">
+        <div className="overflow-hidden rounded-lg border border-line bg-ink-2">
+          <div className="grid gap-5 p-5 sm:grid-cols-2 sm:gap-6">
+            <label className="flex min-w-0 flex-col gap-2">
+              <span className="text-[11px] font-medium tracking-[0.1em] text-muted uppercase">
+                Local file
+              </span>
+              <input
+                type="file"
+                name="file"
+                accept="video/mp4,video/quicktime"
+                className="w-full cursor-pointer rounded-md border border-line bg-ink px-3 py-2 text-[13px] text-muted transition-colors duration-150 file:mr-3 file:cursor-pointer file:rounded-sm file:border-0 file:bg-chip file:px-3 file:py-1.5 file:text-[12px] file:font-medium file:text-bone hover:border-rule"
+              />
+            </label>
 
-          <label className="flex flex-col gap-3 p-5">
-            <span className="font-mono text-[10px] tracking-[0.18em] text-muted">
-              CH.02 — URL
-            </span>
-            <input
-              type="url"
-              name="url"
-              placeholder="https://example.com/clip.mp4"
-              className="w-full border border-line bg-ink px-3 py-2.5 font-mono text-[13px] text-bone transition-colors duration-150 placeholder:text-muted hover:border-rule"
-            />
-          </label>
-        </div>
+            <label className="flex min-w-0 flex-col gap-2">
+              <span className="text-[11px] font-medium tracking-[0.1em] text-muted uppercase">
+                Media URL
+              </span>
+              {/* Monospace, because what goes in here is a machine value the reader has to
+                  be able to check character by character. The label above it is not. */}
+              <input
+                type="url"
+                name="url"
+                placeholder="https://example.com/clip.mp4"
+                className="w-full rounded-md border border-line bg-ink px-3 py-2 font-mono text-[13px] text-bone transition-colors duration-150 placeholder:text-muted hover:border-rule"
+              />
+            </label>
+          </div>
 
-        <div className="mt-5 flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-          <p className="font-mono text-[11px] text-muted">
-            If both are filled in, the URL is used.
-          </p>
-          <button
-            type="submit"
-            className="shrink-0 bg-accent px-6 py-3 font-mono text-[11px] tracking-[0.18em] text-ink transition-[opacity,transform] duration-150 hover:opacity-90 active:translate-y-px"
-          >
-            RUN ANALYSIS
-          </button>
+          <div className="flex flex-col gap-3 border-t border-hair px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+            <p className="text-[13px] leading-relaxed text-muted">
+              If both are filled in, the URL is used.
+            </p>
+            <button
+              type="submit"
+              className="shrink-0 rounded-md bg-accent px-5 py-2.5 text-[13px] font-semibold tracking-[0.02em] text-ink transition-[opacity,transform] duration-150 hover:opacity-90 active:translate-y-px"
+            >
+              Run analysis
+            </button>
+          </div>
         </div>
       </form>
 
@@ -1080,15 +1137,16 @@ function IngestBay({
           extractor, socket and storage detail stay in the server log — and it says which
           rule the submission broke rather than what went wrong inside. */}
       {error && (
-        <div className="mt-6">
+        <div className="mt-5">
           <Alert tone="error">{error}</Alert>
         </div>
       )}
       {submitted !== null && !error && (
-        <div className="mt-6">
+        <div className="mt-5">
           <Alert tone="success">
             Queued for analysis
-            {submitted ? <span> · {submitted.slice(0, 8)}</span> : null}.
+            {submitted ? <span className="font-mono"> · {submitted.slice(0, 8)}</span> : null}
+            .
           </Alert>
         </div>
       )}
@@ -1105,10 +1163,12 @@ function Note({ term, children }: { term: string; children: React.ReactNode }) {
   return (
     <div className="mb-7 break-inside-avoid">
       {/* Bone, not accent. These name evidence readings, and the accent is reserved for the
-          system speaking about itself — seven orange labels in one panel would both break
+          system speaking about itself — seven accented labels in one panel would both break
           that rule and read as decoration. */}
-      <dt className="font-mono text-[10px] tracking-[0.16em] text-bone">{term}</dt>
-      <dd className="mt-2 max-w-[62ch] text-sm leading-relaxed text-muted">{children}</dd>
+      <dt className="text-[11px] font-semibold tracking-[0.08em] text-bone uppercase">
+        {term}
+      </dt>
+      <dd className="mt-1.5 max-w-[62ch] text-sm leading-relaxed text-muted">{children}</dd>
     </div>
   );
 }
@@ -1127,9 +1187,9 @@ function Note({ term, children }: { term: string; children: React.ReactNode }) {
  */
 function Methodology() {
   return (
-    <details className="group border border-line bg-ink-2">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3.5 font-mono text-[11px] tracking-[0.16em] text-bone transition-colors duration-150 select-none hover:text-accent [&::-webkit-details-marker]:hidden">
-        HOW TO INTERPRET THESE RESULTS
+    <details className="group rounded-lg border border-line bg-ink-2">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-lg px-4 py-3 text-[13px] font-medium text-bone transition-colors duration-150 select-none hover:text-accent [&::-webkit-details-marker]:hidden">
+        How to interpret these results
         <Chevron className="text-muted" />
       </summary>
 
@@ -1137,7 +1197,7 @@ function Methodology() {
           size to the tallest cell — which left a short note like "Synthetic probability"
           sitting above a block of dead space as tall as the Risk note beside it. */}
       <dl className="border-t border-hair px-4 pt-6 pb-0 sm:columns-2 sm:gap-12">
-        <Note term="RISK">
+        <Note term="Risk">
           Risk is a deterministic InspectRoot classification based on calibrated forensic
           evidence. It is not a Fake/Real determination.{" "}
           <span className="font-mono">{RISK_LABELS.MEDIUM}</span> is the indeterminate band
@@ -1160,12 +1220,12 @@ function Methodology() {
           a risk class InspectRoot has no calibrated meaning for.
         </Note>
 
-        <Note term="SYNTHETIC PROBABILITY">
+        <Note term="Synthetic probability">
           Synthetic probability is NVIDIA&apos;s own score for its synthetic-video detector,
           shown as returned. It is not a verdict.
         </Note>
 
-        <Note term="PROVENANCE (C2PA)">
+        <Note term="Provenance (C2PA)">
           Provenance is what the file itself carries: C2PA Content Credentials, read from
           the forensic original and shown in C2PA&apos;s own words. Most media carries none,
           so <span className="font-mono">{NO_PROVENANCE}</span> is the ordinary case and not
@@ -1175,14 +1235,14 @@ function Methodology() {
           never visited, so nothing is known about what it holds.
         </Note>
 
-        <Note term="MEDIA (FFPROBE)">
+        <Note term="Media (ffprobe)">
           Media is what ffprobe read out of the original before any detector ran, shown as
           ffprobe reported it. The container is its demuxer family — one name covers MOV and
           MP4 alike — and it is not narrowed to a container the stored evidence cannot prove.
           The declared type beside it is only what the client claimed.
         </Note>
 
-        <Note term="ACTIVE SPEAKER">
+        <Note term="Active speaker">
           Active speaker is when NVIDIA saw a tracked face speaking, in seconds from the start
           of the analysed video, with the face it tracked and the diarized voice matched to
           it. It is a record of what was observed, not a finding:{" "}
@@ -1192,7 +1252,7 @@ function Methodology() {
           look at all. Neither says the video is fake.
         </Note>
 
-        <Note term="AUDIO">
+        <Note term="Audio">
           Audio is the two raw logits a local anti-spoofing checkpoint emitted for each
           window of audio it was given, shown as emitted. The times are the bounds of those
           windows — InspectRoot cut the audio into fixed 4.04s pieces because that is all the
@@ -1204,7 +1264,7 @@ function Methodology() {
           <span className="font-mono">{AUDIO_UNAVAILABLE}</span> means it did not get to run.
         </Note>
 
-        <Note term="FACE MANIPULATION">
+        <Note term="Face manipulation">
           Face manipulation is the score a local EfficientNet-B7 gave the face it found in
           evenly sampled frames of the video, averaged over those frames and shown as the
           model produced it. It is <strong>uncalibrated</strong>: no threshold is applied to
@@ -1215,7 +1275,7 @@ function Methodology() {
           was never asked and nothing was established either way.
         </Note>
 
-        <Note term="MOUTH DYNAMICS">
+        <Note term="Mouth dynamics">
           Mouth dynamics is the score a local LipForensics model gave the movement of the mouth
           across evenly spaced runs of 25 consecutive frames, shown as the model produced it.
           It is a forgery reading taken from how a mouth moves, and it is emphatically{" "}
@@ -1230,7 +1290,7 @@ function Methodology() {
           which case the model was never asked and nothing was established either way.
         </Note>
 
-        <Note term="STRONGEST CLIPS (LOGIT)">
+        <Note term="Strongest clips (logit)">
           Strongest clips are the highest-scoring of the clips NVIDIA examined, identified by
           frame index because the detector reports no timestamps. The figure is its raw model
           logit, not a probability and not comparable with the percentage beside it.
@@ -1248,15 +1308,6 @@ function Methodology() {
 function singleParam(value: string | string[] | undefined): string | null {
   return typeof value === "string" ? value : null;
 }
-
-/** The pipeline, stated once. What DeepGuard does to a file, in the order it does it. */
-const PIPELINE = [
-  "MEDIA",
-  "FORENSIC ANALYSIS",
-  "INDEPENDENT EVIDENCE",
-  "RISK CLASSIFICATION",
-  "REPORT",
-];
 
 export default async function Home({
   searchParams,
@@ -1287,71 +1338,57 @@ export default async function Home({
     <>
       {/* The instrument bar. It clips nothing, so the health panel opens over the page. */}
       <header className="sticky top-0 z-20 border-b border-line bg-ink">
-        <div className="mx-auto flex h-14 w-full max-w-[1280px] items-center justify-between gap-4 px-4 sm:px-10">
-          <div className="flex items-center gap-3">
-            <span aria-hidden className="size-1.5 bg-accent" />
-            <h1 className="font-mono text-[13px] tracking-[0.24em] text-bone">INSPECTROOT</h1>
+        <div className="mx-auto flex h-14 w-full max-w-[1280px] items-center justify-between gap-3 px-4 sm:px-8">
+          <div className="flex items-center gap-2.5">
+            <span aria-hidden className="size-1.5 rounded-full bg-accent" />
+            {/* The product's name, set in the UI typeface: it is a name, not a value the
+                pipeline produced, and the figure typeface is reserved for those. */}
+            <h1 className="text-[14px] font-semibold tracking-[0.14em] text-bone uppercase">
+              InspectRoot
+            </h1>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2.5">
             <HealthControl result={result} apiOk={apiOk} dbOk={dbOk} systemOk={systemOk} />
             <SessionControl user={user} />
           </div>
         </div>
       </header>
 
-      {/* What the product does, in the order it does it. The strip is the one place the
-          whole chain is visible at once, and it is the reason a reader can tell this is a
-          forensic instrument rather than a queue in front of a model.
+      {/* The `MEDIA → … → REPORT` strip that used to sit here has been removed. It restated
+          the product's own pipeline on every visit to a page whose readers run that pipeline
+          daily, and it spent the full width of the viewport doing it. What it described is
+          still visible where it is actually load-bearing: the methodology disclosure below
+          says which detectors are read and what each one does and does not establish. */}
 
-          Deliberately outside the sticky header: on a phone it wraps to three lines, and a
-          sticky band that tall would spend a sixth of the viewport restating something the
-          reader has already read once. It belongs on arrival, not permanently. */}
-      <div className="border-b border-hair">
-        <p className="mx-auto flex w-full max-w-[1280px] flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 font-mono text-[10px] tracking-[0.16em] text-muted sm:px-10">
-          {PIPELINE.map((stage, i) => (
-            <span key={stage} className="flex items-center gap-3">
-              {stage}
-              {/* The rule trails its stage rather than leading the next one, so a wrapped
-                  line never opens with a dangling connector. */}
-              {i < PIPELINE.length - 1 && (
-                <span aria-hidden className="h-px w-5 bg-line" />
-              )}
-            </span>
-          ))}
-        </p>
-      </div>
-
-      <main className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-12 sm:px-10 sm:py-16">
+      <main className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-10 sm:px-8 sm:py-14">
         <IngestBay
           submitted={singleParam(params.submitted)}
           error={singleParam(params.error)}
         />
 
-        <section className="mt-20">
-          <Legend>CASE LOG</Legend>
+        <section className="mt-14">
+          <Legend>Queue</Legend>
           <Heading>Recent analyses</Heading>
           {/* What the log is a log of, which differs by role and is worth saying rather than
               leaving the reader to infer from what is missing. This is a caption on a list
               the API already narrowed; it does not do the narrowing. */}
-          <p className="mt-4 max-w-[62ch] text-[15px] leading-relaxed text-muted">
+          <p className="mt-3 max-w-[68ch] text-[15px] leading-relaxed text-muted">
             {user.role === "ADMIN"
               ? "Every analysis in the system, as an administrator sees it."
               : "The analyses submitted by this account."}
           </p>
 
-          <div className="mt-6">
+          <div className="mt-5">
             <Methodology />
           </div>
 
-          <div className="mt-8">
+          <div className="mt-5">
             {!analysesResult.ok ? (
               <Alert tone="error">{analysesResult.error}</Alert>
             ) : analysesResult.analyses.length === 0 ? (
-              <div className="border border-dashed border-line px-6 py-16 text-center">
-                <p className="font-mono text-[11px] tracking-[0.16em] text-bone">
-                  NO ANALYSES YET
-                </p>
+              <div className="rounded-lg border border-dashed border-line px-6 py-14 text-center">
+                <p className="text-[15px] font-medium text-bone">No analyses yet</p>
                 <p className="mx-auto mt-3 max-w-[46ch] text-sm text-muted">
                   Submit a file or a URL above. Each accepted submission becomes a record
                   here.

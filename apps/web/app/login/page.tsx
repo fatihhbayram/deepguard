@@ -37,58 +37,68 @@ export default async function Login({
 
   return (
     <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 py-16">
-      <div className="flex items-center gap-3">
-        <span aria-hidden className="size-1.5 bg-accent" />
-        <h1 className="font-mono text-[13px] tracking-[0.24em] text-bone">INSPECTROOT</h1>
+      <div className="flex items-center gap-2.5">
+        <span aria-hidden className="size-1.5 rounded-full bg-accent" />
+        {/* A name, not a machine value — set in the UI typeface, as it is in the header of
+            the dashboard this page leads to. */}
+        <h1 className="text-[14px] font-semibold tracking-[0.14em] text-bone uppercase">
+          InspectRoot
+        </h1>
       </div>
 
-      <p className="mt-8 font-mono text-[11px] tracking-[0.18em] text-accent">— SIGN IN</p>
-      <h2 className="mt-3 text-2xl font-semibold tracking-[-0.03em] text-bone">
+      <p className="mt-8 text-[11px] font-medium tracking-[0.16em] text-accent uppercase">
+        Sign in
+      </p>
+      <h2 className="mt-2.5 text-2xl font-semibold tracking-[-0.02em] text-bone">
         Authenticate
       </h2>
-      <p className="mt-4 text-[15px] leading-relaxed text-muted">
+      <p className="mt-3 text-[15px] leading-relaxed text-muted">
         Analyses are visible to the account that submitted them. Accounts are created by an
         administrator.
       </p>
 
       <form action="/session" method="post" className="mt-8 flex flex-col gap-5">
         <label className="flex flex-col gap-2">
-          <span className="font-mono text-[10px] tracking-[0.18em] text-muted">EMAIL</span>
+          <span className="text-[11px] font-medium tracking-[0.1em] text-muted uppercase">
+            Email
+          </span>
           <input
             type="email"
             name="email"
             required
             autoComplete="email"
             autoFocus
-            className="w-full border border-line bg-ink px-3 py-2.5 font-mono text-[13px] text-bone transition-colors duration-150 placeholder:text-muted hover:border-rule focus:border-accent focus:outline-none"
+            className="w-full rounded-md border border-line bg-ink px-3 py-2.5 font-mono text-[13px] text-bone transition-colors duration-150 placeholder:text-muted hover:border-rule focus:border-accent"
           />
         </label>
 
         <label className="flex flex-col gap-2">
-          <span className="font-mono text-[10px] tracking-[0.18em] text-muted">PASSWORD</span>
+          <span className="text-[11px] font-medium tracking-[0.1em] text-muted uppercase">
+            Password
+          </span>
           <input
             type="password"
             name="password"
             required
             autoComplete="current-password"
-            className="w-full border border-line bg-ink px-3 py-2.5 font-mono text-[13px] text-bone transition-colors duration-150 hover:border-rule focus:border-accent focus:outline-none"
+            className="w-full rounded-md border border-line bg-ink px-3 py-2.5 font-mono text-[13px] text-bone transition-colors duration-150 hover:border-rule focus:border-accent"
           />
         </label>
 
         <button
           type="submit"
-          className="mt-1 bg-accent px-6 py-3 font-mono text-[11px] tracking-[0.18em] text-ink transition-[opacity,transform] duration-150 hover:opacity-90 active:translate-y-px"
+          className="mt-1 rounded-md bg-accent px-5 py-2.5 text-[13px] font-semibold text-ink transition-[opacity,transform] duration-150 hover:opacity-90 active:translate-y-px"
         >
-          SIGN IN
+          Sign in
         </button>
       </form>
 
       {failed && (
         <p
           role="status"
-          className="mt-6 flex items-start gap-3 border border-rose-500/40 bg-rose-500/10 px-4 py-3 font-mono text-[11px] leading-relaxed text-rose-200"
+          className="mt-6 flex items-start gap-3 rounded-md border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-[13px] leading-relaxed text-rose-200"
         >
-          <span aria-hidden className="mt-1.5 size-1.5 shrink-0 bg-rose-400" />
+          <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-rose-400" />
           <span>{SIGN_IN_FAILED}</span>
         </p>
       )}
