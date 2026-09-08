@@ -177,6 +177,104 @@ store(
 )
 FETCH
 
+# The Effort face-forgery detector (R7-T11), measured in R7-T7, R7-T8 and R7-T9 and integrated as
+# evidence-only by R7-T10's conclusion. Four artifacts in three roles, every one pinned to an
+# immutable origin and refused unless its bytes hash to the digest recorded in app/effort.py — so
+# the image carries exactly what those three studies measured, and the worker never downloads a
+# model while serving a job.
+#
+# The three roles:
+#
+# - the forgery checkpoint Yan et al. trained on FaceForensics++ (1.13 GiB), hosted on Google
+#   Drive because that is where the upstream README links it. Drive serves an HTML interstitial
+#   before a file this size, so the confirmation token is read out of that page and replayed —
+#   the same dance the LipForensics weights above need, and the only reason this fetch is not a
+#   plain URL;
+# - the dlib 81-landmark model every face alignment is built on, fetched from the upstream
+#   repository at the pinned commit. Upstream's README requires this exact file for this
+#   checkpoint;
+# - the CLIP-L14 vision tower the checkpoint's weights are shaped against (1.59 GiB), from the
+#   pinned HuggingFace revision. Vendored as the two files `CLIPModel.from_pretrained` reads so
+#   that nothing is fetched at analysis time — app/effort.py loads this directory with
+#   `local_files_only=True`.
+#
+# This is by far the largest addition to this image, and it is weights rather than code: about
+# 2.7 GiB across the checkpoint and the backbone. That is the cost of running the detector the
+# studies measured instead of a smaller one nobody measured.
+RUN python - <<'FETCH'
+import hashlib, http.cookiejar, os, re, urllib.request
+
+ROOT = "/models/effort"
+EFFORT_REVISION = "96f5dea2b534d400cfd7003f053c7e93c8e16461"
+CLIP_REVISION = "32bd64288804d66eefd0ccbe215aa642df71cc41"
+DRIVE_ID = "1m4fyJecABU-Yk3bJ4b1WhUwQa0xCkMLI"
+UPSTREAM = f"https://raw.githubusercontent.com/YZY-stack/Effort-AIGI-Detection/{EFFORT_REVISION}"
+CLIP = f"https://huggingface.co/openai/clip-vit-large-patch14/resolve/{CLIP_REVISION}"
+
+artifacts = [
+    (f"{UPSTREAM}/DeepfakeBench/preprocessing/shape_predictor_81_face_landmarks.dat",
+     f"{ROOT}/shape_predictor_81_face_landmarks.dat",
+     "8cae4375589dd915d9a0a881101bed1bbb4e9887e35e63b024388f1ca25ff869"),
+    (f"{CLIP}/config.json",
+     f"{ROOT}/clip-vit-large-patch14/config.json",
+     "8a09b467700c58138c29d53c605b34ebc69beaadd13274a8a2af8ad2c2f4032a"),
+    (f"{CLIP}/model.safetensors",
+     f"{ROOT}/clip-vit-large-patch14/model.safetensors",
+     "a2bf730a0c7debf160f7a6b50b3aaf3703e7e88ac73de7a314903141db026dcb"),
+]
+
+opener = urllib.request.build_opener(
+    urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+)
+
+
+def store(response, target, expected):
+    """Stream to disk while hashing, and keep the file only if it is the pinned one.
+
+    Streamed rather than read whole, unlike the smaller artifacts fetched above: the checkpoint
+    is 1.13 GiB and buffering it in the build container to hash it is a gigabyte of resident
+    memory spent to avoid a temporary file.
+    """
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    digest = hashlib.sha256()
+    written = 0
+    with open(target, "wb") as handle:
+        for block in iter(lambda: response.read(1024 * 1024), b""):
+            digest.update(block)
+            handle.write(block)
+            written += len(block)
+    if digest.hexdigest() != expected:
+        os.unlink(target)
+        raise SystemExit(
+            f"Effort checksum mismatch for {target}: "
+            f"expected {expected}, got {digest.hexdigest()}"
+        )
+    print(f"Effort artifact verified: {target} ({written} bytes)")
+
+
+for url, target, expected in artifacts:
+    store(opener.open(url, timeout=900), target, expected)
+
+# Drive's interstitial, replayed. The token is single-use and bound to the cookie the page above
+# set, so the two requests have to share this opener.
+page = opener.open(
+    f"https://drive.usercontent.google.com/download?id={DRIVE_ID}&export=download",
+    timeout=120,
+).read().decode("utf-8", "replace")
+token = re.search(r'name="uuid" value="([^"]+)"', page)
+if token is None:
+    raise SystemExit("Google Drive did not offer a download confirmation for the checkpoint")
+store(
+    opener.open(
+        f"https://drive.usercontent.google.com/download?id={DRIVE_ID}"
+        f"&export=download&confirm=t&uuid={token.group(1)}",
+        timeout=1800,
+    ),
+    f"{ROOT}/effort_clip_L14_trainOn_FaceForensic.pth",
+    "8d86711f098d16b49c048962fc3e16a906380f7bb17b8a0e89bd545b926943ee",
+)
+FETCH
+
 COPY . .
 
 EXPOSE 8000

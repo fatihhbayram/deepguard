@@ -116,6 +116,7 @@ from app.detection import (
     NVIDIA_PROVIDER,
     SYNTHETIC_VIDEO_SIGNAL,
     analyse_audio,
+    detect_effort,
     detect_face_manipulation,
     detect_lip_forensics,
     detect_synthetic_video,
@@ -123,6 +124,7 @@ from app.detection import (
     unanalysable_audio,
     undetectable_media,
 )
+from app.effort import is_enabled as effort_enabled
 from app.normalization import NormalizationError, NormalizationTimeout, normalize_to_mp4
 from app import shadow
 from app.observability import bind_request_id, configure_logging, reset_request_id
@@ -574,26 +576,43 @@ class SignalEvidence:
 def local_readings(path: Path) -> tuple[SignalEvidence, ...]:
     """Ask every local checkpoint about the prepared artifact, in this order, one at a time.
 
-    The two of them are written out rather than looked up. There is no registry, no table of
-    detectors and no dispatch here — adding a third is a third line in this tuple — because
-    what R5-T2 needed was for the *callers* to stop naming each model individually, not for
-    the models to become interchangeable. They are not: one judges the appearance of a face
-    crop and the other judges how a mouth moves, on different scales, and nothing downstream
-    of this function compares them (rule 11).
+    The three of them are written out rather than looked up. There is no registry, no table
+    of detectors and no dispatch here — R5-T2 said adding a third would be a third line in
+    this tuple, and R7-T11 was that line — because what R5-T2 needed was for the *callers*
+    to stop naming each model individually, not for the models to become interchangeable.
+    They are not: one judges the appearance of a face crop, one judges how a mouth moves,
+    and one judges aligned face crops through a CLIP subspace decomposition, on three
+    different scales, and nothing downstream of this function compares them (rule 11).
 
-    Sequential, and deliberately so. Both are blocking CPU inference in a container with a
-    CPU quota, so running them at once would not finish sooner — it would contend for the
-    same cores and hold both models resident at the same peak. The order is the cheap one
-    first: the B7 costs seconds and LipForensics costs minutes.
+    Sequential, and deliberately so. All three are blocking CPU inference in a container
+    with a CPU quota and a 6 GiB cap, so running them at once would not finish sooner — it
+    would contend for the same cores and hold three models resident at the same peak, and
+    Effort alone peaks at 3.9 GiB. The order is the cheap one first: the B7 costs seconds,
+    Effort costs about forty, and LipForensics costs minutes.
 
-    Neither can fail this job. Each records its own failures as a `FAILED` signal — see
+    None can fail this job. Each records its own failures as a `FAILED` signal — see
     `app.detection` — so a missing checkpoint, an unreadable clip or a torch that broke
-    costs that reading and nothing else, including the other reading beside it.
+    costs that reading and nothing else, including the readings beside it.
+
+    Effort is the one entry here whose presence is conditional, and the condition is a
+    rollback switch rather than a policy: `app.effort.is_enabled` is on unless a deployment
+    turns it off, and turning it off returns this system to the exact SVD + B7 decisional
+    baseline with nothing to migrate. That works precisely because no rule reads the row it
+    gates — an analysis without an Effort signal is decided identically to one with it, and
+    `Evidence.local_readings` already tolerates a shorter tuple because a transcode failure
+    produces an empty one. A disabled detector writes no row at all rather than a `FAILED`
+    one: nothing asked it anything, and absence is the honest record for that.
     """
-    return (
+    readings = [
         SignalEvidence(signal=detect_face_manipulation(path), segments=[]),
-        SignalEvidence(signal=detect_lip_forensics(path), segments=[]),
-    )
+    ]
+
+    if effort_enabled():
+        readings.append(SignalEvidence(signal=detect_effort(path), segments=[]))
+
+    readings.append(SignalEvidence(signal=detect_lip_forensics(path), segments=[]))
+
+    return tuple(readings)
 
 
 @dataclass(frozen=True)

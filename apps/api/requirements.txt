@@ -62,3 +62,25 @@ yt-dlp==2026.8.19
 # `scipy` and `tqdm` are already here through pyannote.
 numba==0.67.0
 scikit-image==0.25.2
+# The three Effort needs and nothing here already had (R7-T11).
+#
+# `dlib-bin` is the prebuilt wheel of dlib, and the version R7-T7/T8/T9 measured under. dlib was
+# deliberately kept out of this image when `face-alignment` asked for it — see the `--no-deps`
+# note above, where it is "declared for a face detector this codebase never selects". Effort is
+# the detector that selects it: its frozen protocol is dlib's frontal detector and the 81-landmark
+# model, and substituting any other face detector would invalidate all three studies. The
+# prebuilt wheel rather than `dlib`, which compiles from source and would put cmake and a C++
+# toolchain in this image to produce the same binary.
+#
+# `transformers` supplies `CLIPModel`, which is how the CLIP-L14 backbone the checkpoint is shaped
+# against gets built. It fetches nothing at analysis time: `app.effort` loads the vendored
+# directory with `local_files_only=True` and verifies both files by digest first.
+#
+# `torchvision` is imported by the transcribed upstream preprocessing for its `transforms`. Pinned
+# to the release that pairs with `torch==2.13.0+cpu`, and pinned rather than left open for a
+# specific reason: an unpinned `torchvision` resolves a newer torch and silently upgrades the one
+# under LipForensics, the B7 and diarization, which would change three detectors' numbers to
+# install a fourth.
+dlib-bin==20.0.1
+transformers==5.16.1
+torchvision==0.28.0+cpu

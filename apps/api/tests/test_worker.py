@@ -46,6 +46,11 @@ from app.face_detector import (
     FaceManipulationEvidence,
     FrameScore,
 )
+from app.effort import (
+    EffortEvidence,
+    EffortModelUnavailable,
+    EffortNoFaceDetected,
+)
 from app.lip_forensics import (
     LipForensicsModelUnavailable,
     LipForensicsNoTrackedFace,
@@ -139,6 +144,18 @@ LIP_FORENSICS_SCORE = 0.00011039116361644119
 # lowest-scoring face swap of the 20, and the one the R5-T1 harness's 0.5 reporting convention
 # would have missed. Used by the tests that are about this model deciding on its own.
 LIP_FORENSICS_SCORE_HIGH = 0.4424368441104889
+
+# Effort's identity and its figure for the scripted clip (R7-T11). Unlike every constant above
+# it, this score is compared against nothing anywhere: Effort is evidence-only, holds no
+# threshold, and no rule reads it — so there is no "below" or "above" for this number to be, and
+# the tests that assert as much live in `tests/test_effort.py`.
+EFFORT_REPOSITORY = "https://github.com/YZY-stack/Effort-AIGI-Detection"
+EFFORT_REVISION = "96f5dea2b534d400cfd7003f053c7e93c8e16461"
+EFFORT_CHECKPOINT_SHA256 = (
+    "8d86711f098d16b49c048962fc3e16a906380f7bb17b8a0e89bd545b926943ee"
+)
+EFFORT_MODEL = f"{EFFORT_REPOSITORY}@{EFFORT_REVISION}+{EFFORT_CHECKPOINT_SHA256}"
+EFFORT_SCORE = 0.4787200441
 
 # The operating point R3-T1 ran its confusion matrix at. Named here only so the tests can
 # assert it never reaches production evidence or a decision: it is a property of that
@@ -602,6 +619,63 @@ def fake_lip_forensics(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def fake_effort(monkeypatch):
+    """Stand in for the local Effort model, so no test here loads CLIP-L14 or its 1.13 GiB weights.
+
+    One clip, one reading — the frozen protocol's contract — over a scripted eight-frame sample
+    where two frames held no detectable face, which is the ordinary shape of a real reading and
+    keeps the three frame counts from being interchangeable in the assertions below.
+    """
+
+    class Recorder:
+        def __init__(self):
+            self.error = None
+            self.video_paths = []
+            self.analysed_bytes = []
+            self.evidence = EffortEvidence(
+                upstream_repository=EFFORT_REPOSITORY,
+                upstream_revision=EFFORT_REVISION,
+                checkpoint_filename="effort_clip_L14_trainOn_FaceForensic.pth",
+                checkpoint_sha256=EFFORT_CHECKPOINT_SHA256,
+                landmark_model_sha256=(
+                    "8cae4375589dd915d9a0a881101bed1bbb4e9887e35e63b024388f1ca25ff869"
+                ),
+                clip_repository="https://huggingface.co/openai/clip-vit-large-patch14",
+                clip_revision="32bd64288804d66eefd0ccbe215aa642df71cc41",
+                clip_sha256={"config.json": "8a09b467" + "0" * 56},
+                runtime={
+                    "python": "3.12.14",
+                    "torch": "2.13.0+cpu",
+                    "torchvision": "0.28.0+cpu",
+                    "dlib": "20.0.1",
+                    "transformers": "5.16.1",
+                },
+                torch_version="2.13.0+cpu",
+                device="cpu",
+                missing_forward_path_key_count=0,
+                frames_per_clip=8,
+                frames_requested=8,
+                frames_decoded=8,
+                frames_with_face=6,
+                score=EFFORT_SCORE,
+                frame_scores=(0.41, 0.52, 0.48, 0.44, 0.51, 0.51),
+            )
+
+        def analyze(self, video_path, **kwargs):
+            # The bytes, not only the path: the artifact is a temp file that has been cleaned
+            # up by the time any assertion below runs.
+            self.video_paths.append(Path(video_path))
+            self.analysed_bytes.append(Path(video_path).read_bytes())
+            if self.error:
+                raise self.error
+            return self.evidence
+
+    recorder = Recorder()
+    monkeypatch.setattr(detection, "analyze_effort", recorder.analyze)
+    return recorder
+
+
+@pytest.fixture(autouse=True)
 def fake_c2pa(monkeypatch):
     """Stand in for the C2PA reader, which would reject the fake video bytes outright.
 
@@ -954,6 +1028,9 @@ def test_both_evidence_sources_are_persisted_as_independent_signals(queue, fake_
     assert sorted(signals) == [
         "active_speaker",
         "audio_authenticity",
+        # Effort's row (R7-T11), and the one entry here that no rule reads. It is persisted
+        # beside the six that came before it and is decided on by none of them.
+        "face_forgery",
         "face_manipulation",
         "lip_forensics",
         "provenance",
@@ -1377,12 +1454,13 @@ def test_audio_extraction_that_ran_out_of_time_fails_the_job(
     # of it, so they are kept rather than discarded with the job. Only the two signals the
     # timeout actually prevented are absent.
     #
-    # Both local readings are among the survivors because they run before the audio chain and
-    # need nothing from it — which is the whole reason they were placed there.
+    # All three local readings are among the survivors because they run before the audio chain
+    # and need nothing from it — which is the whole reason they were placed there.
     assert set(signals) == {
         "provenance",
         "synthetic_video",
         "face_manipulation",
+        "face_forgery",
         "lip_forensics",
     }
     assert "active_speaker" not in signals
@@ -1518,6 +1596,9 @@ def test_all_five_evidence_sources_are_persisted_as_independent_signals(
     assert sorted(signals) == [
         "active_speaker",
         "audio_authenticity",
+        # Effort's row (R7-T11), and the one entry here that no rule reads. It is persisted
+        # beside the six that came before it and is decided on by none of them.
+        "face_forgery",
         "face_manipulation",
         "lip_forensics",
         "provenance",
@@ -2743,6 +2824,7 @@ def test_a_classification_that_breaks_fails_the_job_but_keeps_the_evidence(
         "active_speaker",
         "audio_authenticity",
         "face_manipulation",
+        "face_forgery",
         "lip_forensics",
     }
     assert signals["synthetic_video"].score == NVIDIA_PROBABILITY

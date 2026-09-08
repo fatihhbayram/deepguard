@@ -4,26 +4,32 @@ This is what the worker runs. It sits beside `media.py` and `normalization.py` a
 step that takes a local artifact and describes it — it opens no transaction, writes no
 row, and does not know a job exists.
 
-Six sources are wired in and they answer different questions about different artifacts:
+Seven sources are wired in and they answer different questions about different artifacts:
 NVIDIA's synthetic-video detector is asked whether the canonical derivative looks
 generated, NVIDIA's Active Speaker NIM is asked which visible face is speaking when in
 that same derivative, the local EfficientNet-B7 checkpoint is asked how manipulated the
 face in that derivative looks, the local LipForensics checkpoint is asked how unnatural
-the mouth in it moves, the local AASIST checkpoint is run over the audio prepared from
-it, and C2PA is read off the forensic original to see what provenance travels with the
-bytes as uploaded. Each becomes its own signal row and none is ever folded into another
-(rule 11).
+the mouth in it moves, the local Effort checkpoint is asked the same question the B7 is
+asked and answers it through a wholly different network, the local AASIST checkpoint is
+run over the audio prepared from it, and C2PA is read off the forensic original to see
+what provenance travels with the bytes as uploaded. Each becomes its own signal row and
+none is ever folded into another (rule 11).
 
-Three of them read the same prepared artifact and are still three separate findings. The
-two local visual checkpoints in particular are not a second opinion on one question: the
-B7 judges the appearance of a face crop and never sees motion, LipForensics judges mouth
-dynamics over consecutive frames and is nearly blind to appearance, and their numbers are
-on different scales and are never compared.
+Four of them read the same prepared artifact and are still four separate findings. The
+three local visual checkpoints in particular are not opinions on one question: the B7
+judges the appearance of a face crop and never sees motion, LipForensics judges mouth
+dynamics over consecutive frames and is nearly blind to appearance, Effort judges aligned
+face crops through a CLIP subspace decomposition, and their numbers are on different
+scales and are never compared.
 
 The sixth arrived in R5-T2 as independent evidence and became risk-eligible in R5-T4, once
 R5-T3 had measured an operating point for it. What this module writes did not change: the row
 is the same reading either way, and the threshold it is read against lives in
 `app.risk_engine`.
+
+The seventh is the one no rule reads. R7-T10 evaluated where Effort could sit given what
+R7-T7, R7-T8 and R7-T9 measured, and kept it strictly non-decisional: this module writes
+the reading, and no threshold anywhere is applied to it — see `app.effort`.
 
 It lived in the upload route until P3-T2, back when detection happened on the request.
 """
@@ -40,6 +46,13 @@ from app.audio_detector import (
     analyze_audio_authenticity,
 )
 from app.c2pa_extractor import C2paEvidence, extract_c2pa_evidence
+from app.effort import (
+    AGGREGATION,
+    EffortError,
+    EffortEvidence,
+    EffortNoFaceDetected,
+    analyze_effort,
+)
 from app.face_detector import (
     FaceDetectorError,
     FaceManipulationEvidence,
@@ -136,6 +149,35 @@ FACE_MANIPULATION_SIGNAL = "face_manipulation"
 # nothing else — never alongside, against or averaged with the B7's: see `app.risk_engine`.
 LIPFORENSICS_PROVIDER = "lipforensics"
 LIP_FORENSICS_SIGNAL = "lip_forensics"
+
+# Identity of the local face-forgery evidence (R7-T11). The provider is named for the model that
+# produced it, as the three local checkpoints above are, and for the same reason: nothing leaves
+# this machine to obtain it, so there is no company to name, and the exact artifacts behind a
+# stored signal are recorded in that signal's metadata rather than implied by this string.
+#
+# The signal type is `face_forgery` and — this is the part that matters — deliberately not
+# `face_manipulation`. That string belongs to EfficientNet-B7, and R7-T10 §3 is explicit about
+# what reusing it would cost: `app.risk_engine` selects evidence by exact `(provider,
+# signal_type)` pair, so two detectors sharing a signal type would make every existing reader
+# ambiguous about which row it had selected, and a reader that selected the wrong one would band
+# an Effort score against the B7's threshold `0.9867589175701141` — an artifact of a 54-clip
+# R4-T1 corpus and a different model's score distribution. `face_forgery` is upstream's own
+# vocabulary for the task (DeepfakeBench calls it forgery detection) and collides with nothing.
+#
+# A seventh, wholly independent signal, and the third read off the prepared artifact by a local
+# model. That is not a reason to relate the three: this one reads the appearance of eight
+# separately aligned face crops through a CLIP-L14 subspace decomposition, the B7 reads single
+# face crops through a different network trained on a different corpus, and LipForensics reads
+# mouth movement across 25 consecutive frames. Different things on different scales, never
+# compared, averaged or reconciled (rule 11).
+#
+# Unlike all six above it, **no rule reads this one and none may**. R7-T10 evaluated three
+# integration postures on the R7-T7/T8/T9 measurements and adopted the evidence-only one: Effort
+# is persisted and nothing more, and it has no operating point in this system — no threshold, no
+# `calibration_id`, no entry in any ruleset's signal list. `app.risk_engine` cannot see it even
+# by accident, because `evaluate` admits three evidence types and raises on anything else.
+EFFORT_PROVIDER = "effort"
+FACE_FORGERY_SIGNAL = "face_forgery"
 
 # How many clip results one detection may leave behind. NVIDIA scores a clip every few
 # frames, so a long video produces thousands and persisting all of them would let one
@@ -905,6 +947,154 @@ def detect_lip_forensics(file_path: Path) -> AnalysisSignal:
     )
     signal.score = evidence.score
     signal.signal_metadata = lip_forensics_metadata(evidence)
+
+    return signal
+
+
+def effort_metadata(evidence: EffortEvidence) -> dict:
+    """The supporting figures behind one face-forgery reading, as the signal stores them.
+
+    Everything a reader needs to know what the reading describes and nothing that interprets it.
+
+    Every artifact is named by digest because a different checkpoint, a different upstream
+    revision, a different landmark model or a different backbone is a different measurement, and
+    this detector has four of them: the forgery checkpoint, the upstream source its architecture
+    is transcribed from, the dlib 81-landmark model every alignment is built on, and the CLIP-L14
+    weights the checkpoint is shaped against. The frozen protocol is recorded because the same
+    clip sampled at a different frame count or aggregated differently is a different number, and
+    the per-frame outputs are kept because they are what the mean was taken over — so a stored
+    reading stays auditable rather than merely asserted.
+
+    There is deliberately no threshold, class, verdict or band here, and unlike every other
+    detector in this module there is none anywhere else either. R7-T9 measured a candidate
+    operating point of `0.9574909508228302` on 388 calibration lineages; R7-T10 §5 declined to
+    adopt it — an order statistic of one sample, confirmed once, on curated corpora rather than
+    on this system's traffic — so no production threshold exists for Effort and no
+    `calibration_id` was minted for it. A stored signal records the reading, and here nothing is
+    ever made of it.
+    """
+    return {
+        "upstream_repository": evidence.upstream_repository,
+        "upstream_revision": evidence.upstream_revision,
+        "checkpoint_filename": evidence.checkpoint_filename,
+        "checkpoint_sha256": evidence.checkpoint_sha256,
+        "landmark_model_sha256": evidence.landmark_model_sha256,
+        # The backbone the checkpoint's weights are shaped against, pinned by revision and by the
+        # digest of each file loaded. The same checkpoint over a different CLIP is a different
+        # network, and its scores would have no operating point of their own.
+        "clip_repository": evidence.clip_repository,
+        "clip_revision": evidence.clip_revision,
+        "clip_sha256": evidence.clip_sha256,
+        # Which stack ran the checkpoint, and on what. Part of the identity of the number rather
+        # than a footnote to it, for the reason `lip_forensics_metadata` gives and then some: this
+        # is a plain state dict rather than an exported program, and kernel selection is what makes
+        # one device's scores differ from another's.
+        #
+        # R7-T11 measured exactly that and did not round it away. Against R7-T9's own run — same
+        # checkpoint, same alignment, same eight frames, and frame accounting that matched clip for
+        # clip — the readings differ by a mean of about 0.0065 and a maximum of about 0.028, on a
+        # different Python, a different torch and the CPU instead of a GPU. Semantic preprocessing
+        # parity with measured numerical runtime drift, in other words, and the drift is recorded
+        # here rather than hidden because it is the runtime that moved and the runtime is therefore
+        # part of what a stored reading means.
+        #
+        # It costs nothing today: no threshold reads this score, so a difference of 0.028 changes
+        # no outcome. It costs everything to a future calibration, which is why `runtime` is on the
+        # row — R7-T10 §11 B4 must be measured against the stack that served the traffic, never
+        # against the R7-T9 distribution.
+        "runtime": evidence.runtime,
+        "torch_version": evidence.torch_version,
+        "device": evidence.device,
+        # What `load_state_dict(strict=False)` let through on the forward path. Expected to be
+        # zero; anything else means part of the scoring path was randomly initialised, which makes
+        # the reading beside it meaningless rather than merely uncertain.
+        "missing_forward_path_key_count": evidence.missing_forward_path_key_count,
+        # The frozen protocol every figure above was produced under, restated on the row so a
+        # stored reading says what produced it rather than referring to a document.
+        "frames_per_clip": evidence.frames_per_clip,
+        "frame_sampling": "evenly spaced over [0, frame_count - 1], deduplicated",
+        "face_detection_and_cropping": (
+            "dlib frontal detector, 81-landmark 5-point similarity alignment, 224x224, scale 1.3"
+        ),
+        "aggregation": AGGREGATION,
+        # What the sampling covered. The three counts differ on ordinary media — a frame the
+        # decoder could not supply, a frame with no detectable face — and the gaps between them
+        # are what keep the reading from being a statement about the whole clip.
+        "frames_requested": evidence.frames_requested,
+        "frames_decoded": evidence.frames_decoded,
+        "frames_with_face": evidence.frames_with_face,
+        # The per-frame outputs the mean was taken over, in sampled order. Capped where they were
+        # produced (`MAX_PERSISTED_FRAME_SCORES`); `frames_with_face` says how many there were.
+        "frame_scores": list(evidence.frame_scores),
+    }
+
+
+def detect_effort(file_path: Path) -> AnalysisSignal:
+    """Run the local Effort model over the prepared artifact and record what it emitted.
+
+    `file_path` is the artifact NVIDIA's synthetic-video detector, the B7 and LipForensics are
+    given, read a fourth time by a different model asking a fourth question. Nothing is shared
+    between them beyond that file, and no answer informs another (rule 11).
+
+    **This row is evidence and nothing else.** It is the one detector here that no rule reads:
+    R7-T10 evaluated the alternatives on three studies' measurements and kept Effort
+    non-decisional, so there is no threshold to compare this score against and this function is
+    the end of the road for it rather than a step towards a band. `score` is the model's own
+    figure — the arithmetic mean over sampled frames of `softmax(head(pooler_output))[:, 1]` — on
+    the model's own scale, and it is not a probability that the media is fake, a confidence, or a
+    verdict of any kind.
+
+    Nothing raises. Every `EffortError` — a missing or swapped artifact, an absent library, media
+    that will not decode, a clip with no detectable face, torch itself breaking — becomes a
+    `FAILED` signal carrying the failure kind and nothing else, so one source going wrong costs
+    this signal and no other. In particular it never costs the analysis: the SVD and B7 rows this
+    analysis is decided on are written and read exactly as they were before Effort existed.
+
+    The abstention is given its own reason rather than folded into the failures beside it, and it
+    is never a score. A clip in which dlib finds no face in any sampled frame is recorded as
+    `EffortNoFaceDetected` with the frame accounting that produced it and **no score at all** —
+    `score` stays null, because 0.0 would be a fabricated negative and would let the detector buy
+    a better false-positive rate by failing to run. R7-T9 abstained on 10.73% of genuine
+    validation lineages, so this is an ordinary outcome and not a fault.
+
+    Blocking CPU work and the second most expensive reading in the pipeline — see `app.effort`.
+    Called synchronously from the worker, after the two cheaper local checkpoints.
+    """
+    signal = AnalysisSignal(provider=EFFORT_PROVIDER, signal_type=FACE_FORGERY_SIGNAL)
+
+    try:
+        evidence = analyze_effort(file_path)
+    except EffortNoFaceDetected as error:
+        # The abstention, told apart from the failures below because it is a fact about the media
+        # rather than about this machine, and recorded with what was looked at. No score: the
+        # model was never asked.
+        logger.info("Local face-forgery detection abstained: no face in any sampled frame.")
+        signal.status = SIGNAL_STATUS_FAILED
+        signal.signal_metadata = {
+            "error": type(error).__name__,
+            "frames_requested": error.frames_requested,
+            "frames_decoded": error.frames_decoded,
+            "frames_with_face": 0,
+        }
+        return signal
+    except EffortError as error:
+        # The failure kind, never the message: it quotes the local artifacts' paths.
+        logger.warning("Local face-forgery detection failed.", exc_info=True)
+        signal.status = SIGNAL_STATUS_FAILED
+        signal.signal_metadata = {"error": type(error).__name__}
+        return signal
+
+    signal.status = SIGNAL_STATUS_SUCCESS
+    # Which artifacts produced this, in one string a reader can compare at a glance — the same
+    # composite shape LipForensics uses, and for the same reason: the upstream revision fixes the
+    # architecture and the digest fixes the weights, and it takes both, because the same
+    # checkpoint loaded into a different network is a different model.
+    signal.provider_version = (
+        f"{evidence.upstream_repository}@{evidence.upstream_revision}"
+        f"+{evidence.checkpoint_sha256}"
+    )
+    signal.score = evidence.score
+    signal.signal_metadata = effort_metadata(evidence)
 
     return signal
 

@@ -250,6 +250,25 @@ services:
       # not close cleanly. The lease in `app/worker.py` is what bounds a job that stops
       # making progress, and it is renewed throughout — a slow analysis is not a dead worker.
       DEEPGUARD_LIPFORENSICS_WINDOWS:
+      # Whether this worker runs the Effort face-forgery detector, and where it reads its
+      # artifacts from (R7-T11). The first is the rollback switch and it is on unless set to
+      # `false` — the opposite of `DEEPGUARD_SHADOW_MODE` below, and deliberately so: Effort is a
+      # detector this image ships and this pipeline expects, not an experiment an operator opts
+      # into.
+      #
+      # Turning it off returns this deployment to the exact SVD + B7 decisional baseline
+      # immediately, with no ruleset to migrate and no stored row to rewrite. That works because
+      # Effort is evidence and nothing reads it: R7-T10 evaluated the alternatives on three
+      # studies' measurements and kept it non-decisional, so an analysis with an Effort signal and
+      # one without are decided identically. What the switch costs is the reading, not a band.
+      #
+      # No timeout beside it, for the reason the two knobs above give: this is in-process
+      # inference holding a model in memory. It is the second most expensive reading here —
+      # roughly 28 s to assemble the CLIP-L14 backbone and 9 s to score eight frames, peaking at
+      # 3.9 GiB against this service's 6 GiB cap, which is why `app/worker.py` runs the three
+      # local checkpoints one at a time rather than together.
+      DEEPGUARD_EFFORT_ENABLED:
+      DEEPGUARD_EFFORT_MODEL_DIR:
       # Whether this worker runs uncalibrated experimental workloads against analyses it has
       # already finished (R6-T1). Off unless set: shadow mode is an experiment somebody is
       # deliberately running, and a stack that never asked for one should not accumulate rows
