@@ -210,10 +210,10 @@ class DownloadUnavailable(DownloadError):
 class DownloadedMedia:
     """A downloaded video as the ingestion pipeline should see it: a file, named and sized.
 
-    Nothing here records where it came from. That is not an oversight — attributing an
-    analysis to a source URL is a column in a table this task is forbidden to touch, and
-    inventing a field for it now would be a schema decision made in the wrong place. The
-    caller has the URL it passed in.
+    What it records about where the file came from is one normalized hostname, and nothing
+    more. The submitted URL stays in this process — it is never carried out of here — because
+    its query string is where a signed expiry, an access token or a private path lives, and
+    the host is the largest part of it that answers "where from" while carrying no secret.
 
     Valid only inside the `download` block that produced it. The file is deleted on the way
     out, so anything that needs to survive must be copied or stored before then.
@@ -234,6 +234,17 @@ class DownloadedMedia:
     # copy of something a publisher served, which for a DASH/HLS source is not true and never
     # could be.
     assembled: bool = False
+    # The normalized host of the URL this file was fetched from (R7-T12): lowercased, `www.`
+    # stripped, and no other part of the URL. `None` when the submitted string had no
+    # readable host, which is the honest answer rather than a fabricated origin.
+    #
+    # The host of the address the caller submitted and `validate_url` checked, not of
+    # wherever redirects ended up. Following the chain into this field would record an origin
+    # the submitter never named, and it is not a claim this service makes.
+    #
+    # Like `assembled`, an acquisition fact and nothing else. Nothing downstream may read a
+    # host as evidence about the media: one host's video is not more authentic than another's.
+    source_host: str | None = None
 
 
 def is_public_address(address: str) -> bool:
@@ -393,6 +404,55 @@ def validate_url(url: str) -> str:
             raise BlockedAddress(f"{host} resolves to an address that is not public.")
 
     return url
+
+
+# What `www.` means for a recorded host: nothing. It is a legacy subdomain that names the
+# same site as the bare name on every source this service fetches from, and keeping it would
+# make `www.example.com` and `example.com` read as two different origins in a report. Stripped
+# once, from the front, and only when it is a whole label — `wwwexample.com` and
+# `www.www.example.com` are left as they are, because guessing at either would be inventing a
+# name the submitter did not use.
+_WWW_PREFIX = "www."
+
+
+def normalized_host(url: str) -> str | None:
+    """The hostname of a URL, in the one form worth recording — or `None` if it has none.
+
+    Everything a report should say about where media came from and nothing a report must not
+    hold: the host, lowercased, with a trailing root dot and a leading `www.` removed. No
+    scheme, no credentials, no port, no path, no query and no fragment ever survive this
+    function, which is the point of it — a submitted media URL routinely carries a signed
+    expiry, an access token or a private path in its query string, and the only reliable way
+    not to persist those is never to extract them (R7-T12).
+
+    Parsed with `urlsplit` rather than split on characters. A hand-rolled scan for `//` and
+    `/` gets `https://youtube.com@evil.example/x` wrong — the host there is `evil.example` —
+    and a normalization that can be talked into naming the wrong origin is worse than none.
+
+    `None` for anything with no readable host, including a URL `urlsplit` refuses outright —
+    a malformed IPv6 literal is one. That is the honest answer for a string this function
+    cannot read, and it leaves the caller recording nothing rather than a fragment. A URL
+    whose *port* will not parse still has a readable host and gets one: the port is not part
+    of what is recorded, so nothing about it changes the answer.
+    It is not a validation result: whether a URL may be fetched at all is `validate_url`'s
+    question, asked separately and answered by the SSRF defence.
+    """
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return None
+
+    if not host:
+        return None
+
+    # `urlsplit.hostname` already lowercases and drops the port and any credentials; the
+    # root dot and `www.` are what is left to do.
+    host = host.rstrip(".")
+
+    if host.startswith(_WWW_PREFIX):
+        host = host[len(_WWW_PREFIX):]
+
+    return host or None
 
 
 def is_youtube_url(url: str) -> bool:
@@ -753,6 +813,9 @@ def download(url: str) -> Iterator[DownloadedMedia]:
 
         yield DownloadedMedia(
             path=media,
+            # Derived from the URL this call validated, so the recorded host is the host the
+            # SSRF check was made against rather than a second, looser reading of the string.
+            source_host=normalized_host(url),
             # yt-dlp's own name for the file it wrote. It is a fixed template rather than the
             # site's title, so nothing a publisher controls reaches a filename.
             filename=media.name,

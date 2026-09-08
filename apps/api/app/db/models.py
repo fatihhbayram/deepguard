@@ -87,6 +87,16 @@ SHADOW_RUN_STATUS_FAILED = "failed"
 
 SHA256_HEX_LENGTH = 64
 
+# How the analysed artifact reached DeepGuard (R7-T12). `upload` is a file a client sent;
+# `url` is a file this service fetched from an address a client named. Two doors and no
+# third: an analysis whose media arrived some other way does not exist.
+#
+# The absence of either — a null column — is a third state and not a third method. It means
+# the analysis predates this record being kept, and is read as "not recorded" rather than
+# resolved to a guess.
+ACQUISITION_METHOD_UPLOAD = "upload"
+ACQUISITION_METHOD_URL = "url"
+
 # What a person may be when they sign in. Two roles and no permission table: the only
 # distinction R1-T1 has a use for is "may reach an administrative action at all", and a
 # grant model with nothing to grant would be a schema built for a requirement that does not
@@ -266,6 +276,42 @@ class MediaFile(Base):
     was_assembled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=sa_false()
     )
+
+    # Which door this media came through, and the host it came from (R7-T12). Beside
+    # `was_assembled` above, which says how the artifact was put together; these two say
+    # where it came from, and the three are only readable together.
+    #
+    # `acquisition_method` is `ACQUISITION_METHOD_UPLOAD` or `ACQUISITION_METHOD_URL`. Null
+    # means the row predates this column: the analysis was acquired by a request that
+    # recorded nothing about how, and no evidence survives to say which door it used. That is
+    # reported as "not recorded" and never resolved to a default — a row silently called an
+    # upload would be a fabricated provenance fact, which is the one error this pair exists
+    # to prevent.
+    #
+    # It is also what makes `was_assembled` readable. On a row with a null method, `false` is
+    # only R7-T1's server default and carries no claim about who served the bytes; it becomes
+    # an acquisition claim exclusively alongside a recorded method.
+    acquisition_method: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    # The normalized hostname of a URL submission: lowercased, `www.` stripped, and nothing
+    # else of the URL — no scheme, no port, no path, no query, no fragment, no credentials.
+    # Null for an upload, where there is no host, and null for a row from before this column.
+    #
+    # The hostname alone, deliberately. A submitted URL routinely carries a signed expiry, an
+    # access token, a session id or a private path in its query string, and a column holding
+    # the whole URL would put those in the database, in every backup of it and in front of
+    # every reader of the analysis. The host is the part that answers "where did this come
+    # from" and the largest part of a URL that carries no secret.
+    #
+    # It is the host of the address the client submitted and that the SSRF guard validated,
+    # not of wherever a redirect chain ended. Recording the endpoint of a redirect would be
+    # recording something the submitter never named, and following that chain into the record
+    # is exactly the provenance claim this column does not make.
+    #
+    # No risk rule, threshold or detector reads it. Media fetched from one host is neither
+    # more nor less authentic than media fetched from another, and this column asserts
+    # nothing about the publisher, the account or the file behind that host.
+    source_host: Mapped[str | None] = mapped_column(String(253), nullable=True)
 
     # The object downstream inference should read.
     #

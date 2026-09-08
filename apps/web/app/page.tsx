@@ -5,6 +5,7 @@ import { requestIdHeaders } from "./observability";
 import { LOGIN_PATH, SessionUser } from "./session";
 import {
   ABSENT,
+  acquisitionStatement,
   ANALYSIS_STATUS_COMPLETED,
   ANALYSIS_STATUS_FAILED,
   apiUrl,
@@ -872,12 +873,11 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
           </Field>
 
           <Field term="NORMALIZED">{analysis.was_normalized ? "yes" : "no"}</Field>
-          {/* How the artifact was obtained. "assembled" means DeepGuard muxed it here from
-              separate streams, which is what a DASH or HLS source leaves it no choice but to
-              do; it is not a finding about the media. */}
-          <Field term="ACQUISITION">
-            {analysis.was_assembled ? "assembled" : "as received"}
-          </Field>
+          {/* How the artifact was obtained, in the same sentence the report gives (R7-T12).
+              The dashboard and the report read one row and must make one claim about it, so
+              the wording comes from `acquisitionStatement` rather than from a second
+              abbreviation written here. It is not a finding about the media. */}
+          <Field term="ACQUISITION">{acquisitionStatement(analysis)}</Field>
 
           {/* The detector's own state, verbatim: SUCCESS, FAILED or TIMEOUT are three
               different forensic facts, and an analysis may carry no signal at all. */}

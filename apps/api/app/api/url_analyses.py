@@ -6,12 +6,21 @@ container validation, the same forensic original in MinIO, the same queued job a
 row shape. Nothing downstream learns that a URL was involved: the worker, the detectors, the
 risk engine and both read paths see an analysis.
 
-The single exception, added by R7-T1, is `was_assembled`: whether the artifact was muxed here
-from separate streams or stored as the source served it. That crosses the boundary because it
-is a fact about the *file*, not about the door it came through — an upload is always the
-source's own bytes and a DASH acquisition never is, and the process that reads provenance off
-the stored original minutes later cannot work that out for itself. It is carried and reported,
-never interpreted: no detector, threshold or risk rule reads it.
+The exceptions are the acquisition facts. R7-T1 added `was_assembled`: whether the artifact was
+muxed here from separate streams or stored as the source served it. That crosses the boundary
+because it is a fact about the *file*, not about the door it came through — an upload is always
+the source's own bytes and a DASH acquisition never is, and the process that reads provenance
+off the stored original minutes later cannot work that out for itself.
+
+R7-T12 adds the other half: `acquisition_method`, which is `url` for everything submitted here,
+and `source_host`, the normalized hostname of the address the client named. The URL itself goes
+no further than this module. It is validated here, fetched here and dropped here, and only its
+host is handed on — a media URL's query string is where a signed expiry, an access token or a
+session id lives, and the safe way not to persist those is never to carry them out of the
+function that had to hold one.
+
+All three are carried and reported, never interpreted: no detector, threshold or risk rule reads
+any of them, and none is evidence about the media.
 
 Its own module rather than another section of `app/api/analyses.py`, for a concrete reason:
 `app.downloader` imports the upload ceiling from that module, so a route there that imported
@@ -42,7 +51,7 @@ from app.api.analyses import (
     accept_upload,
     created_analysis,
 )
-from app.db.models import User
+from app.db.models import ACQUISITION_METHOD_URL, User
 from app.db.session import get_session
 from app.media import MAX_UPLOAD_BYTES
 from app.web_auth import require_same_origin, require_user
@@ -139,9 +148,14 @@ async def accept_url(
     That is a scheduling detail and not a change of shape; nothing about this call returns
     before the file exists.
 
-    What the pipeline is told beyond the file itself is one fact: whether the downloader
-    assembled it. That is the one thing an upload cannot be and a URL submission can, and it
-    has to survive the request — see `was_assembled` on `MediaFile`.
+    What the pipeline is told beyond the file itself is how the file was acquired: that this
+    was a URL submission, which host it came from, and whether the downloader assembled it.
+    Those are the things an upload cannot be and a URL submission is, and they have to survive
+    the request — see `acquisition_method`, `source_host` and `was_assembled` on `MediaFile`.
+
+    The host is the downloader's own normalization of the URL this call validated, and it is
+    the only part of that URL to leave this function. Nothing below is given the string the
+    client submitted.
 
     The downloaded file is wrapped as an `UploadFile` rather than given a pipeline of its
     own. `accept_upload` wants something with a content type, a filename and bytes to read,
@@ -196,6 +210,17 @@ async def accept_url(
             # Passed through untouched and not interpreted. It records how the artifact was
             # obtained; it is not a finding about the media and nothing below reads it as one.
             was_assembled=media.assembled,
+            # This submission came through the URL door, and from this host. The method is a
+            # constant because every acquisition on this path is one; the host is the
+            # downloader's normalization of the address it validated — lowercased, `www.`
+            # stripped, and no scheme, port, path, query or fragment.
+            #
+            # `None` when the submitted string had no readable host. That does not happen for
+            # a URL the downloader accepted, since `validate_url` refuses a hostless one, and
+            # passing it through rather than substituting a placeholder is what keeps this
+            # from ever recording an origin nobody named.
+            acquisition_method=ACQUISITION_METHOD_URL,
+            source_host=media.source_host,
             api_key_id=api_key_id,
             owner_id=owner_id,
             max_active_analyses=max_active_analyses,

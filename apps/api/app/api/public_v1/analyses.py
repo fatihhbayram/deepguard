@@ -126,6 +126,31 @@ class PublicAnalysis(BaseModel):
     risk_rule_id: str | None
     risk_calibration_id: str | None
 
+    # How the analysed artifact reached DeepGuard (R7-T12), and nothing about what it is.
+    #
+    # `acquisition_method` is `upload` — a file the customer sent — or `url` — a file
+    # DeepGuard fetched from an address they named. `source_host` is the normalized hostname
+    # of that address, lowercased and with `www.` stripped, and is null for an upload.
+    # `was_assembled` is true when the artifact was muxed here from a separate video stream
+    # and a separate audio stream, which is the only form some sources publish.
+    #
+    # `source_host` is the hostname alone and never more of the URL. A media URL's query
+    # string routinely carries a signed expiry, an access token or a session id, and none of
+    # that is stored, so none of it can be served back here.
+    #
+    # All three are null-or-false-tolerant additions rather than a contract change: they
+    # default so that a client written against the earlier shape keeps working, and a null
+    # method means the analysis predates the record rather than meaning `upload`. A client
+    # must not resolve it to one — nobody established which door that analysis came through.
+    #
+    # None of them is a finding. Media fetched from a host is neither more nor less authentic
+    # than media uploaded, an assembled artifact is neither more nor less authentic than a
+    # served one, and no risk rule reads any of the three. In particular, a `url` acquisition
+    # is not a claim that the stored bytes are the file that host's publisher issued.
+    acquisition_method: str | None = None
+    source_host: str | None = None
+    was_assembled: bool = False
+
     # Every signal the analysis actually carries, in a stable order. Empty while nothing has
     # run yet, and short of the full set for an analysis that predates a detector or whose
     # provider never answered — the absence of a signal is itself a fact, and nothing is
@@ -220,6 +245,12 @@ def public_analysis(summary: AnalysisSummary) -> PublicAnalysis:
         risk_rules_version=summary.risk_rules_version,
         risk_rule_id=summary.risk_rule_id,
         risk_calibration_id=summary.risk_calibration_id,
+        # The acquisition facts, passed through exactly as stored — nulls included. A row
+        # from before R7-T12 carries null in both, and null crosses this boundary as null:
+        # substituting `upload` would turn a gap in the record into a provenance claim.
+        acquisition_method=summary.acquisition_method,
+        source_host=summary.source_host,
+        was_assembled=summary.was_assembled,
         signals=public_signals(summary),
     )
 

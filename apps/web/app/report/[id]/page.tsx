@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 
 import { LOGIN_PATH } from "../../session";
 import {
+  ACQUISITION_METHOD_URL,
   ActiveSpeakerSignal,
   AnalysisSummary,
   AudioAuthenticitySignal,
@@ -19,6 +20,8 @@ import {
   RiskRationale,
   SyntheticVideoSignal,
   UNSUPPORTED,
+  acquisitionStatement,
+  credentialsAbsentStatement,
   fetchAnalysis,
   isSupportedRiskLevel,
   riskRationale,
@@ -158,17 +161,15 @@ function MediaSection({
         />
         <Field label="Normalized for detection" value={analysis.was_normalized ? "yes" : "no"} />
         {/* How the artifact was obtained, not what it is. An assembled acquisition is
-            neither more nor less trustworthy than a served one; what the reader must not do
-            is take the hash below as the hash of a file the publisher issued, because for a
-            DASH or HLS source no such single file exists. */}
-        <Field
-          label="Acquisition"
-          value={
-            analysis.was_assembled
-              ? "assembled here from separate video and audio streams"
-              : "stored as received, unmodified"
-          }
-        />
+            neither more nor less trustworthy than a served one, and a fetched one is neither
+            more nor less trustworthy than an uploaded one; what the reader must not do is
+            take the hash below as the hash of a file a publisher issued, which DeepGuard
+            never saw in either case.
+
+            The sentence comes from `acquisitionStatement` rather than being written here, so
+            the report and the dashboard cannot drift into two different claims about the same
+            row — and so that the one place it is written is the one place to review. */}
+        <Field label="Acquisition" value={acquisitionStatement(analysis)} />
       </dl>
       <div className="mt-4 break-inside-avoid">
         <dt className="text-xs uppercase tracking-wide opacity-60">
@@ -184,6 +185,12 @@ function MediaSection({
           this report.
           {analysis.was_assembled
             ? " Because this acquisition was assembled from separate video and audio streams, it hashes the artifact DeepGuard built and stored, not a file the source published — the source published no single file to compare it against."
+            : ""}
+          {/* A single served file was stored byte for byte, so the hash is the hash of what
+              the host served this fetch — which is not the same as the hash of a file that
+              host's publisher issued, and the sentence stops where the evidence does. */}
+          {analysis.acquisition_method === ACQUISITION_METHOD_URL && !analysis.was_assembled
+            ? " It hashes the file served to DeepGuard at acquisition time. Whether that file matches any upstream or publisher-original file is not something this analysis establishes."
             : ""}
         </p>
       </div>
@@ -559,14 +566,16 @@ function SyntheticVideoSection({ signal }: { signal: SyntheticVideoSignal | null
 
 function ProvenanceSection({
   signal,
-  assembled,
+  analysis,
 }: {
   signal: ProvenanceSignal | null;
-  // Whether the artifact this provenance was read from is one DeepGuard assembled. It
-  // changes the wording and nothing else: a missing manifest on an assembled acquisition is
-  // as unremarkable as it is on any other file, and neither reading becomes evidence.
-  assembled: boolean;
+  // The analysis this provenance was read from, for its acquisition facts alone. They change
+  // the wording and nothing else: a missing manifest is as unremarkable on an assembled
+  // acquisition, on a fetched file and on an upload as it is anywhere, and no reading of it
+  // becomes evidence because of where the bytes came from.
+  analysis: AnalysisSummary;
 }) {
+  const assembled = analysis.was_assembled;
   return (
     <Section
       title="C2PA provenance"
@@ -602,6 +611,15 @@ function ProvenanceSection({
               value={signal.remote_manifest_url ?? ABSENT}
             />
           </dl>
+          {/* Said only where there is an absence to describe. `manifest_exists === false` is
+              a reading that ran and found no manifest; `null` is a reading that failed and
+              knows nothing either way, and `true` is not an absence at all. Attaching this
+              sentence to any of the other two would be describing a finding that was never
+              made. It is scoped to the artifact DeepGuard read and says so outright, because
+              a manifest can be stripped by any hop between a publisher and this fetch. */}
+          {signal.manifest_exists === false ? (
+            <p className="mt-3 text-xs opacity-70">{credentialsAbsentStatement(analysis)}</p>
+          ) : null}
           <p className="mt-3 text-xs opacity-70">
             Provenance answers who signed these bytes, which is a different question from
             whether the media was manipulated. The absence of Content Credentials is not
@@ -1100,7 +1118,7 @@ export default async function Report({ params }: { params: Promise<{ id: string 
       </p>
 
       <SyntheticVideoSection signal={analysis.synthetic_video} />
-      <ProvenanceSection signal={analysis.provenance} assembled={analysis.was_assembled} />
+      <ProvenanceSection signal={analysis.provenance} analysis={analysis} />
       <ActiveSpeakerSection signal={analysis.active_speaker} />
       <FaceManipulationSection signal={analysis.face_manipulation} analysis={analysis} />
       <LipForensicsSection signal={analysis.lip_forensics} analysis={analysis} />

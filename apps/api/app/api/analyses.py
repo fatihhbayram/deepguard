@@ -15,6 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased
 
 from app.db.models import (
+    ACQUISITION_METHOD_UPLOAD,
     ANALYSIS_STATUS_QUEUED,
     JOB_STATUS_QUEUED,
     USER_ROLE_ADMIN,
@@ -121,6 +122,15 @@ class CreatedAnalysis(BaseModel):
     # file. It describes how the bytes came to exist and says nothing about whether they are
     # authentic.
     was_assembled: bool = False
+    # Which door this media came through, and the host it came from (R7-T12). `upload` for a
+    # file the client sent, with no host to name; `url` for one this service fetched, with the
+    # normalized hostname of the submitted address and no other part of that URL.
+    #
+    # Optional on the model so that a reader written against the older shape keeps parsing,
+    # and so that "not recorded" stays expressible: a null method is an analysis from before
+    # this was kept, not an upload.
+    acquisition_method: str | None = None
+    source_host: str | None = None
     # The object downstream inference should read, when that is already settled. Null
     # whenever a derivative is owed: the transcode has not run, so there is no such object
     # yet and naming one would be a guess. When the original is already canonical this is
@@ -561,6 +571,20 @@ class AnalysisSummary(BaseModel):
     # Reported so a reader is never left to assume the first case. It is not a finding: no
     # risk rule reads it, and it carries no claim about the media's authenticity.
     was_assembled: bool
+    # How this media was acquired (R7-T12): `upload`, `url`, or null for an analysis stored
+    # before either was recorded. Null is not an upload — it is the absence of the record —
+    # and a reader that resolved it to one would be asserting a provenance fact nobody
+    # established.
+    #
+    # It is also what makes `was_assembled` above readable. On a row with a null method,
+    # `false` is only R7-T1's server default: it says the artifact was not muxed here and
+    # nothing at all about whether a client sent it or a source served it.
+    acquisition_method: str | None = None
+    # The normalized host a URL submission was fetched from — lowercased, `www.` stripped —
+    # and null for an upload and for any row from before the column. Never the full URL: the
+    # query string of a media URL is where signed expiries and access tokens live, and no
+    # part of it is stored or served.
+    source_host: str | None = None
     # Never null: an analysis and its media row are written in one transaction, and the
     # listing joins them inner, so a listed analysis always has these facts.
     media: MediaFacts
@@ -681,6 +705,8 @@ def persist_analysis(
     metadata: MediaMetadata,
     was_normalized: bool,
     was_assembled: bool,
+    acquisition_method: str,
+    source_host: str | None,
     derivative_storage_key: str | None,
     api_key_id: uuid.UUID | None = None,
     owner_id: uuid.UUID | None = None,
@@ -771,6 +797,8 @@ def persist_analysis(
             constant_frame_rate=metadata.constant_frame_rate,
             was_normalized=was_normalized,
             was_assembled=was_assembled,
+            acquisition_method=acquisition_method,
+            source_host=source_host,
             derivative_storage_key=derivative_storage_key,
         )
     )
@@ -813,6 +841,8 @@ class AcceptedUpload:
     metadata: MediaMetadata
     was_normalized: bool
     was_assembled: bool
+    acquisition_method: str
+    source_host: str | None
     derivative_storage_key: str | None
 
 
@@ -821,6 +851,8 @@ async def accept_upload(
     session: Session,
     *,
     was_assembled: bool = False,
+    acquisition_method: str = ACQUISITION_METHOD_UPLOAD,
+    source_host: str | None = None,
     api_key_id: uuid.UUID | None = None,
     owner_id: uuid.UUID | None = None,
     max_active_analyses: int | None = None,
@@ -857,6 +889,18 @@ async def accept_upload(
     It is carried, not acted on. Nothing here branches on it and nothing downstream may
     treat it as evidence; it is persisted so that a reader of the stored original later can
     tell an artifact this service assembled from one a source served (R7-T1).
+
+    `acquisition_method` and `source_host` are parameters for the same reason and default the
+    same way (R7-T12). This function is handed a file and cannot see the door it came
+    through, so the default is `upload` with no host — which for a client-sent file is not a
+    guess but the only truth available: there is no address to record. The URL route overrides
+    both from the address it validated, passing the normalized hostname alone. The full URL is
+    never a parameter here and is never persisted: its query string is where signed expiries
+    and access tokens live.
+
+    Neither is acted on either. No branch here reads them, and no detector, threshold or risk
+    rule may: media fetched from a host is neither more nor less authentic than media
+    uploaded, and the only claim these fields support is about what DeepGuard did.
 
     The staged file is deleted before responding. Nothing local survives the request, and
     the worker reads the original back out of MinIO rather than depending on a temp file
@@ -942,6 +986,8 @@ async def accept_upload(
             metadata=metadata,
             was_normalized=was_normalized,
             was_assembled=was_assembled,
+            acquisition_method=acquisition_method,
+            source_host=source_host,
             derivative_storage_key=canonical_key,
             api_key_id=api_key_id,
             owner_id=owner_id,
@@ -982,6 +1028,8 @@ async def accept_upload(
         metadata=metadata,
         was_normalized=was_normalized,
         was_assembled=was_assembled,
+        acquisition_method=acquisition_method,
+        source_host=source_host,
         derivative_storage_key=canonical_key,
     )
 
@@ -1004,6 +1052,8 @@ def created_analysis(accepted: AcceptedUpload) -> CreatedAnalysis:
         metadata=accepted.metadata,
         was_normalized=accepted.was_normalized,
         was_assembled=accepted.was_assembled,
+        acquisition_method=accepted.acquisition_method,
+        source_host=accepted.source_host,
         derivative_storage_key=accepted.derivative_storage_key,
     )
 
@@ -1479,6 +1529,8 @@ def analysis_evidence_select():
                 MediaFile.original_sha256,
                 MediaFile.was_normalized,
                 MediaFile.was_assembled,
+                MediaFile.acquisition_method,
+                MediaFile.source_host,
                 # The probed facts about the original. Already on the joined row, so
                 # naming them costs no extra statement.
                 MediaFile.format_name,
@@ -1621,6 +1673,11 @@ def analysis_payloads(session: Session, rows: list[Any]) -> list[AnalysisSummary
             original_sha256=row.original_sha256,
             was_normalized=row.was_normalized,
             was_assembled=row.was_assembled,
+            # Passed through exactly as stored, null included. A row from before R7-T12
+            # carries null in both, and null stays null: it is read as "not recorded", and
+            # substituting `upload` here would turn a gap in the record into a claim.
+            acquisition_method=row.acquisition_method,
+            source_host=row.source_host,
             media=MediaFacts(
                 format_name=row.format_name,
                 codec_name=row.codec_name,

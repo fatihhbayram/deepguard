@@ -277,6 +277,19 @@ export type AnalysisSummary = {
   // published. Reported so the report never implies the first case when the second happened.
   // It carries no claim about authenticity and no risk rule reads it.
   was_assembled: boolean;
+  // Which door the artifact came through, and the host it came from (R7-T12).
+  // `acquisition_method` is `"upload"`, `"url"`, or null; `source_host` is the normalized
+  // hostname of a URL submission — lowercased, `www.` stripped — and null for an upload.
+  //
+  // Null is a third state and not a synonym for `"upload"`. It means the analysis was stored
+  // before either was recorded, so nobody established which door it used, and a reader that
+  // resolved it to an upload would be stating a provenance fact that was never established.
+  //
+  // `source_host` is the hostname alone and never more of the submitted URL. The API stores
+  // no more than this, so there is no path by which a query string, an access token or a
+  // private media path can reach this page.
+  acquisition_method: string | null;
+  source_host: string | null;
   // Never null: an analysis and its media are written in one transaction.
   media: MediaFacts;
   // Null when the analysis carries no such signal at all — a different fact from a
@@ -315,6 +328,113 @@ export const UNAVAILABLE = "N/A";
 export const ABSENT = "—";
 // Shown where the analysis has not finished, so its decision is still owed.
 export const PENDING = "Pending";
+
+// --------------------------------------------------------------------------------------
+// What the report may say about where an artifact came from (R7-T12)
+// --------------------------------------------------------------------------------------
+//
+// One place, read by the report and the dashboard alike, because the whole value of these
+// sentences is that they are the same sentences everywhere. Two copies would be two chances
+// for one surface to make a claim the other knows is unsupported.
+//
+// Every sentence here is bounded by one rule: DeepGuard may describe what *it* did, and may
+// not describe what the source published. It fetched bytes from a host; it did not verify
+// that those bytes are the file that host's publisher issued, that the host is the publisher,
+// or that anything upstream of the fetch is as it appears. So "acquired from <host>" is the
+// strongest claim available, and words like "original", "publisher", "authentic" and
+// "unmodified" do not appear in any of them.
+//
+// The distinction the wording turns on is `was_assembled`, and it is a fact about the
+// acquisition rather than about the media: a source that publishes DASH or HLS publishes no
+// single file, so what DeepGuard stored was muxed here from separate streams. An assembled
+// artifact is neither more nor less trustworthy than a served one, and none of these
+// sentences suggests otherwise.
+
+// The two doors, spelled as the API spells them.
+export const ACQUISITION_METHOD_UPLOAD = "upload";
+export const ACQUISITION_METHOD_URL = "url";
+
+/**
+ * How this artifact reached DeepGuard, in one sentence a reader can rely on.
+ *
+ * Four cases, and the fourth is the one that matters most. An analysis stored before R7-T12
+ * recorded nothing about its acquisition, and the sentence for it says exactly that rather
+ * than falling back to the upload wording: an old row silently described as an upload would
+ * be a fabricated provenance claim, which is the error this whole feature exists to prevent.
+ *
+ * The URL sentences name the host and stop. They do not say the bytes are what the publisher
+ * issued, because DeepGuard did not establish that and could not: it fetched a file from an
+ * address, which is a statement about the fetch and not about the file's history.
+ *
+ * A `url` acquisition with no recorded host does not happen — the API refuses a URL with no
+ * hostname — but it is written out anyway rather than left to interpolate the word "null"
+ * into a report. The sentence drops the host and keeps every other word.
+ */
+export function acquisitionStatement(analysis: {
+  acquisition_method: string | null;
+  source_host: string | null;
+  was_assembled: boolean;
+}): string {
+  if (analysis.acquisition_method === ACQUISITION_METHOD_URL) {
+    const host = analysis.source_host;
+
+    if (analysis.was_assembled) {
+      return host === null
+        ? "Media was acquired by URL and assembled from multiple served media components."
+        : `Media was acquired from ${host} and assembled from multiple served media components.`;
+    }
+
+    return host === null
+      ? "Media was acquired by URL as a single served file."
+      : `Media was acquired from ${host} as a single served file.`;
+  }
+
+  if (analysis.acquisition_method === ACQUISITION_METHOD_UPLOAD) {
+    // Only that a file was uploaded. Not that it is original, not that it is unmodified, not
+    // that the submitter authored it — DeepGuard knows a client sent these bytes and nothing
+    // whatever about where the client got them.
+    return "The analysed artifact was uploaded by the submitter.";
+  }
+
+  // No method recorded. `was_assembled` is still worth saying when it is true, because true
+  // was only ever written by an acquisition that really did mux two streams here — but false
+  // on such a row is only R7-T1's server default and supports no claim at all, so nothing is
+  // added for it. That asymmetry is deliberate: it is the difference between reading a
+  // recorded fact and reinterpreting a default.
+  return analysis.was_assembled
+    ? "How this artifact was acquired was not recorded for this analysis. It was assembled by DeepGuard from separate video and audio streams."
+    : "How this artifact was acquired was not recorded for this analysis.";
+}
+
+/**
+ * What the absence of Content Credentials in this artifact does and does not establish.
+ *
+ * Scoped to the artifact DeepGuard read, always. For a URL acquisition the sentence names the
+ * host and then says outright that it settles nothing about an upstream or publisher-original
+ * file — because a C2PA manifest can be stripped by any hop between a publisher and this
+ * fetch, and reading its absence here as its absence there would be inferring a fact about a
+ * file nobody in this system has ever seen.
+ *
+ * Returned only for a reading that ran and found no manifest. A reading that failed knows
+ * nothing about presence or absence, and a reading that found one is not an absence — neither
+ * gets this sentence, and the caller is what decides that.
+ */
+export function credentialsAbsentStatement(analysis: {
+  acquisition_method: string | null;
+  source_host: string | null;
+}): string {
+  if (
+    analysis.acquisition_method === ACQUISITION_METHOD_URL &&
+    analysis.source_host !== null
+  ) {
+    return `No Content Credentials were found in the artifact acquired from ${analysis.source_host}. This does not establish whether credentials were present in an upstream or publisher-original file.`;
+  }
+
+  // An upload, or an acquisition nobody recorded. There is no host to name and no upstream
+  // file this service can point at, so the claim shrinks to the artifact itself — which is
+  // the same limit the sentence above draws, said without the part that needs a host.
+  return "No Content Credentials were found in the analysed artifact. This does not establish whether credentials were present in any file it was derived from.";
+}
 
 // The complete vocabulary of risk states this dashboard is entitled to present as a
 // DeepGuard classification. It is an allowlist, not a default: a value is rendered as an
@@ -1004,6 +1124,23 @@ export function parseOptionalString(value: unknown): string | null | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+/**
+ * A string the API may send, may send as null, or may not send at all.
+ *
+ * The difference from `parseOptionalString` is the missing key. That one rejects it, which is
+ * right for a field the contract has always carried: a payload without it is a payload from
+ * something other than this API. It is wrong for a field added later, where an older API's
+ * response is not malformed — it simply predates the field, and the honest reading of a key
+ * that is not there is the same as the honest reading of a null one: not recorded.
+ *
+ * Absent and null are deliberately collapsed rather than distinguished. Nothing on the page
+ * would say anything different about them, and a third state no rendering can express would
+ * be a distinction kept for its own sake.
+ */
+export function parseAbsentableString(value: unknown): string | null | undefined {
+  return value === undefined ? null : parseOptionalString(value);
+}
+
 /** A boolean the API may legitimately have left out, or `undefined` for anything else. */
 export function parseOptionalBoolean(value: unknown): boolean | null | undefined {
   if (value === null) {
@@ -1548,6 +1685,8 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     size_bytes,
     was_normalized,
     was_assembled,
+    acquisition_method,
+    source_host,
     media,
     synthetic_video,
     provenance,
@@ -1560,6 +1699,12 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
   // Each parsed on its own three-way rule: a real value, a legitimate null, or `undefined`
   // for a payload that is neither. Null is preserved rather than defaulted — the whole
   // point of the column is that "no decision" is a state of its own.
+  // Absent and null mean the same thing for these two and are both accepted: a payload from
+  // an API that predates R7-T12 has no such key, and a row from before it has null in both.
+  // Either way the answer is "not recorded", which is a state this page renders rather than
+  // a payload it refuses — an older API must not make the whole analysis unreadable.
+  const acquisitionMethod = parseAbsentableString(acquisition_method);
+  const sourceHost = parseAbsentableString(source_host);
   const parsedSha256 = parseOptionalString(original_sha256);
   const parsedSize = parseOptionalNumber(size_bytes);
   const riskLevel = parseOptionalString(risk_level);
@@ -1584,6 +1729,8 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     parsedSize === undefined ||
     typeof was_normalized !== "boolean" ||
     typeof was_assembled !== "boolean" ||
+    acquisitionMethod === undefined ||
+    sourceHost === undefined ||
     riskLevel === undefined ||
     riskRulesVersion === undefined ||
     riskRuleId === undefined ||
@@ -1614,6 +1761,8 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     size_bytes: parsedSize,
     was_normalized,
     was_assembled,
+    acquisition_method: acquisitionMethod,
+    source_host: sourceHost,
     media: mediaFacts,
     synthetic_video: signal,
     provenance: provenanceSignal,

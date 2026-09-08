@@ -35,6 +35,7 @@ from app.api.public_v1.analyses import MAX_ACTIVE_ANALYSES
 from app.api.url_analyses import MAX_URL_LENGTH, URL_MEDIA_TYPES
 from app.auth import generate_api_key
 from app.db.models import (
+    ACQUISITION_METHOD_URL,
     ANALYSIS_STATUS_QUEUED,
     JOB_STATUS_QUEUED,
     USER_ROLE_USER,
@@ -123,6 +124,12 @@ class RecordingDownloader:
                 filename=path.name,
                 size_bytes=len(self.payload),
                 assembled=self.assembled,
+                # Normalized by the real function rather than by a second rule written here.
+                # A fake that invented its own host would let the route pass these tests
+                # while persisting something the downloader would never have produced —
+                # and the normalization is the whole of what keeps a query string out of
+                # the database (R7-T12).
+                source_host=downloader.normalized_host(url),
             )
         finally:
             shutil.rmtree(directory, ignore_errors=True)
@@ -481,6 +488,184 @@ def test_the_acquisition_is_reported_on_the_response(
     assert body["sha256"]
 
 
+# --- where the media came from, and what is deliberately not kept of it (R7-T12) ----------
+#
+# R7-T1's `was_assembled` says how the artifact was put together. These say where it came
+# from: which door, and — for this door — the host. The host is the only part of the URL that
+# survives the request, and the tests that matter most here are the ones about the parts that
+# do not.
+
+# A URL of the shape this feature exists for: credentials in the authority, a private path, an
+# access token and a signed expiry. All four are ordinary in a real media URL, and none of
+# them may be anywhere downstream of the download.
+SECRET_URL = (
+    "https://user:hunter2@www.videos.example.com:8443/private/customer-42/clip.mp4"
+    "?token=sk-live-abcdef123456&Expires=1893456000&Signature=deadbeef"
+)
+
+# Every substring of it that would be a leak if it appeared in a row or a response.
+SECRETS = (
+    "hunter2",
+    "sk-live-abcdef123456",
+    "deadbeef",
+    "customer-42",
+    "private",
+    "Expires",
+    "1893456000",
+    "8443",
+    "token",
+    "Signature",
+)
+
+
+def written_record(session: SubmissionSession) -> str:
+    """Every value on every row the submission wrote, as one searchable string.
+
+    Read off the instances rather than from a list of columns this test maintains, because a
+    leak that mattered would not arrive in the column meant to hold the host — it would arrive
+    in a filename, an error message, or a field added after this test was written.
+    """
+    return json.dumps(
+        [
+            {
+                name: str(getattr(row, name))
+                for name in dir(row)
+                if not name.startswith("_") and not callable(getattr(row, name, None))
+            }
+            for row in session.added
+        ]
+    )
+
+
+def test_a_url_submission_is_recorded_as_one(dashboard, download, fake_minio):
+    """The door, written to the row that outlives the request.
+
+    An upload and a URL acquisition are the same analysis to everything downstream, which is
+    the property `accept_url` exists to preserve. This column is the one place the difference
+    is kept — and it has to be kept, because a report that could not tell them apart would
+    have to describe both the same way.
+    """
+    client, session = dashboard
+
+    assert submit(client).status_code == 202
+
+    assert persisted(session, MediaFile)[0].acquisition_method == ACQUISITION_METHOD_URL
+
+
+def test_the_recorded_host_is_the_normalized_one(dashboard, download, fake_minio):
+    """Normalized on the way in, so the column holds one spelling of one host.
+
+    `WWW.Videos.Example.com` and `videos.example.com` are the same origin, and two spellings
+    of it in the database would read as two in a report.
+    """
+    client, session = dashboard
+
+    assert submit(client, "https://WWW.Videos.Example.com/clip").status_code == 202
+
+    assert persisted(session, MediaFile)[0].source_host == "videos.example.com"
+
+
+def test_an_assembled_acquisition_records_the_host_beside_the_assembly(
+    dashboard, assembled_download, fake_minio
+):
+    """Both facts, on one row, because either alone is a misleading half.
+
+    A host with no assembly reads as a file that source served whole. An assembly with no host
+    reads as an artifact from nowhere. The report's sentence needs both to say the one true
+    thing: this was fetched from that host, and what is stored was muxed here.
+    """
+    client, session = dashboard
+
+    assert submit(client, "https://www.youtube.com/watch?v=abc123").status_code == 202
+
+    media_row = persisted(session, MediaFile)[0]
+    assert media_row.acquisition_method == ACQUISITION_METHOD_URL
+    assert media_row.source_host == "youtube.com"
+    assert media_row.was_assembled is True
+
+
+def test_nothing_but_the_host_of_a_secret_bearing_url_is_persisted(
+    dashboard, download, fake_minio
+):
+    """The whole written record is searched, not the column that was meant to hold the host.
+
+    This is the test the feature is built around. The route holds a URL carrying a password,
+    an access token and a signed expiry for the length of one request; what it leaves behind
+    must be the hostname and nothing else, in every row it wrote.
+    """
+    client, session = dashboard
+
+    assert submit(client, SECRET_URL).status_code == 202
+
+    record = written_record(session)
+    for secret in SECRETS:
+        assert secret not in record, secret
+
+    assert persisted(session, MediaFile)[0].source_host == "videos.example.com"
+
+
+def test_nothing_but_the_host_reaches_the_submission_response(
+    dashboard, download, fake_minio
+):
+    """The response is the second surface the URL could escape through.
+
+    The database is checked above; this is the same question asked of what the client is
+    handed back, since a field echoing the submitted URL would leak it to anyone who can read
+    the analysis rather than only to anyone who can read the database.
+    """
+    client, _ = dashboard
+
+    body = submit(client, SECRET_URL).text
+
+    for secret in SECRETS:
+        assert secret not in body, secret
+
+    assert json.loads(body)["source_host"] == "videos.example.com"
+
+
+def test_the_public_url_route_records_the_same_acquisition(
+    customer, submitted_key, download, fake_minio
+):
+    """Both doors into `accept_url` record the same facts, because they are one function.
+
+    Pinned rather than assumed: a public route that recorded a different acquisition from the
+    dashboard's would make the same submission mean two different things depending on which
+    surface made it.
+    """
+    plaintext, _ = submitted_key
+    client, session = customer
+
+    assert submit(client, SECRET_URL, key=plaintext, path=PUBLIC_URL).status_code == 202
+
+    media_row = persisted(session, MediaFile)[0]
+    assert media_row.acquisition_method == ACQUISITION_METHOD_URL
+    assert media_row.source_host == "videos.example.com"
+
+    record = written_record(session)
+    for secret in SECRETS:
+        assert secret not in record, secret
+
+
+def test_the_url_the_client_submitted_never_leaves_this_module(
+    dashboard, download, fake_minio
+):
+    """`accept_upload` is handed a host, never a URL.
+
+    The structural half of the guarantee above. The other tests prove nothing leaked from one
+    submission; this proves there is nothing to leak, because the string never crosses the
+    boundary in the first place — no field of the media row, and no argument the pipeline
+    receives, holds it.
+    """
+    client, session = dashboard
+
+    assert submit(client, SECRET_URL).status_code == 202
+
+    media_row = persisted(session, MediaFile)[0]
+    assert SECRET_URL not in written_record(session)
+    assert media_row.original_filename == "media.mp4"
+    assert media_row.source_host == "videos.example.com"
+
+
 def test_the_acquisition_fact_never_reaches_the_risk_engine():
     """Rule 3 of the review, pinned as a test rather than as a promise in a comment.
 
@@ -513,6 +698,11 @@ def test_the_response_reports_what_an_upload_reports(dashboard, download, fake_m
         "metadata",
         "was_normalized",
         "was_assembled",
+        # Where the artifact came from (R7-T12). Both are on the response because a client
+        # reading back a staged analysis should see the acquisition it just made, and
+        # `source_host` never holds more of the submitted URL than its hostname.
+        "acquisition_method",
+        "source_host",
         "derivative_storage_key",
         "derivative_sha256",
     }

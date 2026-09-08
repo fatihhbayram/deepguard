@@ -14,7 +14,14 @@ from minio.error import S3Error
 from app import detection, media, normalization, request_limits, storage
 from app.api.analyses import CHUNK_SIZE, TEMP_FILE_PREFIX
 from app.media import MAX_UPLOAD_BYTES
-from app.db.models import USER_ROLE_USER, Analysis, AnalysisJob, MediaFile, User
+from app.db.models import (
+    ACQUISITION_METHOD_UPLOAD,
+    USER_ROLE_USER,
+    Analysis,
+    AnalysisJob,
+    MediaFile,
+    User,
+)
 from app.db.session import get_session
 from app.main import app
 from app.normalization import DERIVATIVE_TEMP_PREFIX
@@ -409,6 +416,11 @@ def test_declared_mp4_is_accepted(client, fake_session, new_temp_uploads, fake_m
         # An upload is never assembled: the client sends one file and the pipeline stores
         # exactly it. Only a URL acquisition can be anything else.
         "was_assembled": False,
+        # A client sent this file, so the door is `upload` and there is no host to record.
+        # Null rather than a placeholder: an upload has no origin this service can name, and
+        # naming one would be a fabricated provenance fact.
+        "acquisition_method": "upload",
+        "source_host": None,
         "derivative_storage_key": f"originals/{sha256}",
         "derivative_sha256": None,
     }
@@ -438,6 +450,11 @@ def test_response_does_not_leak_the_temp_path(client, new_temp_uploads, fake_min
         "metadata",
         "was_normalized",
         "was_assembled",
+        # Where the artifact came from (R7-T12). Both are on the response because a client
+        # reading back a staged analysis should see the acquisition it just made, and
+        # `source_host` never holds more of the submitted URL than its hostname.
+        "acquisition_method",
+        "source_host",
         "derivative_storage_key",
         "derivative_sha256",
     }
@@ -930,6 +947,12 @@ def test_successful_upload_persists_the_analysis_and_its_media(
     # An upload is never assembled (R7-T1): the client sends one file and this is it. Only a
     # URL acquisition can be anything else, and only when the source published no single file.
     assert media_file.was_assembled is False
+    # And it came through the upload door, from no host at all (R7-T12). Null rather than a
+    # placeholder or an empty string: DeepGuard knows a client sent these bytes and nothing
+    # whatever about where the client got them, so there is no origin to name — and a name
+    # here would be a provenance claim nobody established.
+    assert media_file.acquisition_method == ACQUISITION_METHOD_UPLOAD
+    assert media_file.source_host is None
     # No separate artifact exists, so the derivative carries no identity of its own.
     assert media_file.derivative_storage_key == media_file.original_storage_key
     assert media_file.derivative_sha256 is None

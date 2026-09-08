@@ -47,6 +47,12 @@ EXPECTED_FIELDS = {
     "original_sha256",
     "was_normalized",
     "was_assembled",
+    # Where the analysed artifact came from (R7-T12): which door it came through, and the
+    # normalized host of a URL submission. Both may be null — for an upload, and for any
+    # analysis stored before the pair was recorded — and neither ever carries more of a URL
+    # than its hostname.
+    "acquisition_method",
+    "source_host",
     "media",
     "synthetic_video",
     "provenance",
@@ -208,6 +214,10 @@ def listing_row(**overrides):
         # source served one file; the listing reports it so a reader is never left to assume
         # bytes were published as they are stored.
         "was_assembled": False,
+        # Where it came from (R7-T12), exactly as `media_files` holds it: an upload, so there
+        # is no host to name and the column is null rather than filled with a placeholder.
+        "acquisition_method": "upload",
+        "source_host": None,
         # What ffprobe established about the original, exactly as `media_files` holds it.
         "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
         "codec_name": "h264",
@@ -694,6 +704,8 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
             "original_sha256": "a" * 64,
             "was_normalized": False,
             "was_assembled": False,
+            "acquisition_method": "upload",
+            "source_host": None,
             "media": {
                 "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
                 "codec_name": "h264",

@@ -81,6 +81,13 @@ PUBLIC_FIELDS = {
     "risk_rules_version",
     "risk_rule_id",
     "risk_calibration_id",
+    # How the artifact was acquired (R7-T12). A customer integrating against this surface is
+    # entitled to know which door their own analysis came through and, for a URL submission,
+    # which host it was fetched from — and `source_host` is the hostname alone, never the
+    # rest of the URL they submitted.
+    "acquisition_method",
+    "source_host",
+    "was_assembled",
     "signals",
 }
 
@@ -528,8 +535,17 @@ def store_analysis(
     risk_rules_version=None,
     risk_rule_id=None,
     risk_calibration_id=None,
+    acquisition_method=None,
+    source_host=None,
+    was_assembled=False,
 ) -> Analysis:
-    """Persist an analysis and the media row every read joins onto."""
+    """Persist an analysis and the media row every read joins onto.
+
+    The acquisition arguments default to *nothing recorded*, which is deliberately the shape
+    of every analysis stored before R7-T12. The reads below therefore run against a
+    historical row unless a test says otherwise, so a read path that could not cope with one
+    fails across this whole file rather than in the one test that remembered to check.
+    """
     db, analyses, _ = session
 
     analysis = Analysis(
@@ -561,6 +577,9 @@ def store_analysis(
             pix_fmt="yuv420p",
             constant_frame_rate=True,
             was_normalized=False,
+            was_assembled=was_assembled,
+            acquisition_method=acquisition_method,
+            source_host=source_host,
             derivative_storage_key=f"originals/{digest}",
         )
     )
@@ -833,6 +852,77 @@ def test_the_read_response_carries_exactly_the_public_contract(reader, session):
 
 
 @integration
+def test_a_url_acquisition_is_reported_to_the_customer(reader, session):
+    """The customer who submitted a URL gets back which door and which host (R7-T12).
+
+    Their own submission, described as what it was. A customer integrating against this API
+    is entitled to know that DeepGuard fetched the file rather than being handed it, and from
+    where — those are facts about DeepGuard's own work on their analysis.
+    """
+    plaintext, key = issue_key(session)
+    analysis = store_analysis(
+        session,
+        owner=key,
+        status=ANALYSIS_STATUS_COMPLETED,
+        acquisition_method="url",
+        source_host="videos.example.com",
+        was_assembled=True,
+    )
+
+    body = reader.get(read_url(analysis.id), headers=authorization(plaintext)).json()
+
+    assert body["acquisition_method"] == "url"
+    assert body["source_host"] == "videos.example.com"
+    assert body["was_assembled"] is True
+
+
+@integration
+def test_the_public_read_carries_no_more_of_the_url_than_the_host(reader, session):
+    """A hostname is the most of a submitted URL this surface can ever serve.
+
+    Not a policy applied here but a consequence of one applied at ingestion: the rest of the
+    URL was never stored, so there is nothing for this route to filter. Asserted anyway,
+    because that is the property a customer's response actually has to have — and a later
+    change that started persisting the URL would show up here rather than in a support ticket.
+    """
+    plaintext, key = issue_key(session)
+    analysis = store_analysis(
+        session,
+        owner=key,
+        status=ANALYSIS_STATUS_COMPLETED,
+        acquisition_method="url",
+        source_host="videos.example.com",
+    )
+
+    body = reader.get(read_url(analysis.id), headers=authorization(plaintext)).text
+
+    for fragment in ("token", "Expires", "Signature", "https://", "?", "/private"):
+        assert fragment not in body, fragment
+
+
+@integration
+def test_an_analysis_from_before_the_acquisition_columns_still_reads(reader, session):
+    """A historical row is served, and served as unknown rather than as an upload.
+
+    Both halves are the contract. A read that failed would make every analysis stored before
+    R7-T12 unreachable through the public API; one that answered `upload` would make them all
+    readable and some of them wrong — a provenance claim manufactured out of a null.
+    """
+    plaintext, key = issue_key(session)
+    analysis = store_analysis(session, owner=key, status=ANALYSIS_STATUS_COMPLETED)
+
+    response = reader.get(read_url(analysis.id), headers=authorization(plaintext))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["acquisition_method"] is None
+    assert body["source_host"] is None
+    # The rest of the analysis reads exactly as it did before these columns existed.
+    assert body["id"] == str(analysis.id)
+    assert body["status"] == ANALYSIS_STATUS_COMPLETED
+
+
+@integration
 def test_the_read_response_leaks_nothing_internal(reader, session):
     """No storage keys, no content hashes, no probed container facts — and no provider
     metadata document, which on a failed signal holds the exception's class name.
@@ -1096,6 +1186,8 @@ def submit_on_its_own_connection(db, key_id: uuid.UUID, results: dict) -> None:
             ),
             storage_key="originals/race",
             was_assembled=False,
+            acquisition_method="upload",
+            source_host=None,
             metadata=MediaMetadata(
                 format_name="mov,mp4,m4a,3gp,3g2,mj2",
                 major_brand="mp42",

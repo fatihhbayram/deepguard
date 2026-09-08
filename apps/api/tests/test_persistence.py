@@ -110,6 +110,8 @@ def media_file(analysis_id: uuid.UUID, **overrides) -> MediaFile:
         "constant_frame_rate": True,
         "was_normalized": True,
         "was_assembled": False,
+        "acquisition_method": "upload",
+        "source_host": None,
         "derivative_storage_key": f"derivatives/{hashlib.sha256(b'derivative').hexdigest()}.mp4",
         "derivative_sha256": hashlib.sha256(b"derivative").hexdigest(),
     }
@@ -167,6 +169,12 @@ def test_migration_created_the_analysis_schema(database):
         # `false` server default, so every row written before the column existed reads as
         # what it was.
         "was_assembled",
+        # Where the media came from (R7-T12): `upload` or `url`, and the normalized hostname
+        # of a URL submission. Both nullable and neither backfilled — an analysis from before
+        # these columns records nothing about its acquisition, and a default would have made
+        # a guess into a stored fact.
+        "acquisition_method",
+        "source_host",
         "derivative_storage_key",
         "derivative_sha256",
     }
