@@ -29,7 +29,7 @@
 
 import { NextResponse } from "next/server";
 
-import { apiUrl } from "../analysis";
+import { HEALTH_TIMEOUT_MS, apiUrl } from "../analysis";
 import { logError, logInfo, requestIdHeaders } from "../observability";
 import { LOGIN_PATH, forwardedOrigin, isSameOrigin, sessionHeaders } from "../session";
 
@@ -74,6 +74,32 @@ async function failureText(response: Response): Promise<string> {
     : `The API refused the submission (HTTP ${response.status}).`;
 }
 
+/**
+ * Whether the API answered anything at all, asked only after a submission has already failed.
+ *
+ * The dashboard's own health indicator (`fetchHealth` in `app/page.tsx`) reads this endpoint
+ * for its state; this asks it a narrower question and keeps none of the answer. Any HTTP
+ * status counts, `503` included — a degraded API is one that answered, and the only thing
+ * this result is used to decide is which of two sentences is true.
+ *
+ * It carries the request id and nothing else. No part of the submission goes with it: not the
+ * file, not the URL, not the session cookie — `/health` requires no account, so sending one
+ * would hand an unauthenticated endpoint a credential for no reason.
+ */
+async function apiAnswered(): Promise<boolean> {
+  try {
+    await fetch(`${apiUrl()}/health`, {
+      cache: "no-store",
+      headers: await requestIdHeaders(),
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    });
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   // A submission driven from another site is refused before the upload is read, so a forged
   // form cannot make this server spend a 100 MiB read on it. The `SameSite=Lax` cookie means
@@ -87,6 +113,23 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     form = await request.formData();
   } catch {
+    // Deliberately one message for every unreadable body, including one that arrived over the
+    // transport ceiling in `next.config.ts`.
+    //
+    // Next does not reject an over-limit body: it logs a warning and truncates the stream, so
+    // what reaches this line is a multipart document that stops mid-part. Parsing that throws
+    // `TypeError: Failed to parse body as FormData.` — with no `code`, no `cause` and no own
+    // properties — which is byte for byte the error a genuinely corrupt body produces. The two
+    // cases are not distinguishable here, and the only thing that tells them apart is the text
+    // of a framework log line, which is undocumented and would silently stop matching on any
+    // upgrade. Guessing between them would mean telling somebody their file is too large when
+    // their upload was merely interrupted (R7-CLOSURE-FIX-2).
+    //
+    // An upload that arrives intact and is merely too large does not reach this branch at
+    // all: the ceiling above is wider than the API's media limit, so such a body is carried
+    // to the API and refused there. What that refusal looks like from this process is dealt
+    // with where the forwarding call is made, below. This branch is left for bodies that are
+    // damaged rather than large.
     return back({ error: "The submission could not be read." });
   }
 
@@ -138,12 +181,37 @@ export async function POST(request: Request): Promise<NextResponse> {
       signal: AbortSignal.timeout(SUBMIT_TIMEOUT_MS),
     });
   } catch (error) {
-    // A timeout or a connection failure. The underlying message can name internal hosts,
-    // so it is not passed on to the browser — but it is exactly what an operator reading
-    // the logs needs, and this server's log is not the browser.
-    await logError("The API could not be reached for a dashboard submission.", {
-      reason: error instanceof Error ? error.message : String(error),
-    });
+    // A timeout or a connection failure. The underlying message can name internal hosts, so
+    // it is not passed on to the browser — but it is exactly what an operator reading the
+    // logs needs, and this server's log is not the browser.
+    const reason = error instanceof Error ? error.message : String(error);
+
+    // Reaching here does not establish that the API is down, and for an upload it routinely
+    // does not mean that. The API refuses an over-length request on its declared size before
+    // reading a byte of it, and closes; this process is still writing the body at that point,
+    // so the upload dies as a socket error and the API's answer never becomes a `Response`
+    // here. `fetch` cannot surface that status — the response object is discarded with the
+    // socket, and `Expect: 100-continue`, which exists precisely to settle this before a body
+    // is sent, is not supported by the runtime. So the refusal is real, is the API's, and is
+    // unreadable from this side (R7-CLOSURE-FIX-2).
+    //
+    // What is still answerable is the narrower question of whether the API is there, so that
+    // is the question asked — and the only claim made is the one its answer supports. Nothing
+    // here infers a status code from an error code, and nothing here holds a copy of the
+    // API's size policy; a message naming 100 MiB would be this layer asserting a limit it
+    // does not own and cannot keep in step.
+    if (hasFile && (await apiAnswered())) {
+      await logError("A dashboard upload failed while the API was still answering.", { reason });
+
+      // Deliberately says only that the upload did not complete. It does not say the file was
+      // too large, that the API refused it, that the file was malformed, or that the API was
+      // unreachable — this process knows the first of those is likely and none of them for
+      // certain, and an operator retrying is better served by a true sentence than a
+      // confident wrong one. The API's own log carries the refusal with the real limit on it.
+      return back({ error: "The upload could not be completed." });
+    }
+
+    await logError("The API could not be reached for a dashboard submission.", { reason });
 
     return back({ error: "The API could not be reached." });
   }
