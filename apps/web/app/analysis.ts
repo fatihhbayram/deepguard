@@ -263,6 +263,11 @@ export type AnalysisSummary = {
   risk_rules_version: string | null;
   risk_rule_id: string | null;
   risk_calibration_id: string | null;
+  // The same decision as the four fields above, read back by the API under the rules that
+  // produced it (R7-T3). Null when no decision exists, and null for a payload from before the
+  // contract existed — in both cases the report keeps its existing presentation rather than
+  // rebuilding a trace out of the detector scores it renders elsewhere.
+  risk_trace: RiskTrace | null;
   original_filename: string | null;
   declared_content_type: string;
   // The hash of the analysed original, and its size on disk. Read by the report, which has
@@ -1062,6 +1067,271 @@ export function riskRationale(
   return RATIONALES_BY_RULESET[rulesVersion]?.[ruleId] ?? null;
 }
 
+// --------------------------------------------------------------------------------------
+// The persisted decision as the API explains it back (R7-T3 `risk_trace`)
+// --------------------------------------------------------------------------------------
+
+/**
+ * How one detector stood in a decision that was already taken, exactly as the API reported it.
+ *
+ * Every field is carried through unchanged. Nothing in this file compares `score` against
+ * `threshold`, decides which detector was eligible, or reads a level out of the set: the
+ * comparison was made once, by the engine, when the analysis ran, and the API states its
+ * outcome in `condition`. A browser that re-made it would eventually disagree with the record
+ * — the moment a threshold moved, every historical report would quietly acquire a new and
+ * entirely plausible explanation.
+ *
+ * `score` and `threshold` are null on every `unavailable` contribution because the persisted
+ * decision could not use that reading, and a number printed beside an operating point reads
+ * as a comparison that was made. They are rendered only where the API supplied them.
+ */
+export type RiskContribution = {
+  signal: string;
+  provider: string;
+  provider_version: string | null;
+  score: number | null;
+  threshold: number | null;
+  // One of `threshold_reached`, `threshold_not_reached`, `unavailable`, `not_interpreted`.
+  // Authoritative for presentation and never derived here.
+  condition: string;
+  // Why this detector contributed nothing, set only alongside `unavailable` or
+  // `not_interpreted`. A fact about the evidence, never a finding about the media.
+  unavailable_reason: string | null;
+  // `decisive` or `considered`, as the API judged it against the rule that actually fired.
+  role: string;
+};
+
+/**
+ * The stored decision with the reasoning behind it made explicit by the API.
+ *
+ * The first four fields are the decision itself, copied from the analysis row; `rule_summary`
+ * and `contributions` are the API's reading of the ruleset version that row names. Null on an
+ * analysis with no decision, and absent altogether from a payload produced before R7-T3 — both
+ * of which arrive here as `null` and leave the report on its existing presentation.
+ */
+export type RiskTrace = {
+  risk_level: string;
+  rule_id: string | null;
+  rules_version: string | null;
+  calibration_id: string | null;
+  // What the fired rule meant under the persisted ruleset version. Null when the API has no
+  // description for it, in which case the decision is shown without one rather than under a
+  // meaning borrowed from another version.
+  rule_summary: string | null;
+  contributions: RiskContribution[];
+  // False when the API could not resolve the ruleset version or its calibration identity. The
+  // decision is still shown; what is withheld is the detailed reading of it.
+  interpreted: boolean;
+};
+
+// The four conditions this build knows how to word. An allowlist, for the same reason
+// `SUPPORTED_RISK_LEVELS` is one: a condition is described in English because it appears here,
+// never because a string arrived from the API. Anything else is reported as a condition this
+// build cannot interpret — which is the only thing actually known about it.
+export const RISK_CONDITIONS = [
+  "threshold_reached",
+  "threshold_not_reached",
+  "unavailable",
+  "not_interpreted",
+] as const;
+
+export type RiskCondition = (typeof RISK_CONDITIONS)[number];
+
+export function isKnownRiskCondition(condition: string): condition is RiskCondition {
+  return (RISK_CONDITIONS as readonly string[]).includes(condition);
+}
+
+// The heading each condition is shown under. Every one is a statement about a detector's
+// reading; none of them is a statement about the media, and none may become one.
+export const RISK_CONDITION_LABELS: Record<RiskCondition, string> = {
+  threshold_reached: "Reached its threshold",
+  threshold_not_reached: "Did not reach its threshold",
+  unavailable: "No usable reading",
+  not_interpreted: "Threshold could not be interpreted",
+};
+
+// What each condition does and does not establish, said where the condition is shown rather
+// than in a footnote. The `threshold_not_reached` wording is the load-bearing one: a detector
+// reports it for a manipulation family it is blind to exactly as readily as for genuine media.
+export const RISK_CONDITION_DETAILS: Record<RiskCondition, string> = {
+  threshold_reached:
+    "This detector's score reached the operating point measured for it under this ruleset. Both figures are shown as the record holds them.",
+  threshold_not_reached:
+    "This detector's score did not reach the operating point measured for it. That is not a finding that the media is genuine: a detector reports this for a manipulation family it cannot see just as readily as for unmanipulated media.",
+  unavailable:
+    "This detector contributed no reading the decision could use, so no score and no threshold were read against each other and none is shown. Silence from a detector is not evidence that the media was not manipulated.",
+  not_interpreted:
+    "The detector's own figures are readable, but the threshold they would have to be read against under this ruleset could not be resolved. No outcome is reported, because reading them against another ruleset's threshold would describe a comparison that was never made.",
+};
+
+// Shown for a condition outside the allowlist above — a later API vocabulary reaching an older
+// build. The state reported is that this build cannot interpret it; the raw value is shown
+// beside it as the record's own word, and no outcome is inferred from it.
+export const RISK_CONDITION_UNINTERPRETABLE = "Condition not interpretable by this build";
+
+/**
+ * Why a detector contributed nothing, in this build's words, or the API's own code.
+ *
+ * Every one of these is a fact about the evidence — a row that is missing, a detector that did
+ * not answer, a deployment the threshold was never measured on, figures that cannot be read, a
+ * threshold that cannot be resolved. None of them says anything about the media. An unknown
+ * code is returned verbatim rather than paraphrased: inventing a sentence for a reason this
+ * build does not know would be guessing at semantics it was not given.
+ */
+export function unavailableReasonText(reason: string): string {
+  switch (reason) {
+    case "no_reading":
+      return "No signal from this detector is stored for this analysis.";
+    case "detector_did_not_report":
+      return "The detector produced no reading — it failed, timed out, or abstained.";
+    case "uncalibrated_deployment":
+      return "The reading came from a deployment this ruleset's threshold was never measured against, so the decision did not read it.";
+    case "unreadable_figures":
+      return "The detector answered, but with figures the persisted decision could not read.";
+    case "threshold_unresolved":
+      return "The threshold measured for this detector under this ruleset could not be resolved.";
+    default:
+      return reason;
+  }
+}
+
+/**
+ * What the fired rule made of this detector, in the API's own two words.
+ *
+ * `decisive` is only ever set by the API on a detector that reached its own threshold under a
+ * rule that concluded HIGH. `considered` claims nothing more than that the ruleset read this
+ * detector. Neither is derived here, and an unfamiliar role is shown as stored rather than
+ * mapped onto one of these two.
+ */
+export function contributionRoleText(role: string): string {
+  switch (role) {
+    case "decisive":
+      return "Decisive — a reason for this level";
+    case "considered":
+      return "Considered — read by this ruleset";
+    default:
+      return role;
+  }
+}
+
+/**
+ * One contribution, or `undefined` for a payload that is not one.
+ *
+ * A malformed entry invalidates the whole trace rather than being skipped, exactly as a
+ * malformed clip invalidates a segment list: a decision breakdown with one detector quietly
+ * dropped out of it would misreport what the ruleset read.
+ */
+export function parseRiskContribution(payload: unknown): RiskContribution | undefined {
+  if (typeof payload !== "object" || payload === null) {
+    return undefined;
+  }
+
+  const {
+    signal,
+    provider,
+    provider_version,
+    score,
+    threshold,
+    condition,
+    unavailable_reason,
+    role,
+  } = payload as Record<string, unknown>;
+
+  const parsedProviderVersion = parseOptionalString(provider_version);
+  const parsedScore = parseOptionalNumber(score);
+  const parsedThreshold = parseOptionalNumber(threshold);
+  const parsedReason = parseOptionalString(unavailable_reason);
+
+  if (
+    typeof signal !== "string" ||
+    typeof provider !== "string" ||
+    typeof condition !== "string" ||
+    typeof role !== "string" ||
+    parsedProviderVersion === undefined ||
+    parsedScore === undefined ||
+    parsedThreshold === undefined ||
+    parsedReason === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    signal,
+    provider,
+    provider_version: parsedProviderVersion,
+    score: parsedScore,
+    threshold: parsedThreshold,
+    condition,
+    unavailable_reason: parsedReason,
+    role,
+  };
+}
+
+/**
+ * The trace on one analysis, with the same three-way result as the signal parsers: a real
+ * trace, a legitimate `null`, or `undefined` for a payload that is not one.
+ *
+ * A missing key is `null` rather than a rejection. A response produced before R7-T3 carries no
+ * `risk_trace` at all, and refusing those payloads would take the whole report down over the
+ * absence of a section that is additive — without it the report renders exactly as it did.
+ */
+export function parseRiskTrace(payload: unknown): RiskTrace | null | undefined {
+  if (payload === null || payload === undefined) {
+    return null;
+  }
+
+  if (typeof payload !== "object") {
+    return undefined;
+  }
+
+  const {
+    risk_level,
+    rule_id,
+    rules_version,
+    calibration_id,
+    rule_summary,
+    contributions,
+    interpreted,
+  } = payload as Record<string, unknown>;
+
+  const parsedRuleId = parseOptionalString(rule_id);
+  const parsedRulesVersion = parseOptionalString(rules_version);
+  const parsedCalibrationId = parseOptionalString(calibration_id);
+  const parsedSummary = parseOptionalString(rule_summary);
+
+  if (
+    typeof risk_level !== "string" ||
+    typeof interpreted !== "boolean" ||
+    !Array.isArray(contributions) ||
+    parsedRuleId === undefined ||
+    parsedRulesVersion === undefined ||
+    parsedCalibrationId === undefined ||
+    parsedSummary === undefined
+  ) {
+    return undefined;
+  }
+
+  const parsedContributions: RiskContribution[] = [];
+  for (const entry of contributions) {
+    const contribution = parseRiskContribution(entry);
+    if (contribution === undefined) {
+      return undefined;
+    }
+
+    parsedContributions.push(contribution);
+  }
+
+  return {
+    risk_level,
+    rule_id: parsedRuleId,
+    rules_version: parsedRulesVersion,
+    calibration_id: parsedCalibrationId,
+    rule_summary: parsedSummary,
+    contributions: parsedContributions,
+    interpreted,
+  };
+}
+
 // The three provenance outcomes that are not a C2PA state: the file was read and carries
 // no credentials, the file names a manifest kept somewhere else, and the file could not be
 // read. Kept apart on purpose — "we looked and found nothing", "provenance was claimed but
@@ -1679,6 +1949,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     risk_rules_version,
     risk_rule_id,
     risk_calibration_id,
+    risk_trace,
     original_filename,
     declared_content_type,
     original_sha256,
@@ -1711,6 +1982,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
   const riskRulesVersion = parseOptionalString(risk_rules_version);
   const riskRuleId = parseOptionalString(risk_rule_id);
   const riskCalibrationId = parseOptionalString(risk_calibration_id);
+  const riskTrace = parseRiskTrace(risk_trace);
 
   const signal = parseSignal(synthetic_video);
   const provenanceSignal = parseProvenance(provenance);
@@ -1735,6 +2007,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     riskRulesVersion === undefined ||
     riskRuleId === undefined ||
     riskCalibrationId === undefined ||
+    riskTrace === undefined ||
     signal === undefined ||
     provenanceSignal === undefined ||
     activeSpeaker === undefined ||
@@ -1755,6 +2028,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     risk_rules_version: riskRulesVersion,
     risk_rule_id: riskRuleId,
     risk_calibration_id: riskCalibrationId,
+    risk_trace: riskTrace,
     original_filename,
     declared_content_type,
     original_sha256: parsedSha256,

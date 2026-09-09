@@ -17,14 +17,22 @@ import {
   RULES_VERSION_V2,
   RULES_VERSION_V3,
   RULES_VERSION_V4,
+  RISK_CONDITION_DETAILS,
+  RISK_CONDITION_LABELS,
+  RISK_CONDITION_UNINTERPRETABLE,
+  RiskContribution,
   RiskRationale,
+  RiskTrace,
   SyntheticVideoSignal,
   UNSUPPORTED,
   acquisitionStatement,
+  contributionRoleText,
   credentialsAbsentStatement,
   fetchAnalysis,
+  isKnownRiskCondition,
   isSupportedRiskLevel,
   riskRationale,
+  unavailableReasonText,
 } from "../../analysis";
 
 import { PrintButton } from "./print-button";
@@ -384,6 +392,180 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
         report.
       </p>
     </section>
+  );
+}
+
+/**
+ * The detector a contribution is about, in this report's words, or in the record's own.
+ *
+ * Named by the signal type the API reported rather than positionally: a trace from an older
+ * ruleset lists the detectors that ruleset read and no others, and a signal type this build
+ * has no name for is printed as stored instead of being matched to the nearest familiar
+ * detector.
+ */
+function contributionDetector(signal: string): string {
+  switch (signal) {
+    case "synthetic_video":
+      return "Synthetic-video detector";
+    case "face_manipulation":
+      return "Face-manipulation classifier";
+    case "lip_forensics":
+      return "Mouth-dynamics model";
+    default:
+      return signal;
+  }
+}
+
+/**
+ * One detector's standing in the persisted decision, rendered from the API's `condition`.
+ *
+ * The condition is the whole of what decides this card's wording. Nothing here compares
+ * `score` against `threshold`, and the figures are shown only under the two conditions that
+ * report a comparison the engine actually made: an `unavailable` contribution carried no
+ * reading into the decision, so printing a number beside an operating point would stage a
+ * comparison that never happened, and a `not_interpreted` one has a readable score but no
+ * threshold to read it against, which is stated rather than resolved.
+ */
+function TraceContribution({ contribution }: { contribution: RiskContribution }) {
+  // Narrowed once, here: everything below reads this local, so the four conditions this
+  // build can word are separated from anything else exactly once and `tsc` proves the label
+  // and detail lookups after it are in range.
+  const condition = contribution.condition;
+  const known = isKnownRiskCondition(condition);
+  const compared =
+    condition === "threshold_reached" || condition === "threshold_not_reached";
+  // A readable figure with no threshold beside it. Shown as what the detector stored, under a
+  // heading that does not imply it was read against anything.
+  const scoreOnly = condition === "not_interpreted";
+
+  return (
+    <div className="break-inside-avoid border-t border-black/10 pt-3 dark:border-white/15 print:border-black/30">
+      <p className="text-sm font-medium break-words">
+        {contributionDetector(contribution.signal)}
+      </p>
+      <p className="mt-0.5 text-xs font-medium opacity-90 break-words">
+        {known ? RISK_CONDITION_LABELS[condition] : RISK_CONDITION_UNINTERPRETABLE}{" "}
+        · <span className="font-mono break-all">{condition}</span>
+      </p>
+      <p className="mt-1 text-xs opacity-70 break-words">
+        {contributionRoleText(contribution.role)}
+      </p>
+
+      <dl className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Field label="Provider" value={contribution.provider} />
+        <Field label="Deployment" value={contribution.provider_version ?? ABSENT} />
+        {compared && contribution.score !== null && (
+          <Field label="Score (as stored)" value={contribution.score.toString()} />
+        )}
+        {compared && contribution.threshold !== null && (
+          <Field
+            label="Threshold under this ruleset"
+            value={contribution.threshold.toString()}
+          />
+        )}
+        {scoreOnly && contribution.score !== null && (
+          <Field label="Score (as stored)" value={contribution.score.toString()} />
+        )}
+      </dl>
+
+      {contribution.unavailable_reason !== null && (
+        <p className="mt-2 text-xs opacity-70 break-words">
+          {unavailableReasonText(contribution.unavailable_reason)}
+        </p>
+      )}
+
+      {known && (
+        <p className="mt-2 text-xs opacity-80 break-words">
+          {RISK_CONDITION_DETAILS[condition]}
+        </p>
+      )}
+      {!known && (
+        <p className="mt-2 text-xs opacity-80 break-words">
+          This build has no interpretation for that condition, so none is given. No threshold
+          outcome is inferred from it, and it establishes nothing about the media.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The persisted decision as the API reads it back, and the closest this report comes to
+ * showing its reasoning.
+ *
+ * Rendered only when the API supplied a trace. A payload without one — an analysis with no
+ * decision, or a response from before the contract existed — leaves this section out
+ * altogether rather than showing an empty one, and the sections around it are unchanged; the
+ * trace is never reconstructed from the detector scores printed further down the report.
+ *
+ * The page performs no part of the decision. The level, the rule, the ruleset, the
+ * calibration, each detector's condition and each figure beside it are all read from the
+ * payload; this component chooses wording and layout for them and nothing else.
+ */
+function RiskTraceSection({ trace }: { trace: RiskTrace }) {
+  return (
+    <Section
+      title="Decision breakdown"
+      subtitle="The stored decision read back under the ruleset it was taken under. Every statement below is the API's; this report compares no score against any threshold and re-derives no part of the classification."
+    >
+      <p className="text-xs uppercase tracking-wide opacity-60">Final risk</p>
+      <p className="mt-0.5 text-lg font-semibold break-words">
+        {riskLabel(trace.risk_level)}
+      </p>
+
+      <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <Field label="Rule fired" value={trace.rule_id ?? ABSENT} />
+        <Field label="Ruleset version" value={trace.rules_version ?? ABSENT} />
+        <Field label="Calibration ID" value={trace.calibration_id ?? ABSENT} />
+      </dl>
+
+      {trace.rule_summary !== null && (
+        <div className="mt-4 break-inside-avoid">
+          <h3 className="text-xs font-semibold uppercase tracking-wide opacity-70">
+            What the rule that fired meant
+          </h3>
+          <p className="mt-1 text-sm break-words">{trace.rule_summary}</p>
+        </div>
+      )}
+
+      {!trace.interpreted && (
+        <p className="mt-4 text-xs opacity-80 break-words">
+          The API could not resolve this decision&apos;s ruleset version or the calibration it
+          was measured under, so the detailed reading of it is unavailable. The decision itself
+          is reproduced above exactly as it was stored; what is missing is the interpretation,
+          and none is guessed in its place.
+        </p>
+      )}
+
+      {trace.contributions.length > 0 ? (
+        <div className="mt-4">
+          <h3 className="text-xs font-semibold uppercase tracking-wide opacity-70">
+            How each detector stood in this decision
+          </h3>
+          <div className="mt-2 space-y-3">
+            {trace.contributions.map((contribution) => (
+              <TraceContribution
+                key={`${contribution.signal}:${contribution.provider}`}
+                contribution={contribution}
+              />
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p className="mt-4 text-xs opacity-70 break-words">
+          The API reported no detector contributions for this decision. That is a statement
+          about what this record can be read to say, not a finding that no detector ran — each
+          detector&apos;s own stored evidence is reproduced further down this report.
+        </p>
+      )}
+
+      <p className="mt-4 text-xs opacity-80">
+        None of the conditions above is a statement about the media. A detector that did not
+        reach its threshold, one that could not be read, and one with no reading at all are
+        three different facts about the evidence, and none of them is evidence that the media
+        was not manipulated.
+      </p>
+    </Section>
   );
 }
 
@@ -1152,6 +1334,10 @@ export default async function Report({ params }: { params: Promise<{ id: string 
         <ScopeDisclosure analysis={analysis} />
 
         <RiskSection analysis={analysis} />
+
+        {/* Only when the API supplied one. A report without a trace keeps exactly the
+            presentation it had, and nothing here rebuilds one from the scores below. */}
+        {analysis.risk_trace !== null && <RiskTraceSection trace={analysis.risk_trace} />}
 
         <MediaSection analysis={analysis} media={analysis.media} />
 
