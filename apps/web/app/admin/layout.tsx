@@ -12,15 +12,17 @@
  * working the day the API changes the word and says nothing when it does; the comparison is
  * also case-sensitive, and the API spells the role in capitals.
  *
- * Since R8-T3 it also carries the surface's own navigation, which is the one piece of markup
- * it owns. There are five administrative screens now — the accounts, the detection queue, the
- * operational summary, the audit log and the API keys — and a link to each from a place that is
- * on all of them beats each page linking to the others, which is what it was doing while there
- * were two. The last of them is the only one about the public API rather than about this
- * application, and it is in the same strip because it is the same audience: one operator, one
- * surface, one place to find everything they administer.
- * It is a strip of links and not a shell: the pages below still own their own `main`, their own
- * heading and their own ground.
+ * Since R8-T9 it also owns the surface's shell: the navigation rail, the mobile drawer that
+ * holds it on a narrow screen, and the `<main>` every page below renders into. That is a change
+ * of ownership rather than an addition. Until R8-T9 the layout carried a horizontal strip of
+ * five links and each page owned its own `main`, its own gutter and its own footer of
+ * cross-links back to the other screens — seven pages each deciding a page's padding, and seven
+ * places for that decision to drift, which it had. The pages return their content now.
+ *
+ * The strip is gone for the reason `components/AdminSidebar.tsx` states: five links across the
+ * top could list the screens but could never group them, and by R8-T8 it was presenting the
+ * account table, the detection queue, a counts page, an append-only log and the public API's
+ * credentials as five of a kind.
  *
  * Like the workspace guard, this is a signpost rather than a lock. The privileged data an
  * administrator can read is privileged in the API — `app/web_auth.py` makes the same check
@@ -31,19 +33,10 @@
 
 import { redirect } from "next/navigation";
 
-import Link from "next/link";
-
 import { fetchSession } from "../analysis";
-import {
-  ADMIN_ANALYTICS_PATH,
-  ADMIN_API_KEYS_PATH,
-  ADMIN_AUDIT_PATH,
-  ADMIN_JOBS_PATH,
-  ADMIN_PATH,
-  LOGIN_PATH,
-  USER_ROLE_ADMIN,
-  WORKSPACE_PATH,
-} from "../session";
+import { LOGIN_PATH, USER_ROLE_ADMIN, WORKSPACE_PATH } from "../session";
+import { AdminMobileNav } from "./components/AdminMobileNav";
+import { AdminSidebar } from "./components/AdminSidebar";
 
 // This subtree is rendered per request, always.
 //
@@ -78,32 +71,33 @@ export default async function AdminLayout({
   }
 
   return (
-    <>
-      {/* Plain links, and no marking of which one the reader is on. Knowing that needs the
-          current path, which a server component does not have — `usePathname` would make this
-          guard a client component, and the guard is the reason this file exists. The pages
-          below are titled, which is what tells a reader where they are. */}
-      <nav
-        aria-label="Administration"
-        className="flex items-center gap-5 border-b border-hair px-4 py-3 sm:px-8"
-      >
-        <Link href={ADMIN_PATH} className="text-sm text-muted hover:text-bone">
-          Accounts
-        </Link>
-        <Link href={ADMIN_JOBS_PATH} className="text-sm text-muted hover:text-bone">
-          Jobs
-        </Link>
-        <Link href={ADMIN_ANALYTICS_PATH} className="text-sm text-muted hover:text-bone">
-          Analytics
-        </Link>
-        <Link href={ADMIN_AUDIT_PATH} className="text-sm text-muted hover:text-bone">
-          Audit
-        </Link>
-        <Link href={ADMIN_API_KEYS_PATH} className="text-sm text-muted hover:text-bone">
-          API keys
-        </Link>
-      </nav>
-      {children}
-    </>
+    <div className="flex min-h-0 flex-1">
+      {/* The rail, on the widths that have room for it beside a table. `lg` rather than `sm`:
+          the widest table in this surface is the audit log at 900px, and a 240px rail taken out
+          of a tablet's 768 leaves that table scrolling when the viewport could have shown it. */}
+      <div className="hidden w-60 shrink-0 border-r border-line lg:block">
+        {/* Sticky and full-height, so the rail stays put while a long log scrolls past it. */}
+        <div className="sticky top-0 h-dvh overflow-y-auto">
+          <AdminSidebar />
+        </div>
+      </div>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Below `lg` the same rail is rendered into the drawer. It is rendered here, on the
+            server, and handed to the client component as children — see `AdminMobileNav`, which
+            holds one boolean and knows nothing about what it is holding open. */}
+        <div className="lg:hidden">
+          <AdminMobileNav>
+            <AdminSidebar />
+          </AdminMobileNav>
+        </div>
+
+        {/* The one `main` on this surface. Every page below returns its content into it, which
+            is what makes the page gutter a single decision instead of seven. */}
+        <main className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-8 sm:px-6 lg:px-8">
+          {children}
+        </main>
+      </div>
+    </div>
   );
 }

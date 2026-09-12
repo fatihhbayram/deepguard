@@ -27,57 +27,24 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { fetchSession } from "../../analysis";
-import {
-  ADMIN_JOBS_PATH,
-  ADMIN_PATH,
-  LOGIN_PATH,
-  WORKSPACE_PATH,
-  adminAnalysisPath,
-} from "../../session";
-import { AdminJob, fetchJobs } from "../jobs";
+import { ADMIN_JOBS_PATH, adminAnalysisPath, LOGIN_PATH } from "../../session";
+import { AdminAlert } from "../components/AdminAlert";
+import { AdminPageHeader } from "../components/AdminPageHeader";
+import { AdminSection } from "../components/AdminSection";
+import { AdminStatusBadge } from "../components/AdminStatusBadge";
+import { AdminValue } from "../components/AdminValue";
+import { AdminJob, JOB_STATUS_COMPLETED, JOB_STATUS_FAILED, fetchJobs } from "../jobs";
 
 /* ------------------------------------------------------------------ *
  * Primitives
  * ------------------------------------------------------------------ */
 
 /*
- * `Legend`, `Heading` and `Alert` restated again, as `app/admin/page.tsx` restates them from
- * the workspace. This is the third screen to carry them, which is the point at which the Rule
- * of Three says to extract — and extracting means editing two pages that this task is not
- * about. Noted here deliberately so the next person to want them has the count in front of
- * them rather than a fourth copy to make.
+ * The comment that used to stand here counted `Legend`, `Heading` and `Alert` to three and said
+ * that was the point the Rule of Three calls for an extraction. R8-T9 made it. They are
+ * `AdminPageHeader` and `AdminAlert` in `../components` now, along with the chip and the `Value`
+ * this file also had a private copy of.
  */
-
-/** The small accented label above a section heading. */
-function Legend({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-[11px] font-medium tracking-[0.16em] text-accent uppercase">
-      {children}
-    </p>
-  );
-}
-
-/** A section heading. Tight, semibold, at the scale the rest of the application sets it. */
-function Heading({ children }: { children: React.ReactNode }) {
-  return (
-    <h2 className="mt-2.5 text-2xl font-semibold tracking-[-0.02em] text-bone sm:text-[28px]">
-      {children}
-    </h2>
-  );
-}
-
-/** Why the listing is not on the screen, stated in the page's own voice. */
-function Alert({ children }: { children: React.ReactNode }) {
-  return (
-    <p
-      role="status"
-      className="flex items-start gap-3 rounded-md border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-[13px] leading-relaxed text-rose-200"
-    >
-      <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-rose-400" />
-      <span>{children}</span>
-    </p>
-  );
-}
 
 /**
  * The state of one job, as a chip.
@@ -88,19 +55,19 @@ function Alert({ children }: { children: React.ReactNode }) {
  * the neutral treatment, which is the honest way to show a word nobody here understands.
  */
 function Status({ status }: { status: string }) {
-  const tone =
-    status === "failed"
-      ? "bg-rose-500/10 text-rose-200"
-      : status === "completed"
-        ? "bg-chip text-bone"
-        : "bg-chip text-muted";
-
   return (
-    <span
-      className={`inline-flex items-center rounded-sm px-2 py-1 text-[11px] font-medium tracking-[0.08em] uppercase ${tone}`}
+    <AdminStatusBadge
+      tone={
+        status === JOB_STATUS_FAILED
+          ? "negative"
+          : status === JOB_STATUS_COMPLETED
+            ? "neutral"
+            : "muted"
+      }
     >
+      {/* The API's own spelling, never title-cased or softened. */}
       {status}
-    </span>
+    </AdminStatusBadge>
   );
 }
 
@@ -113,22 +80,13 @@ function Status({ status }: { status: string }) {
  */
 function Stale() {
   return (
-    <span
+    <AdminStatusBadge
+      tone="warning"
+      dot
       title="The worker's claim on this job expired while it was still running. Recovery will fail it on its next pass."
-      className="inline-flex items-center gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] font-medium tracking-[0.08em] text-amber-200 uppercase"
     >
-      <span aria-hidden className="size-1.5 rounded-full bg-amber-400" />
       Stale
-    </span>
-  );
-}
-
-/** A machine value, or an em dash where the record holds nothing. */
-function Value({ children }: { children: string | null }) {
-  return children === null ? (
-    <span className="text-muted">—</span>
-  ) : (
-    <span className="font-mono text-[11px] text-muted">{children}</span>
+    </AdminStatusBadge>
   );
 }
 
@@ -140,7 +98,7 @@ function Value({ children }: { children: string | null }) {
 function JobRow({ job }: { job: AdminJob }) {
   return (
     <div className="border-t border-hair px-5 py-4">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.4fr)] sm:items-start sm:gap-6">
+      <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.4fr)] items-start gap-6">
         <div className="min-w-0">
           {/* The analysis first and the job second: the analysis id is what an operator has in
               front of them from the workspace, the report or a customer's message, and the job
@@ -158,13 +116,13 @@ function JobRow({ job }: { job: AdminJob }) {
             </Link>
           </div>
           <div className="mt-1 truncate" title={job.id}>
-            <Value>{`job ${job.id}`}</Value>
+            <AdminValue>{`job ${job.id}`}</AdminValue>
           </div>
           {/* The correlation id the API bound to the request that queued this work, so one
               grep covers the browser request and the analysis minutes later. Null on every job
               queued before the column existed, and shown as absent rather than invented. */}
           <div className="mt-1 truncate">
-            <Value>{job.request_id === null ? null : `request ${job.request_id}`}</Value>
+            <AdminValue>{job.request_id === null ? null : `request ${job.request_id}`}</AdminValue>
           </div>
         </div>
 
@@ -180,15 +138,15 @@ function JobRow({ job }: { job: AdminJob }) {
         <div className="space-y-1">
           <div>
             <span className="text-[11px] tracking-[0.08em] text-muted uppercase">Created </span>
-            <Value>{job.created_at}</Value>
+            <AdminValue>{job.created_at}</AdminValue>
           </div>
           <div>
             <span className="text-[11px] tracking-[0.08em] text-muted uppercase">Updated </span>
-            <Value>{job.updated_at}</Value>
+            <AdminValue>{job.updated_at}</AdminValue>
           </div>
           <div>
             <span className="text-[11px] tracking-[0.08em] text-muted uppercase">Lease </span>
-            <Value>{job.lease_expires_at}</Value>
+            <AdminValue>{job.lease_expires_at}</AdminValue>
           </div>
         </div>
       </div>
@@ -206,10 +164,11 @@ function JobRow({ job }: { job: AdminJob }) {
   );
 }
 
-/** The column headings, on the layouts wide enough to have columns. */
+/** The column headings. Always drawn, and always in columns — the table scrolls below the width
+ *  its columns need rather than restacking. See `docs/ui-guidance.md`. */
 function JobHeader() {
   return (
-    <div className="hidden grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.4fr)] gap-6 px-5 py-3 text-[11px] font-medium tracking-[0.08em] text-muted uppercase sm:grid">
+    <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.4fr)] gap-6 px-5 py-3 text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
       <div>Analysis</div>
       <div>State</div>
       <div>Timestamps</div>
@@ -233,43 +192,45 @@ export default async function AdminJobs() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-14 sm:px-8">
-      <Legend>Administration</Legend>
-      <Heading>Detection jobs</Heading>
-      <p className="mt-3 max-w-[68ch] text-[15px] leading-relaxed text-muted">
-        The most recent detection work in this deployment, newest first. A job marked stale was
-        claimed by a worker whose lease has since expired; recovery fails those on its next pass
-        and nothing here changes them. Failures carry the message the worker recorded.
-      </p>
+    <>
+      <AdminPageHeader
+        title="Detection jobs"
+        description="The most recent detection work in this deployment, newest first. A job marked stale was claimed by a worker whose lease has since expired; recovery fails those on its next pass and nothing here changes them. Failures carry the message the worker recorded."
+        actions={
+          // A reload of this page, and deliberately a link rather than a button: the queue moves
+          // on its own and there is no JavaScript here to notice when it does. The cross-links
+          // that used to sit beside it are the sidebar now.
+          <Link
+            href={ADMIN_JOBS_PATH}
+            className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+          >
+            Refresh
+          </Link>
+        }
+      />
 
-      <div className="mt-6">
+      <div className="mt-5">
         {!result.ok ? (
-          <Alert>{result.error}</Alert>
+          <AdminAlert tone="error">{result.error}</AdminAlert>
         ) : result.jobs.length === 0 ? (
-          <p className="text-[13px] text-muted">No detection work has been submitted yet.</p>
+          <AdminSection>
+            <p className="text-[13px] text-muted">
+              No detection work has been submitted yet.
+            </p>
+          </AdminSection>
         ) : (
-          <div className="overflow-hidden rounded-lg border border-line bg-ink-2">
-            <JobHeader />
-            {result.jobs.map((job) => (
-              <JobRow key={job.id} job={job} />
-            ))}
-          </div>
+          <AdminSection bleed scroll>
+            {/* Wide enough for the three columns and the ids they carry; below that the wrapper
+                scrolls rather than the row restacking. */}
+            <div className="min-w-[880px]">
+              <JobHeader />
+              {result.jobs.map((job) => (
+                <JobRow key={job.id} job={job} />
+              ))}
+            </div>
+          </AdminSection>
         )}
       </div>
-
-      <div className="mt-8 flex flex-wrap items-center gap-5">
-        <Link href={ADMIN_PATH} className="text-sm text-muted underline hover:text-bone">
-          ← Accounts
-        </Link>
-        <Link href={WORKSPACE_PATH} className="text-sm text-muted underline hover:text-bone">
-          Back to workspace
-        </Link>
-        {/* A reload of this page, and deliberately a link rather than a button: the queue moves
-            on its own and there is no JavaScript here to notice when it does. */}
-        <Link href={ADMIN_JOBS_PATH} className="text-sm text-muted underline hover:text-bone">
-          Refresh
-        </Link>
-      </div>
-    </main>
+    </>
   );
 }

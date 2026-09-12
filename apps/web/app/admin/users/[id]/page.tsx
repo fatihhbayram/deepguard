@@ -41,13 +41,11 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
 import { fetchSession } from "../../../analysis";
-import {
-  ADMIN_PATH,
-  LOGIN_PATH,
-  USER_ROLE_ADMIN,
-  USER_ROLE_USER,
-  adminAccountPath,
-} from "../../../session";
+import { LOGIN_PATH, USER_ROLE_ADMIN, USER_ROLE_USER, adminAccountPath } from "../../../session";
+import { AdminAlert } from "../../components/AdminAlert";
+import { AdminPageHeader } from "../../components/AdminPageHeader";
+import { AdminSection } from "../../components/AdminSection";
+import { AdminStatusBadge } from "../../components/AdminStatusBadge";
 import { AdminAccount, MINIMUM_PASSWORD_LENGTH, fetchAccount } from "../../users";
 
 /* ------------------------------------------------------------------ *
@@ -55,55 +53,13 @@ import { AdminAccount, MINIMUM_PASSWORD_LENGTH, fetchAccount } from "../../users
  * ------------------------------------------------------------------ */
 
 /*
- * `Legend`, `Heading` and `Alert` restated a seventh time. `app/admin/jobs/page.tsx` noted the
- * third copy as the point the Rule of Three says to extract; `analytics/page.tsx` carried the
- * count to four, `audit/page.tsx` to five and `analyses/[id]/page.tsx` to six. It is seven. The
- * extraction is long owed and is still a change to six other pages that this task is not about —
- * carried forward again so the number stays in front of whoever picks it up rather than
- * resetting quietly at each new screen.
+ * The private `Legend`, `Heading`, `Alert` and `Activity` this file carried — the seventh copy of
+ * the first three, which is where the count the screens had been passing along came to rest —
+ * are `AdminPageHeader`, `AdminAlert` and `AdminStatusBadge` in `../../components` since R8-T9.
+ *
+ * `Fact` stays local. It is on two screens, this one and the case review, and two is not three.
+ * Recorded rather than left implicit, which is the habit that got the extraction above made.
  */
-
-/** The small accented label above a section heading. */
-function Legend({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-[11px] font-medium tracking-[0.16em] text-accent uppercase">
-      {children}
-    </p>
-  );
-}
-
-/** A section heading. Tight, semibold, at the scale the rest of the application sets it. */
-function Heading({ children }: { children: React.ReactNode }) {
-  return (
-    <h2 className="mt-2.5 text-2xl font-semibold tracking-[-0.02em] text-bone sm:text-[28px]">
-      {children}
-    </h2>
-  );
-}
-
-/** The outcome of the last change, or the reason there is nothing on the screen. */
-function Alert({
-  tone,
-  children,
-}: {
-  tone: "error" | "success";
-  children: React.ReactNode;
-}) {
-  const styles =
-    tone === "error"
-      ? { field: "border-rose-500/40 bg-rose-500/10 text-rose-200", dot: "bg-rose-400" }
-      : { field: "border-accent/40 bg-accent/10 text-bone", dot: "bg-accent" };
-
-  return (
-    <p
-      role="status"
-      className={`flex items-start gap-3 rounded-md border px-4 py-3 text-[13px] leading-relaxed ${styles.field}`}
-    >
-      <span aria-hidden className={`mt-1.5 size-1.5 shrink-0 rounded-full ${styles.dot}`} />
-      <span>{children}</span>
-    </p>
-  );
-}
 
 /** One labelled fact, as a definition-list pair. */
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
@@ -117,24 +73,13 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
-/**
- * Whether an account can sign in, as a chip. The account list's `Activity`, restated for the
- * reason the three primitives above are — and with the same two states and no third, because
- * `is_active` is a boolean and there is no pending, invited or suspended column to name.
- */
+/** Whether an account can sign in, as a chip. Two states and no third, because `is_active` is a
+ *  boolean and there is no pending, invited or suspended column to name. */
 function Activity({ active }: { active: boolean }) {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] font-medium tracking-[0.08em] uppercase ${
-        active ? "bg-chip text-bone" : "bg-rose-500/10 text-rose-200"
-      }`}
-    >
-      <span
-        aria-hidden
-        className={`size-1.5 rounded-full ${active ? "bg-accent" : "bg-rose-400"}`}
-      />
+    <AdminStatusBadge tone={active ? "neutral" : "negative"} dot>
       {active ? "Active" : "Deactivated"}
-    </span>
+    </AdminStatusBadge>
   );
 }
 
@@ -153,10 +98,8 @@ const BUTTON =
 /** What the account is, as stored. No control on this card — the ones below do the changing. */
 function Identity({ account }: { account: AdminAccount }) {
   return (
-    <section className="rounded-lg border border-line bg-ink-2 p-5 sm:p-6">
-      <h3 className="text-[15px] font-semibold text-bone">Account</h3>
-
-      <dl className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2">
+    <AdminSection title="Account">
+      <dl className="mt-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
         <Fact label="Email">
           {/* Monospace: an address is a machine value the reader has to be able to check
               character by character, the same reason the list sets it this way. */}
@@ -175,7 +118,7 @@ function Identity({ account }: { account: AdminAccount }) {
           <span className="font-mono text-[11px] text-muted">{account.created_at}</span>
         </Fact>
       </dl>
-    </section>
+    </AdminSection>
   );
 }
 
@@ -197,19 +140,14 @@ function Identity({ account }: { account: AdminAccount }) {
  */
 function AccountForm({ account }: { account: AdminAccount }) {
   return (
-    <section className="rounded-lg border border-line bg-ink-2 p-5 sm:p-6">
-      <h3 className="text-[15px] font-semibold text-bone">Change this account</h3>
-      <p className="mt-2 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-        Changing the address renames the account: the old one stops working immediately and the
-        new one starts. It does not sign the person out — a session is bound to the account, not
-        to the address. Changing the role grants or withdraws access to this administrative
-        surface.
-      </p>
-
+    <AdminSection
+      title="Change this account"
+      description="Changing the address renames the account: the old one stops working immediately and the new one starts. It does not sign the person out — a session is bound to the account, not to the address. Changing the role grants or withdraws access to this administrative surface."
+    >
       <form
         action="/admin/update-user"
         method="post"
-        className="mt-5 grid gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]"
+        className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]"
       >
         <input type="hidden" name="user_id" value={account.id} />
         <input type="hidden" name="return_to" value="detail" />
@@ -256,7 +194,7 @@ function AccountForm({ account }: { account: AdminAccount }) {
           </button>
         </div>
       </form>
-    </section>
+    </AdminSection>
   );
 }
 
@@ -273,18 +211,11 @@ function AccountForm({ account }: { account: AdminAccount }) {
  */
 function Lifecycle({ account }: { account: AdminAccount }) {
   return (
-    <section className="rounded-lg border border-line bg-ink-2 p-5 sm:p-6">
-      <h3 className="text-[15px] font-semibold text-bone">Ending access</h3>
-      <p className="mt-2 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-        Deactivating is how an account is removed here, and there is no delete. An account that
-        has uploaded media is referenced by that media, and the audit log and any case reviews
-        keep its identifier so that who did what stays answerable — deleting the row would either
-        fail outright or erase that history. A deactivated account cannot sign in and its existing
-        sessions stop working, while everything it submitted remains attributable. It can be
-        reactivated from this page at any time.
-      </p>
-
-      <form action="/admin/update-user" method="post" className="mt-5">
+    <AdminSection
+      title="Ending access"
+      description="Deactivating is how an account is removed here, and there is no delete. An account that has uploaded media is referenced by that media, and the audit log and any case reviews keep its identifier so that who did what stays answerable — deleting the row would either fail outright or erase that history. A deactivated account cannot sign in and its existing sessions stop working, while everything it submitted remains attributable. It can be reactivated from this page at any time."
+    >
+      <form action="/admin/update-user" method="post" className="mt-4">
         <input type="hidden" name="user_id" value={account.id} />
         <input type="hidden" name="return_to" value="detail" />
         <input type="hidden" name="is_active" value={account.is_active ? "false" : "true"} />
@@ -292,7 +223,7 @@ function Lifecycle({ account }: { account: AdminAccount }) {
           {account.is_active ? "Deactivate account" : "Reactivate account"}
         </button>
       </form>
-    </section>
+    </AdminSection>
   );
 }
 
@@ -312,22 +243,24 @@ function Lifecycle({ account }: { account: AdminAccount }) {
  */
 function PasswordReset({ account, self }: { account: AdminAccount; self: boolean }) {
   return (
-    <section className="rounded-lg border border-line bg-ink-2 p-5 sm:p-6">
-      <h3 className="text-[15px] font-semibold text-bone">Reset the password</h3>
-      <p className="mt-2 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-        Setting a password here replaces the old one and immediately ends every session this
-        account has open, so anyone signed in as it is signed out. The password is stored only as
-        a hash and cannot be read back from anywhere — tell the person what it is, because nothing
-        in this deployment sends mail.
-        {self
-          ? " This is your own account: saving will sign you out, and you will need to sign back in with the password you set here."
-          : ""}
-      </p>
-
+    <AdminSection
+      title="Reset the password"
+      description={
+        <p>
+          Setting a password here replaces the old one and immediately ends every session this
+          account has open, so anyone signed in as it is signed out. The password is stored only
+          as a hash and cannot be read back from anywhere — tell the person what it is, because
+          nothing in this deployment sends mail.
+          {self
+            ? " This is your own account: saving will sign you out, and you will need to sign back in with the password you set here."
+            : ""}
+        </p>
+      }
+    >
       <form
         action="/admin/reset-password"
         method="post"
-        className="mt-5 flex flex-wrap items-end gap-4"
+        className="mt-4 flex flex-wrap items-end gap-4"
       >
         <input type="hidden" name="user_id" value={account.id} />
 
@@ -356,7 +289,7 @@ function PasswordReset({ account, self }: { account: AdminAccount; self: boolean
           Reset password
         </button>
       </form>
-    </section>
+    </AdminSection>
   );
 }
 
@@ -402,39 +335,48 @@ export default async function AdminAccountDetail({
   const reset = singleParam(query.reset);
 
   return (
-    <main className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-14 sm:px-8">
-      <Legend>Administration</Legend>
-      <Heading>Account</Heading>
-      <p className="mt-3 max-w-[74ch] text-[15px] leading-relaxed text-muted">
-        One account, and everything an administrator can change about it. The list of every
-        account in this deployment is on the accounts page; this screen is about this one.
-      </p>
+    <>
+      <AdminPageHeader
+        title="Account"
+        description="One account, and everything an administrator can change about it. The list of every account in this deployment is on the accounts page; this screen is about this one."
+        actions={
+          // A reload of this page, and deliberately a link rather than a button: the account is
+          // state another administrator can change, and there is no JavaScript here to notice
+          // when they do. The link back to the account list is the sidebar now.
+          <Link
+            href={adminAccountPath(id)}
+            className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+          >
+            Refresh
+          </Link>
+        }
+      />
 
       {/* The outcome of the last change, read out of the query string because the controls are
           plain forms and the answer arrives as a redirect. The error text is the API's own
           client-facing sentence — which rule the change broke, or that the address is taken —
           rendered as text. */}
       {error && (
-        <div className="mt-6">
-          <Alert tone="error">{error}</Alert>
+        <div className="mt-5">
+          <AdminAlert tone="error">{error}</AdminAlert>
         </div>
       )}
       {reset !== null && !error && (
-        <div className="mt-6">
-          <Alert tone="success">
+        <div className="mt-5">
+          <AdminAlert tone="success">
             Password reset. Every session this account had open has been ended.
-          </Alert>
+          </AdminAlert>
         </div>
       )}
       {updated !== null && !error && reset === null && (
-        <div className="mt-6">
-          <Alert tone="success">Account updated.</Alert>
+        <div className="mt-5">
+          <AdminAlert tone="success">Account updated.</AdminAlert>
         </div>
       )}
 
-      <div className="mt-6 space-y-6">
+      <div className="mt-5 space-y-5">
         {!result.ok ? (
-          <Alert tone="error">{result.error}</Alert>
+          <AdminAlert tone="error">{result.error}</AdminAlert>
         ) : (
           <>
             <Identity account={result.account} />
@@ -445,15 +387,10 @@ export default async function AdminAccountDetail({
               // Not a disabled control and not a greyed-out button: a sentence saying why there
               // is nothing here. A disabled control invites the reader to work out how to enable
               // it, and this one never can be — the rule is about who they are.
-              <section className="rounded-lg border border-line bg-ink-2 p-5 sm:p-6">
-                <h3 className="text-[15px] font-semibold text-bone">Change this account</h3>
-                <p className="mt-2 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-                  This is your own account. Its address, role and activation must be changed by
-                  another administrator — an administrator who demoted or deactivated themselves
-                  could no longer reach this page to put it back. You can still reset your own
-                  password below.
-                </p>
-              </section>
+              <AdminSection
+                title="Change this account"
+                description="This is your own account. Its address, role and activation must be changed by another administrator — an administrator who demoted or deactivated themselves could no longer reach this page to put it back. You can still reset your own password below."
+              />
             ) : (
               <>
                 <AccountForm account={result.account} />
@@ -468,21 +405,6 @@ export default async function AdminAccountDetail({
           </>
         )}
       </div>
-
-      <div className="mt-8 flex flex-wrap items-center gap-5">
-        <Link href={ADMIN_PATH} className="text-sm text-muted underline hover:text-bone">
-          ← All accounts
-        </Link>
-        {/* A reload of this page, and deliberately a link rather than a button: the account is
-            state another administrator can change, and there is no JavaScript here to notice
-            when they do. */}
-        <Link
-          href={adminAccountPath(id)}
-          className="text-sm text-muted underline hover:text-bone"
-        >
-          Refresh
-        </Link>
-      </div>
-    </main>
+    </>
   );
 }

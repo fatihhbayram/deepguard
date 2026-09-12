@@ -40,6 +40,11 @@
  * browser primitive that does all three. It is collapsed by default so the page still opens on
  * the table, which is what an operator came for.
  *
+ * **Since R8-T9 this page owns no chrome.** The rail, the page gutter and the `<main>` belong to
+ * `admin/layout.tsx`, and the strip of cross-links that used to sit at the foot of the screen is
+ * the sidebar now. What is left here is the one action that is genuinely about this page — a
+ * reload — and the table itself.
+ *
  * **The password field is a plain `<input type="password">` in a form that POSTs.** That is
  * safe in a way the equivalent for an API key would not be: the secret travels inwards in a
  * request body and nothing comes back but a status, so no credential is ever put in the query
@@ -56,9 +61,12 @@ import {
   LOGIN_PATH,
   USER_ROLE_ADMIN,
   USER_ROLE_USER,
-  WORKSPACE_PATH,
   adminAccountPath,
 } from "../session";
+import { AdminAlert } from "./components/AdminAlert";
+import { AdminPageHeader } from "./components/AdminPageHeader";
+import { AdminSection } from "./components/AdminSection";
+import { AdminStatusBadge } from "./components/AdminStatusBadge";
 import { MINIMUM_PASSWORD_LENGTH, AdminAccount, fetchAccounts } from "./users";
 
 /* ------------------------------------------------------------------ *
@@ -66,57 +74,11 @@ import { MINIMUM_PASSWORD_LENGTH, AdminAccount, fetchAccounts } from "./users";
  * ------------------------------------------------------------------ */
 
 /*
- * The workspace's `Legend`, `Heading` and `Alert` restated rather than imported.
- *
- * They live inside `app/app/page.tsx` as local functions and are not exported. Exporting them
- * from a page module to reach them from here would make one route's file a component library
- * for another's — a dependency between two screens that have no other reason to know about
- * each other, and one that makes a change to the workspace's heading a change to this page.
- * Three small elements are cheaper restated than coupled. If a fourth screen wants them, that
- * is the moment they move to a shared module, not before.
+ * The private `Legend`, `Heading`, `Alert` and `Activity` this file used to carry are gone.
+ * They were the first of the seven copies whose count every later screen carried forward in a
+ * comment; R8-T9 extracted them to `./components`, and this page now draws the same header, the
+ * same alert and the same chip as the other six.
  */
-
-/** The small accented label above a section heading. */
-function Legend({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-[11px] font-medium tracking-[0.16em] text-accent uppercase">
-      {children}
-    </p>
-  );
-}
-
-/** A section heading. Tight, semibold, at the scale the rest of the application sets it. */
-function Heading({ children }: { children: React.ReactNode }) {
-  return (
-    <h2 className="mt-2.5 text-2xl font-semibold tracking-[-0.02em] text-bone sm:text-[28px]">
-      {children}
-    </h2>
-  );
-}
-
-/** The outcome of the last change, stated in the page's own voice. */
-function Alert({
-  tone,
-  children,
-}: {
-  tone: "error" | "success";
-  children: React.ReactNode;
-}) {
-  const styles =
-    tone === "error"
-      ? { field: "border-rose-500/40 bg-rose-500/10 text-rose-200", dot: "bg-rose-400" }
-      : { field: "border-accent/40 bg-accent/10 text-bone", dot: "bg-accent" };
-
-  return (
-    <p
-      role="status"
-      className={`flex items-start gap-3 rounded-md border px-4 py-3 text-[13px] leading-relaxed ${styles.field}`}
-    >
-      <span aria-hidden className={`mt-1.5 size-1.5 shrink-0 rounded-full ${styles.dot}`} />
-      <span>{children}</span>
-    </p>
-  );
-}
 
 /**
  * Whether an account can sign in, as a chip.
@@ -128,17 +90,9 @@ function Alert({
  */
 function Activity({ active }: { active: boolean }) {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] font-medium tracking-[0.08em] uppercase ${
-        active ? "bg-chip text-bone" : "bg-rose-500/10 text-rose-200"
-      }`}
-    >
-      <span
-        aria-hidden
-        className={`size-1.5 rounded-full ${active ? "bg-accent" : "bg-rose-400"}`}
-      />
+    <AdminStatusBadge tone={active ? "neutral" : "negative"} dot>
       {active ? "Active" : "Deactivated"}
-    </span>
+    </AdminStatusBadge>
   );
 }
 
@@ -239,7 +193,11 @@ function ActivityControl({ account }: { account: AdminAccount }) {
  */
 function CreateAccount() {
   return (
-    <details className="overflow-hidden rounded-lg border border-line bg-ink-2">
+    // Styled as an `AdminSection` rather than wrapped in one: a disclosure needs `<details>` and
+    // `<summary>` to be the elements that open it, and a section component that rendered those
+    // would be a section component with a browser primitive inside it. The plate is the same —
+    // `rounded-md border border-line bg-ink-2` — which is what the consolidation was about.
+    <details className="overflow-hidden rounded-md border border-line bg-ink-2">
       <summary className="cursor-pointer px-5 py-4 text-[13px] font-medium text-bone select-none">
         Create an account
       </summary>
@@ -331,7 +289,7 @@ function CreateAccount() {
 /** One account: who it is, what it may do, and — unless it is the reader's — the two controls. */
 function AccountRow({ account, self }: { account: AdminAccount; self: boolean }) {
   return (
-    <div className="grid grid-cols-1 gap-3 border-t border-hair px-5 py-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,auto)] sm:items-center sm:gap-6">
+    <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,auto)] items-center gap-6 border-t border-hair px-5 py-4">
       <div className="min-w-0">
         {/* Monospace: an address is a machine value the reader has to be able to check
             character by character, which is the same reason the URL field on the workspace is
@@ -352,20 +310,15 @@ function AccountRow({ account, self }: { account: AdminAccount; self: boolean })
         <div className="mt-1 font-mono text-[11px] text-muted">{account.created_at}</div>
       </div>
 
-      <div>
-        <span className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase sm:hidden">
-          Role
-        </span>
-        <div className="text-[13px] text-bone sm:mt-0">
-          {account.role === USER_ROLE_ADMIN ? "Admin" : "User"}
-        </div>
+      <div className="text-[13px] text-bone">
+        {account.role === USER_ROLE_ADMIN ? "Admin" : "User"}
       </div>
 
       <div>
         <Activity active={account.is_active} />
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         {self ? (
           // Not a disabled control and not a greyed-out button: a sentence saying why there is
           // nothing here. A disabled control invites the reader to work out how to enable it,
@@ -397,10 +350,18 @@ function AccountRow({ account, self }: { account: AdminAccount; self: boolean })
   );
 }
 
-/** The column headings, on the layouts wide enough to have columns. */
+/**
+ * The column headings.
+ *
+ * Always drawn, and always in columns. Until R8-T9 the whole table collapsed to one column below
+ * `sm` and these headings were hidden, each row restating its own labels — which meant the
+ * column alignment an operator is scanning for disappeared on exactly the screen where they are
+ * least able to hold the shape of the table in their head. It scrolls now. See
+ * `docs/ui-guidance.md`.
+ */
 function AccountHeader() {
   return (
-    <div className="hidden grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,auto)] gap-6 px-5 py-3 text-[11px] font-medium tracking-[0.08em] text-muted uppercase sm:grid">
+    <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,auto)] gap-6 px-5 py-3 text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
       <div>Account</div>
       <div>Role</div>
       <div>Status</div>
@@ -441,34 +402,42 @@ export default async function Admin({
   const createdAccount = singleParam(params.created);
 
   return (
-    <main className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-14 sm:px-8">
-      <Legend>Administration</Legend>
-      <Heading>Accounts</Heading>
-      <p className="mt-3 max-w-[68ch] text-[15px] leading-relaxed text-muted">
-        Every account in this deployment, including the ones that can no longer sign in.
-        Changing a role grants or withdraws access to this page itself; deactivating an account
-        ends its ability to sign in and leaves the analyses it submitted on file.
-      </p>
+    <>
+      <AdminPageHeader
+        title="Accounts"
+        description="Every account in this deployment, including the ones that can no longer sign in. Changing a role grants or withdraws access to this surface; deactivating an account ends its ability to sign in and leaves the analyses it submitted on file."
+        actions={
+          // A reload of this page, and deliberately a link rather than a button: the table is a
+          // view of state another administrator can change, and there is no JavaScript here to
+          // notice when they do. The cross-links that used to sit beside it are the sidebar now.
+          <Link
+            href={ADMIN_PATH}
+            className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+          >
+            Refresh
+          </Link>
+        }
+      />
 
       {/* The outcome of the last change, read out of the query string because the controls are
           plain forms and the answer arrives as a redirect. The error text is the API's own
           client-facing sentence — which rule the change broke — rendered as text. */}
       {error && (
-        <div className="mt-6">
-          <Alert tone="error">{error}</Alert>
+        <div className="mt-5">
+          <AdminAlert tone="error">{error}</AdminAlert>
         </div>
       )}
       {updated !== null && !error && (
-        <div className="mt-6">
-          <Alert tone="success">
+        <div className="mt-5">
+          <AdminAlert tone="success">
             Account updated
             {updated ? <span className="font-mono"> · {updated.slice(0, 8)}</span> : null}.
-          </Alert>
+          </AdminAlert>
         </div>
       )}
       {createdAccount !== null && !error && (
-        <div className="mt-6">
-          <Alert tone="success">
+        <div className="mt-5">
+          <AdminAlert tone="success">
             Account created. The password is not recoverable from anywhere — tell the person what
             it is, or set a new one from{" "}
             <Link
@@ -478,47 +447,34 @@ export default async function Admin({
               their account page
             </Link>
             .
-          </Alert>
+          </AdminAlert>
         </div>
       )}
 
-      <div className="mt-6">
+      <div className="mt-5 space-y-5">
         <CreateAccount />
-      </div>
 
-      <div className="mt-6">
         {!result.ok ? (
-          <Alert tone="error">{result.error}</Alert>
+          <AdminAlert tone="error">{result.error}</AdminAlert>
         ) : (
-          <div className="overflow-hidden rounded-lg border border-line bg-ink-2">
-            <AccountHeader />
-            {result.accounts.map((account) => (
-              <AccountRow
-                key={account.id}
-                account={account}
-                // Compared by id, which is what the session resolved to. Comparing emails
-                // would compare two normalizations, and the one rendered here could be stale.
-                self={account.id === user.id}
-              />
-            ))}
-          </div>
+          <AdminSection bleed scroll>
+            {/* Wide enough for the four columns to keep their proportions; below that the
+                wrapper scrolls rather than the row restacking. */}
+            <div className="min-w-[860px]">
+              <AccountHeader />
+              {result.accounts.map((account) => (
+                <AccountRow
+                  key={account.id}
+                  account={account}
+                  // Compared by id, which is what the session resolved to. Comparing emails
+                  // would compare two normalizations, and the one rendered here could be stale.
+                  self={account.id === user.id}
+                />
+              ))}
+            </div>
+          </AdminSection>
         )}
       </div>
-
-      <div className="mt-8 flex flex-wrap items-center gap-5">
-        <Link
-          href={WORKSPACE_PATH}
-          className="text-sm text-muted underline hover:text-bone"
-        >
-          ← Back to workspace
-        </Link>
-        {/* A reload of this page, and deliberately a link rather than a button: the table is
-            a view of state another administrator can change, and there is no JavaScript here
-            to notice when they do. */}
-        <Link href={ADMIN_PATH} className="text-sm text-muted underline hover:text-bone">
-          Refresh
-        </Link>
-      </div>
-    </main>
+    </>
   );
 }

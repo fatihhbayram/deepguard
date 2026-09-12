@@ -35,14 +35,18 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
 import {
-  ABSENT,
   RISK_LABELS,
   UNSUPPORTED,
   fetchAnalysis,
   fetchSession,
   isSupportedRiskLevel,
 } from "../../../analysis";
-import { ADMIN_JOBS_PATH, ADMIN_PATH, LOGIN_PATH } from "../../../session";
+import { LOGIN_PATH, adminAnalysisPath } from "../../../session";
+import { AdminAlert } from "../../components/AdminAlert";
+import { AdminPageHeader } from "../../components/AdminPageHeader";
+import { AdminSection } from "../../components/AdminSection";
+import { AdminStatusBadge } from "../../components/AdminStatusBadge";
+import { AdminValue } from "../../components/AdminValue";
 import {
   AnalysisReview,
   MAX_REVIEW_NOTE_LENGTH,
@@ -63,65 +67,18 @@ const NO_DECISION = "No decision recorded";
  * ------------------------------------------------------------------ */
 
 /*
- * `Legend`, `Heading` and `Alert` restated a sixth time. `app/admin/jobs/page.tsx` noted the
- * third copy as the point the Rule of Three says to extract; `analytics/page.tsx` carried the
- * count to four and `audit/page.tsx` to five. It is six. The extraction is long owed and is
- * still a change to five other pages that this task is not about — carried forward again so
- * the number stays in front of whoever picks it up rather than resetting quietly at each new
- * screen.
+ * The private `Legend`, `Heading`, `Alert` and `Value` this file carried — the sixth copy of the
+ * first three, as the comment that stood here counted them — are `AdminPageHeader`, `AdminAlert`
+ * and `AdminValue` in `../../components` since R8-T9.
+ *
+ * One behaviour changed in the move and it is worth naming: this page drew its success alert in
+ * emerald while the other six drew theirs in accent. Accent is what `AdminAlert` uses, because in
+ * this palette emerald means a person affirmed something — which is what the review badge below
+ * uses it for, and what a save confirmation is not.
+ *
+ * `Fact` stays local. It is on two screens, this one and the account detail, and two is not
+ * three. Recorded rather than left implicit, which is the habit that got the extraction made.
  */
-
-/** The small accented label above a section heading. */
-function Legend({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-[11px] font-medium tracking-[0.16em] text-accent uppercase">
-      {children}
-    </p>
-  );
-}
-
-/** A section heading. Tight, semibold, at the scale the rest of the application sets it. */
-function Heading({ children }: { children: React.ReactNode }) {
-  return (
-    <h2 className="mt-2.5 text-2xl font-semibold tracking-[-0.02em] text-bone sm:text-[28px]">
-      {children}
-    </h2>
-  );
-}
-
-/** The outcome of the last save, or the reason there is nothing on the screen. */
-function Alert({
-  tone,
-  children,
-}: {
-  tone: "error" | "success";
-  children: React.ReactNode;
-}) {
-  const styles =
-    tone === "error"
-      ? "border-rose-500/40 bg-rose-500/10 text-rose-200"
-      : "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
-  const dot = tone === "error" ? "bg-rose-400" : "bg-emerald-400";
-
-  return (
-    <p
-      role="status"
-      className={`flex items-start gap-3 rounded-md border px-4 py-3 text-[13px] leading-relaxed ${styles}`}
-    >
-      <span aria-hidden className={`mt-1.5 size-1.5 shrink-0 rounded-full ${dot}`} />
-      <span>{children}</span>
-    </p>
-  );
-}
-
-/** A machine value, or an em dash where the record holds nothing. */
-function Value({ children }: { children: string | null }) {
-  return children === null ? (
-    <span className="text-muted">{ABSENT}</span>
-  ) : (
-    <span className="font-mono text-[11px] break-all text-muted">{children}</span>
-  );
-}
 
 /** One labelled fact, as a definition-list pair. */
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
@@ -168,16 +125,11 @@ function ForensicResult({
   const level = analysis.risk_level;
 
   return (
-    <section className="rounded-lg border border-line bg-ink-2 p-5 sm:p-6">
-      <h3 className="text-[15px] font-semibold text-bone">Forensic result</h3>
-      <p className="mt-2 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-        Committed by the detection pipeline under the ruleset named below, and immutable. There
-        is no control on this card and no route in this application that can alter any value on
-        it — the review beneath is a separate record and does not change what the detectors
-        concluded.
-      </p>
-
-      <dl className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2">
+    <AdminSection
+      title="Forensic result"
+      description="Committed by the detection pipeline under the ruleset named below, and immutable. There is no control on this card and no route in this application that can alter any value on it — the review beneath is a separate record and does not change what the detectors concluded."
+    >
+      <dl className="mt-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
         <Fact label="Risk classification">
           {level === null
             ? NO_DECISION
@@ -187,22 +139,22 @@ function ForensicResult({
         </Fact>
         <Fact label="Analysis status">{analysis.status}</Fact>
         <Fact label="Ruleset">
-          <Value>{analysis.risk_rules_version}</Value>
+          <AdminValue className="break-all">{analysis.risk_rules_version}</AdminValue>
         </Fact>
         <Fact label="Rule fired">
-          <Value>{analysis.risk_rule_id}</Value>
+          <AdminValue className="break-all">{analysis.risk_rule_id}</AdminValue>
         </Fact>
         <Fact label="Calibration">
-          <Value>{analysis.risk_calibration_id}</Value>
+          <AdminValue className="break-all">{analysis.risk_calibration_id}</AdminValue>
         </Fact>
         <Fact label="Submitted">
           {/* The API's own timestamp, shown as stored rather than reformatted into a local
               rendering the record does not hold — the convention every screen in this surface
               follows. */}
-          <Value>{analysis.created_at}</Value>
+          <AdminValue className="break-all">{analysis.created_at}</AdminValue>
         </Fact>
       </dl>
-    </section>
+    </AdminSection>
   );
 }
 
@@ -212,21 +164,19 @@ function ForensicResult({
 
 /** The workflow state as a chip, including the state that is the absence of a record. */
 function StatusBadge({ status }: { status: string }) {
-  const styles =
+  const tone =
     status === REVIEW_STATUS_NEEDS_FOLLOW_UP
-      ? "bg-amber-500/10 text-amber-200"
+      ? "warning"
       : status === REVIEW_STATUS_REVIEWED
-        ? "bg-emerald-500/10 text-emerald-200"
-        : "bg-chip text-muted";
+        ? "positive"
+        : "muted";
 
   return (
-    <span
-      className={`inline-flex items-center rounded-sm px-2 py-1 font-mono text-[11px] tracking-[0.08em] uppercase ${styles}`}
-    >
+    <AdminStatusBadge tone={tone} mono>
       {/* Unknown statuses print as the API spelled them rather than as a blank chip: the day
           the taxonomy grows, this is what says so. */}
       {REVIEW_STATUS_LABELS[status] ?? status}
-    </span>
+    </AdminStatusBadge>
   );
 }
 
@@ -257,7 +207,7 @@ function Note({ note }: { note: string }) {
 function ReviewRecord({ review }: { review: AnalysisReview }) {
   if (review.status === REVIEW_STATUS_UNREVIEWED) {
     return (
-      <div className="mt-5">
+      <div className="mt-4">
         <StatusBadge status={review.status} />
         <p className="mt-3 max-w-[74ch] text-[13px] leading-relaxed text-muted">
           Nobody has reviewed this analysis. That is the state every analysis is in until
@@ -269,7 +219,7 @@ function ReviewRecord({ review }: { review: AnalysisReview }) {
   }
 
   return (
-    <div className="mt-5">
+    <div className="mt-4">
       <StatusBadge status={review.status} />
 
       <dl className="mt-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
@@ -280,15 +230,15 @@ function ReviewRecord({ review }: { review: AnalysisReview }) {
             <span className="text-muted">not recorded</span>
           )}
           <div className="mt-1">
-            <Value>{review.reviewer_id}</Value>
+            <AdminValue className="break-all">{review.reviewer_id}</AdminValue>
           </div>
         </Fact>
         <Fact label="Last changed">
-          <Value>{review.updated_at}</Value>
+          <AdminValue className="break-all">{review.updated_at}</AdminValue>
           <div className="mt-1">
-            <Value>
+            <AdminValue className="break-all">
               {review.created_at === null ? null : `first written ${review.created_at}`}
-            </Value>
+            </AdminValue>
           </div>
         </Fact>
       </dl>
@@ -396,17 +346,17 @@ function ReviewForm({ review }: { review: AnalysisReview }) {
 /** The review card: the record as it stands, and the form that changes it. */
 function HumanReview({ review }: { review: AnalysisReview }) {
   return (
-    <section className="rounded-lg border border-accent/30 bg-accent/[0.03] p-5 sm:p-6">
-      <h3 className="text-[15px] font-semibold text-bone">Human review</h3>
-      <p className="mt-2 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-        An operational record of whether somebody has looked at this case — not a second opinion
-        on the media. Saving a review leaves the forensic result above exactly as it was, and
-        every change is recorded in the audit log with who made it and when.
-      </p>
-
+    // The one plate in this surface drawn in the accent tone. It is the boundary this whole
+    // page is built around: everything above is what the detectors concluded, and this is what a
+    // person said. The tint is a hairline and a wash, not a highlight.
+    <AdminSection
+      tone="accent"
+      title="Human review"
+      description="An operational record of whether somebody has looked at this case — not a second opinion on the media. Saving a review leaves the forensic result above exactly as it was, and every change is recorded in the audit log with who made it and when."
+    >
       <ReviewRecord review={review} />
       <ReviewForm review={review} />
-    </section>
+    </AdminSection>
   );
 }
 
@@ -461,57 +411,65 @@ export default async function AdminAnalysisReview({
   const saved = singleParam(query.saved);
 
   return (
-    <main className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-14 sm:px-8">
-      <Legend>Administration</Legend>
-      <Heading>Case review</Heading>
-      <p className="mt-3 max-w-[74ch] text-[15px] leading-relaxed text-muted">
-        One analysis, and what has been said about it. The forensic result and the human review
-        are two separate records kept in two separate tables: the first is what the detectors
-        concluded and cannot be edited from anywhere in this application, and the second is what
-        a reviewer noted and can be revised at any time.
-      </p>
-      <p className="mt-3">
-        <Value>{id}</Value>
-      </p>
+    <>
+      <AdminPageHeader
+        title="Case review"
+        description={
+          <>
+            <p>
+              One analysis, and what has been said about it. The forensic result and the human
+              review are two separate records kept in two separate tables: the first is what the
+              detectors concluded and cannot be edited from anywhere in this application, and the
+              second is what a reviewer noted and can be revised at any time.
+            </p>
+            <p>
+              <AdminValue className="break-all">{id}</AdminValue>
+            </p>
+          </>
+        }
+        actions={
+          // A reload of this page. The review is state another administrator can change, and
+          // there is no JavaScript here to notice when they do. The links back to the queue and
+          // the account list are the sidebar now — this screen is not in it, because there is no
+          // reviews page to land on, only the review of a particular analysis.
+          <Link
+            href={adminAnalysisPath(id)}
+            className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+          >
+            Refresh
+          </Link>
+        }
+      />
 
       {/* The outcome of the last save, read out of the query string because the form is a plain
           form and the answer arrives as a redirect. The error text is the API's own
           client-facing sentence, rendered as text. */}
       {error && (
-        <div className="mt-6">
-          <Alert tone="error">{error}</Alert>
+        <div className="mt-5">
+          <AdminAlert tone="error">{error}</AdminAlert>
         </div>
       )}
       {saved !== null && !error && (
-        <div className="mt-6">
-          <Alert tone="success">
+        <div className="mt-5">
+          <AdminAlert tone="success">
             Review saved. The forensic result was not changed.
-          </Alert>
+          </AdminAlert>
         </div>
       )}
 
-      <div className="mt-6 space-y-6">
+      <div className="mt-5 space-y-5">
         {!analysisResult.ok ? (
-          <Alert tone="error">{analysisResult.error}</Alert>
+          <AdminAlert tone="error">{analysisResult.error}</AdminAlert>
         ) : (
           <ForensicResult analysis={analysisResult.analysis} />
         )}
 
         {!reviewResult.ok ? (
-          <Alert tone="error">{reviewResult.error}</Alert>
+          <AdminAlert tone="error">{reviewResult.error}</AdminAlert>
         ) : (
           <HumanReview review={reviewResult.review} />
         )}
       </div>
-
-      <div className="mt-8 flex flex-wrap items-center gap-5">
-        <Link href={ADMIN_JOBS_PATH} className="text-sm text-muted underline hover:text-bone">
-          ← Detection jobs
-        </Link>
-        <Link href={ADMIN_PATH} className="text-sm text-muted underline hover:text-bone">
-          Accounts
-        </Link>
-      </div>
-    </main>
+    </>
   );
 }

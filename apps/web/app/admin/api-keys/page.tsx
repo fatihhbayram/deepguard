@@ -35,7 +35,11 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { fetchSession } from "../../analysis";
-import { ADMIN_API_KEYS_PATH, ADMIN_PATH, LOGIN_PATH } from "../../session";
+import { ADMIN_API_KEYS_PATH, LOGIN_PATH } from "../../session";
+import { AdminAlert } from "../components/AdminAlert";
+import { AdminPageHeader } from "../components/AdminPageHeader";
+import { AdminSection } from "../components/AdminSection";
+import { AdminStatusBadge } from "../components/AdminStatusBadge";
 import { AdminApiKey, fetchApiKeys } from "../api-keys";
 import { CreateKey } from "./create-key";
 
@@ -44,53 +48,12 @@ import { CreateKey } from "./create-key";
  * ------------------------------------------------------------------ */
 
 /*
- * `Legend`, `Heading` and `Alert` restated rather than imported, the convention `/admin` set
- * and `/admin/audit` followed. They are local functions in each page module and exporting them
- * from one page to reach them from another would make one screen a component library for the
- * next — a dependency between routes that have no other reason to know about each other.
+ * The private `Legend`, `Heading` and `Alert` this file carried are `AdminPageHeader` and
+ * `AdminAlert` in `../components` since R8-T9. The comment that stood here said they were
+ * restated rather than imported because exporting them from one page module would make one
+ * screen a component library for the next; the extraction answers that by giving them a module
+ * of their own, which is what nobody had written yet.
  */
-
-/** The small accented label above a section heading. */
-function Legend({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-[11px] font-medium tracking-[0.16em] text-accent uppercase">
-      {children}
-    </p>
-  );
-}
-
-/** A section heading. Tight, semibold, at the scale the rest of the application sets it. */
-function Heading({ children }: { children: React.ReactNode }) {
-  return (
-    <h2 className="mt-2.5 text-2xl font-semibold tracking-[-0.02em] text-bone sm:text-[28px]">
-      {children}
-    </h2>
-  );
-}
-
-/** The outcome of the last revocation, stated in the page's own voice. */
-function Alert({
-  tone,
-  children,
-}: {
-  tone: "error" | "success";
-  children: React.ReactNode;
-}) {
-  const styles =
-    tone === "error"
-      ? { field: "border-rose-500/40 bg-rose-500/10 text-rose-200", dot: "bg-rose-400" }
-      : { field: "border-accent/40 bg-accent/10 text-bone", dot: "bg-accent" };
-
-  return (
-    <p
-      role="status"
-      className={`flex items-start gap-3 rounded-md border px-4 py-3 text-[13px] leading-relaxed ${styles.field}`}
-    >
-      <span aria-hidden className={`mt-1.5 size-1.5 shrink-0 rounded-full ${styles.dot}`} />
-      <span>{children}</span>
-    </p>
-  );
-}
 
 /**
  * Whether a key still authenticates, as a chip.
@@ -102,17 +65,9 @@ function Alert({
  */
 function Status({ active }: { active: boolean }) {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] font-medium tracking-[0.08em] uppercase ${
-        active ? "bg-chip text-bone" : "bg-rose-500/10 text-rose-200"
-      }`}
-    >
-      <span
-        aria-hidden
-        className={`size-1.5 rounded-full ${active ? "bg-accent" : "bg-rose-400"}`}
-      />
+    <AdminStatusBadge tone={active ? "neutral" : "negative"} dot>
       {active ? "Active" : "Revoked"}
-    </span>
+    </AdminStatusBadge>
   );
 }
 
@@ -175,7 +130,7 @@ function RevokeControl({ apiKey, confirming }: { apiKey: AdminApiKey; confirming
 /** One key: who it is for, whether it works, when it was issued and last used. */
 function KeyRow({ apiKey, confirming }: { apiKey: AdminApiKey; confirming: boolean }) {
   return (
-    <div className="grid grid-cols-1 gap-3 border-t border-hair px-5 py-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,auto)] sm:items-center sm:gap-6">
+    <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,auto)] items-center gap-6 border-t border-hair px-5 py-4">
       <div className="min-w-0">
         <div className="truncate text-[13px] text-bone" title={apiKey.name}>
           {apiKey.name}
@@ -192,9 +147,6 @@ function KeyRow({ apiKey, confirming }: { apiKey: AdminApiKey; confirming: boole
       </div>
 
       <div className="min-w-0">
-        <span className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase sm:hidden">
-          Issued
-        </span>
         {/* The API's own timestamps, shown as stored rather than reformatted into a local
             rendering the record does not hold — the convention every table here follows. */}
         <div className="truncate font-mono text-[11px] text-bone">{apiKey.created_at}</div>
@@ -206,17 +158,18 @@ function KeyRow({ apiKey, confirming }: { apiKey: AdminApiKey; confirming: boole
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <RevokeControl apiKey={apiKey} confirming={confirming} />
       </div>
     </div>
   );
 }
 
-/** The column headings, on the layouts wide enough to have columns. */
+/** The column headings. Always drawn, and always in columns — the table scrolls below the width
+ *  its columns need rather than restacking. See `docs/ui-guidance.md`. */
 function KeyHeader() {
   return (
-    <div className="hidden grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,auto)] gap-6 px-5 py-3 text-[11px] font-medium tracking-[0.08em] text-muted uppercase sm:grid">
+    <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,auto)] gap-6 px-5 py-3 text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
       <div>Key</div>
       <div>Status</div>
       <div>Issued / last used</div>
@@ -256,81 +209,79 @@ export default async function ApiKeys({
   const revoking = singleParam(params.revoking);
 
   return (
-    <main className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-14 sm:px-8">
-      <Legend>Administration</Legend>
-      <Heading>API keys</Heading>
-      <p className="mt-3 max-w-[68ch] text-[15px] leading-relaxed text-muted">
-        The credentials customers authenticate the public API with. A key is shown in full once,
-        when it is issued, and never again — DeepGuard stores only a hash of it. Revoking a key
-        ends its access immediately and leaves the analyses it submitted on file.
-      </p>
+    <>
+      <AdminPageHeader
+        title="API keys"
+        description="The credentials customers authenticate the public API with. A key is shown in full once, when it is issued, and never again — DeepGuard stores only a hash of it. Revoking a key ends its access immediately and leaves the analyses it submitted on file."
+        actions={
+          // A reload of this page, and deliberately a link rather than a button: the table is a
+          // view of state another administrator can change, and the only script on this screen
+          // is the issuing control. The cross-link that used to sit beside it is the sidebar now.
+          <Link
+            href={ADMIN_API_KEYS_PATH}
+            className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+          >
+            Refresh
+          </Link>
+        }
+      />
 
       {/* The outcome of the last revocation, read out of the query string because that control
           is a plain form and the answer arrives as a redirect. Nothing secret is ever in these
           parameters; the issued key comes back in a response body instead, which is what the
           component below exists for. */}
       {error && (
-        <div className="mt-6">
-          <Alert tone="error">{error}</Alert>
+        <div className="mt-5">
+          <AdminAlert tone="error">{error}</AdminAlert>
         </div>
       )}
       {revoked !== null && !error && (
-        <div className="mt-6">
-          <Alert tone="success">
+        <div className="mt-5">
+          <AdminAlert tone="success">
             Key revoked
             {revoked ? <span className="font-mono"> · {revoked.slice(0, 8)}</span> : null}. It no
             longer authenticates the public API.
-          </Alert>
+          </AdminAlert>
         </div>
       )}
 
-      <div className="mt-8 rounded-lg border border-line bg-ink-2 p-5">
-        <h3 className="text-[13px] font-medium text-bone">Issue a key</h3>
-        <p className="mt-1.5 max-w-[68ch] text-[13px] leading-relaxed text-muted">
-          The name is a label for this table and the audit log. It is not part of the credential
-          and nothing authenticates by it.
-        </p>
-        <div className="mt-4">
-          <CreateKey signInPath={LOGIN_PATH} />
-        </div>
-      </div>
+      <div className="mt-5 space-y-5">
+        <AdminSection
+          title="Issue a key"
+          description="The name is a label for this table and the audit log. It is not part of the credential and nothing authenticates by it."
+        >
+          <div className="mt-4">
+            <CreateKey signInPath={LOGIN_PATH} />
+          </div>
+        </AdminSection>
 
-      <div className="mt-6">
         {!result.ok ? (
-          <Alert tone="error">{result.error}</Alert>
+          <AdminAlert tone="error">{result.error}</AdminAlert>
         ) : result.keys.length === 0 ? (
-          <div className="rounded-lg border border-line bg-ink-2 px-5 py-8 text-center text-[13px] text-muted">
-            No API keys have been issued. The public API cannot be reached without one.
-          </div>
+          <AdminSection>
+            <p className="text-center text-[13px] text-muted">
+              No API keys have been issued. The public API cannot be reached without one.
+            </p>
+          </AdminSection>
         ) : (
-          <div className="overflow-hidden rounded-lg border border-line bg-ink-2">
-            <KeyHeader />
-            {result.keys.map((apiKey) => (
-              <KeyRow
-                key={apiKey.id}
-                apiKey={apiKey}
-                // The one row, if any, whose revocation is being confirmed on this render.
-                confirming={apiKey.id === revoking}
-              />
-            ))}
-          </div>
+          <AdminSection bleed scroll>
+            {/* Wide enough for the four columns and the confirmation sentence the revoke
+                control expands into; below that the wrapper scrolls rather than the row
+                restacking. */}
+            <div className="min-w-[900px]">
+              <KeyHeader />
+              {result.keys.map((apiKey) => (
+                <KeyRow
+                  key={apiKey.id}
+                  apiKey={apiKey}
+                  // The one row, if any, whose revocation is being confirmed on this render.
+                  confirming={apiKey.id === revoking}
+                />
+              ))}
+            </div>
+          </AdminSection>
         )}
       </div>
-
-      <div className="mt-8 flex flex-wrap items-center gap-5">
-        <Link href={ADMIN_PATH} className="text-sm text-muted underline hover:text-bone">
-          ← Accounts
-        </Link>
-        {/* A reload of this page, and deliberately a link rather than a button: the table is a
-            view of state another administrator can change, and the only script on this screen
-            is the issuing control. */}
-        <Link
-          href={ADMIN_API_KEYS_PATH}
-          className="text-sm text-muted underline hover:text-bone"
-        >
-          Refresh
-        </Link>
-      </div>
-    </main>
+    </>
   );
 }

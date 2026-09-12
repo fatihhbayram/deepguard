@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { requestIdHeaders } from "../observability";
-import { LOGIN_PATH, SessionUser, USER_ROLE_ADMIN } from "../session";
+import { ADMIN_PATH, LOGIN_PATH, SessionUser, USER_ROLE_ADMIN } from "../session";
 import {
   ABSENT,
   acquisitionStatement,
@@ -258,6 +258,23 @@ function HealthControl({
  *
  * Sign-out is a form posting to `/logout`, not a link. A link would be a GET, and a GET that
  * ends a session can be fired by a prefetch or an image tag on some other page.
+ *
+ * **The `Admin console` link is the workspace half of the bridge added in R8-T9**, and the
+ * counterpart to the `⟵ Back to workspace` link at the foot of the administrative rail. It is
+ * drawn only when the session's role is `USER_ROLE_ADMIN`, and for an ordinary account it is not
+ * rendered at all — not disabled, not greyed, absent.
+ *
+ * That is presentation and not enforcement, and the distinction matters more here than anywhere
+ * else on this page. `/admin` is guarded by its own layout and, behind that, by
+ * `app/web_auth.py` on every request that returns anything privileged; a user who typed the
+ * address would be redirected back here whether or not this link existed. What the condition
+ * does is not offer somebody a door that will be shut in their face.
+ *
+ * It lives in this header rather than in `app/app/layout.tsx`, which is where a bridge would
+ * normally go. The workspace layout deliberately owns no markup — the dashboard is an instrument
+ * on the graphite ground and the evidence report is a printable document on a light one, and a
+ * shell neutral enough to sit behind both adds nothing. Putting a navigation bar there would put
+ * the console's chrome across the top of every printed report.
  */
 function SessionControl({ user }: { user: SessionUser }) {
   return (
@@ -272,6 +289,14 @@ function SessionControl({ user }: { user: SessionUser }) {
       <span className="rounded-md border border-line px-2 py-1 font-mono text-[10px] tracking-[0.12em] text-bone">
         {user.role}
       </span>
+      {user.role === USER_ROLE_ADMIN && (
+        <Link
+          href={ADMIN_PATH}
+          className="rounded-md border border-line px-2.5 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+        >
+          Admin console
+        </Link>
+      )}
       <form action="/logout" method="post">
         <button
           type="submit"
@@ -1352,7 +1377,14 @@ export default async function Home({
     <>
       {/* The instrument bar. It clips nothing, so the health panel opens over the page. */}
       <header className="sticky top-0 z-20 border-b border-line bg-ink">
-        <div className="mx-auto flex h-14 w-full max-w-[1280px] items-center justify-between gap-3 px-4 sm:px-8">
+        {/* Wraps, and a minimum height rather than a fixed one. At `h-14` with `flex-nowrap` the
+            row ran 405px wide inside a 390px phone even before R8-T9 — the sign-out button was
+            already losing its right edge — and the `Admin console` link added here pushed that to
+            481px, which put the whole of sign-out off the screen. A control an administrator
+            cannot reach on a phone is a functional break, not a cosmetic one, so the row is
+            allowed to become two rows instead. On every width that fitted before, it still fits
+            on one and `min-h-14` holds the bar at exactly the height it had. */}
+        <div className="mx-auto flex min-h-14 w-full max-w-[1280px] flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-2 sm:px-8">
           <div className="flex items-center gap-2.5">
             <span aria-hidden className="size-1.5 rounded-full bg-accent" />
             {/* The product's name, set in the UI typeface: it is a name, not a value the

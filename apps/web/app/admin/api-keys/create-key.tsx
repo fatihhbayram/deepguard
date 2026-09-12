@@ -78,7 +78,8 @@ function Secret({ value, onDismiss }: { value: string; onDismiss: () => void }) 
   return (
     <div
       role="alert"
-      className="mt-6 rounded-lg border border-accent/40 bg-accent/10 p-5"
+      // `rounded-md`, the console's radius since R8-T9 wrote it down in `docs/ui-guidance.md`.
+      className="mt-6 rounded-md border border-accent/40 bg-accent/10 p-5"
     >
       <p className="text-[13px] font-medium text-bone">
         Copy this key now. It will not be shown again.

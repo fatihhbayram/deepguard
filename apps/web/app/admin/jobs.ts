@@ -43,6 +43,22 @@ export const JOBS_TIMEOUT_MS = 5000;
  * `lease_expires_at` in this process is exactly the thing the module comment says must not
  * decide anything.
  */
+/*
+ * The two job states this surface names, as `app/db/models.py` spells them.
+ *
+ * Only two of the four are here, and only because two screens have to say them: the queue
+ * colours a failed row and the operational summary reads the failed count straight off its
+ * distribution. `queued` and `processing` are never compared against anything — they fall to the
+ * neutral treatment — so naming them would be naming a constant nothing uses.
+ *
+ * The same restating across languages `SESSION_COOKIE_NAME` in `../session` is: there is no way
+ * to derive one spelling from the other, so the pairing is stated in both. They are lowercase
+ * because the API writes them lowercase, and a `"FAILED"` here would be a comparison that never
+ * matches and a count that always reads zero.
+ */
+export const JOB_STATUS_COMPLETED = "completed";
+export const JOB_STATUS_FAILED = "failed";
+
 export type AdminJob = {
   id: string;
   analysis_id: string;
