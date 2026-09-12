@@ -4,6 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.api.admin_jobs import router as admin_jobs_router
 from app.api.admin_users import router as admin_users_router
 from app.api.analyses import router as analyses_router
 from app.api.auth import router as auth_router
@@ -47,6 +48,12 @@ app.include_router(auth_router)
 # keeps the privileged routes from sitting one forgotten dependency away from the unprivileged
 # ones.
 app.include_router(admin_users_router)
+# The operational half of the same administrative prefix (R8-T3): the detection queue rather
+# than the account table. Its own module beside `admin_users` for the reason that one is its
+# own module — one audience per file — and read-only by design: there is no retry route here,
+# because a requeued job would write a second forensic signal per provider over the first
+# one's. The reason is stated in full at the top of `admin_jobs.py`.
+app.include_router(admin_jobs_router)
 # The external B2B surface. Mounted under its own prefix and carrying its own API-key
 # dependency, so the internal routes above stay exactly as unauthenticated as they were.
 app.include_router(public_analyses_router)

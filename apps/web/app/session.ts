@@ -38,6 +38,12 @@ export const WORKSPACE_PATH = "/app";
 // and into the page that links to it would be two copies of one address.
 export const ADMIN_PATH = "/admin";
 
+// The job listing inside that surface (R8-T3). A second address rather than a section of the
+// one above, because the two pages read different APIs and one of them — the queue — is the
+// page an operator reloads; naming it here keeps the admin navigation and the page itself
+// from spelling it twice.
+export const ADMIN_JOBS_PATH = "/admin/jobs";
+
 // The privileged role, as the API spells it. It must match `USER_ROLE_ADMIN` in
 // `apps/api/app/db/models.py`, which is where a role is assigned and where every decision
 // that actually grants access is made; this is the same restating across languages that

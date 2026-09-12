@@ -12,6 +12,12 @@
  * working the day the API changes the word and says nothing when it does; the comparison is
  * also case-sensitive, and the API spells the role in capitals.
  *
+ * Since R8-T3 it also carries the surface's own navigation, which is the one piece of markup
+ * it owns. There are two administrative screens now — the accounts and the detection queue —
+ * and a link to each from a place that is on both beats each page linking to the other, which
+ * is what it was doing while there were two. It is a strip of links and not a shell: the pages
+ * below still own their own `main`, their own heading and their own ground.
+ *
  * Like the workspace guard, this is a signpost rather than a lock. The privileged data an
  * administrator can read is privileged in the API — `app/web_auth.py` makes the same check
  * on every request that actually returns any of it — and nothing behind this layout is
@@ -21,8 +27,16 @@
 
 import { redirect } from "next/navigation";
 
+import Link from "next/link";
+
 import { fetchSession } from "../analysis";
-import { LOGIN_PATH, USER_ROLE_ADMIN, WORKSPACE_PATH } from "../session";
+import {
+  ADMIN_JOBS_PATH,
+  ADMIN_PATH,
+  LOGIN_PATH,
+  USER_ROLE_ADMIN,
+  WORKSPACE_PATH,
+} from "../session";
 
 // This subtree is rendered per request, always.
 //
@@ -56,5 +70,24 @@ export default async function AdminLayout({
     redirect(WORKSPACE_PATH);
   }
 
-  return children;
+  return (
+    <>
+      {/* Plain links, and no marking of which one the reader is on. Knowing that needs the
+          current path, which a server component does not have — `usePathname` would make this
+          guard a client component, and the guard is the reason this file exists. The pages
+          below are titled, which is what tells a reader where they are. */}
+      <nav
+        aria-label="Administration"
+        className="flex items-center gap-5 border-b border-hair px-4 py-3 sm:px-8"
+      >
+        <Link href={ADMIN_PATH} className="text-sm text-muted hover:text-bone">
+          Accounts
+        </Link>
+        <Link href={ADMIN_JOBS_PATH} className="text-sm text-muted hover:text-bone">
+          Jobs
+        </Link>
+      </nav>
+      {children}
+    </>
+  );
 }
