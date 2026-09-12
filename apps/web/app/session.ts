@@ -78,6 +78,21 @@ export function adminAnalysisPath(analysisId: string): string {
   return `/admin/analyses/${encodeURIComponent(analysisId)}`;
 }
 
+// The detail screen for one account (R8-T8), the second administrative address that names a
+// record rather than a fixed page — and, like `adminAnalysisPath`, therefore a function.
+//
+// It is not on the layout's navigation and must not be: there is no "users" page to land on
+// that is not `ADMIN_PATH` itself, which remains the single source of truth for the account
+// list. The way in is a link from a row that already names an account, and the two mutations
+// on the detail screen redirect back to it.
+//
+// `encodeURIComponent` for the reason `adminAnalysisPath` gives: the value reaching here comes
+// from a payload or a form field, and a helper that trusts its argument to be a UUID is a
+// helper that stops being safe the first time somebody calls it with something else.
+export function adminAccountPath(accountId: string): string {
+  return `/admin/users/${encodeURIComponent(accountId)}`;
+}
+
 // The privileged role, as the API spells it. It must match `USER_ROLE_ADMIN` in
 // `apps/api/app/db/models.py`, which is where a role is assigned and where every decision
 // that actually grants access is made; this is the same restating across languages that

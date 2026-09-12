@@ -1,5 +1,5 @@
 /**
- * The administrative surface's one mutation: change an account's role or its activation.
+ * Change an account's address, its role, or its activation.
  *
  * A plain HTML form posts here and this forwards a PATCH to the API, for the same reason
  * `/submit` and `/session` exist rather than the browser calling the API directly — the API
@@ -22,36 +22,40 @@
  * route privileged — is the kind that gets a check left out of the next handler added here.
  *
  * Nothing in this file decides whether a change is allowed. Not the self-modification rule,
- * not the last-administrator invariant, not the set of roles: all three are the API's, in
- * `app/api/admin_users.py`, and a copy of any of them here would be a second rule that could
- * drift from the one actually enforced. What this does is carry the form to the API and the
- * API's answer back to the page.
+ * not the last-administrator invariant, not the set of roles, and since R8-T8 not whether an
+ * address is free either: all of them are the API's, in `app/api/admin_users.py`, and a copy of
+ * any of them here would be a second rule that could drift from the one actually enforced. What
+ * this does is carry the form to the API and the API's answer back to the page.
+ *
+ * **Two pages post here, and the form says which one to go back to.** The accounts list has the
+ * role and activation controls on every row; the account detail page (R8-T8) has a form that can
+ * also change the address. A handler that always redirected to `ADMIN_PATH` would bounce an
+ * operator off the detail page every time they saved, so the form carries a `return_to` field.
+ * It is not a URL and cannot become one: the only value with any effect is the literal string
+ * `"detail"`, which sends the browser to this account's own detail page built from the id by
+ * `adminAccountPath`. Anything else, including an absent field, means the list. A handler that
+ * redirected to a path out of the form body would be an open redirect on a route that is posted
+ * to with a session cookie attached.
  */
 
 import { NextResponse } from "next/server";
 
-import { apiUrl } from "../../analysis";
-import { logError, logInfo, requestIdHeaders } from "../../observability";
+import { logError, logInfo } from "../../observability";
 import {
   ADMIN_PATH,
   LOGIN_PATH,
+  adminAccountPath,
   forwardedOrigin,
   isSameOrigin,
-  sessionHeaders,
 } from "../../session";
-import { ADMIN_USERS_URL } from "../users";
+import { AccountChange, updateAccount } from "../users";
 
-// How long the API is given to answer. A single indexed update behind a row lock, so it is
-// held to the short bound the reads are rather than the generous ones the upload paths need.
-const UPDATE_TIMEOUT_MS = 5000;
-
-// Enough of the API's message to be useful, and bounded. It is DeepGuard's own client-facing
-// text — "An administrator cannot change their own role or activation." and the like — and it
-// is rendered as text by React, never as markup.
-const MAX_ERROR_LENGTH = 200;
+// The one `return_to` value that means anything, and the reason it is compared rather than
+// used. See the note above: this is a token the handler interprets, never a path it follows.
+const RETURN_TO_DETAIL = "detail";
 
 /**
- * Back to `/admin`, with the outcome of this change attached.
+ * Back to whichever page submitted this, with the outcome attached.
  *
  * A relative `Location`, resolved by the browser against the address it actually asked for.
  * Building an absolute URL out of `request.url` looks more careful and is wrong here: the
@@ -61,26 +65,13 @@ const MAX_ERROR_LENGTH = 200;
  * 303, so the browser follows it with a GET. A 307 would re-post the form, and a reload would
  * then apply the same change a second time.
  */
-function back(params: Record<string, string>): NextResponse {
+function back(path: string, params: Record<string, string>): NextResponse {
   const query = new URLSearchParams(params);
 
   return new NextResponse(null, {
     status: 303,
-    headers: { Location: `${ADMIN_PATH}?${query}` },
+    headers: { Location: `${path}?${query}` },
   });
-}
-
-/** What the API said went wrong, or a generic statement when it said nothing usable. */
-async function failureText(response: Response): Promise<string> {
-  const payload = await response.json().catch(() => null);
-  const detail =
-    typeof payload === "object" && payload !== null
-      ? (payload as Record<string, unknown>).detail
-      : null;
-
-  return typeof detail === "string" && detail.length > 0
-    ? detail.slice(0, MAX_ERROR_LENGTH)
-    : `The change was refused (HTTP ${response.status}).`;
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -96,22 +87,35 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     form = await request.formData();
   } catch {
-    return back({ error: "The change could not be read." });
+    return back(ADMIN_PATH, { error: "The change could not be read." });
   }
 
   const userId = (form.get("user_id") ?? "").toString().trim();
+  const email = form.get("email");
   const role = form.get("role");
   const isActive = form.get("is_active");
 
   if (!userId) {
-    return back({ error: "The change named no account." });
+    return back(ADMIN_PATH, { error: "The change named no account." });
   }
 
-  // Only the fields the form actually carried. The two controls are separate submissions —
-  // the role control sends a role, the activation control sends an activation — and sending
-  // the absent one as `null` would turn each into a change to both, restoring whatever the
-  // page happened to have rendered last over a value somebody else may have just altered.
-  const change: Record<string, unknown> = {};
+  // Where to send the browser afterwards, decided here and not taken from the form. The field
+  // selects between two addresses this file knows; it never supplies one.
+  const destination =
+    form.get("return_to") === RETURN_TO_DETAIL ? adminAccountPath(userId) : ADMIN_PATH;
+
+  // Only the fields the form actually carried. The controls are separate submissions — the role
+  // control sends a role, the activation control sends an activation, the detail page's form
+  // sends an address — and sending the absent ones as `null` would turn each into a change to
+  // all of them, restoring whatever the page happened to have rendered last over a value
+  // somebody else may have just altered.
+  const change: AccountChange = {};
+  if (typeof email === "string") {
+    // Passed through as the field sent it, without being normalized or checked for a duplicate
+    // here. The API normalizes in its validator and the unique index is what enforces
+    // uniqueness; a second answer to either in this process would be one that could disagree.
+    change.email = email;
+  }
   if (typeof role === "string") {
     // Passed through exactly as the control sent it, without being checked against a list of
     // roles held here. The API validates it against its own constants and answers 422 for
@@ -125,43 +129,24 @@ export async function POST(request: Request): Promise<NextResponse> {
     change.is_active = isActive === "true";
   }
 
-  const forwarded = {
-    ...(await sessionHeaders()),
-    ...forwardedOrigin(request),
-    ...(await requestIdHeaders()),
-    "content-type": "application/json",
-  };
+  const result = await updateAccount(userId, change, forwardedOrigin(request));
 
-  let response: Response;
-  try {
-    response = await fetch(`${apiUrl()}${ADMIN_USERS_URL}/${encodeURIComponent(userId)}`, {
-      method: "PATCH",
-      headers: forwarded,
-      body: JSON.stringify(change),
-      signal: AbortSignal.timeout(UPDATE_TIMEOUT_MS),
-    });
-  } catch (error) {
-    // The underlying message can name internal hosts, so it is not passed on to the browser —
-    // but it is exactly what an operator reading the logs needs, and this server's log is not
-    // the browser.
-    const reason = error instanceof Error ? error.message : String(error);
-    await logError("The API could not be reached for an account change.", { reason });
+  if (!result.ok) {
+    if (result.unauthenticated) {
+      // The session expired, was revoked, or was never there. Sending the operator to sign in is
+      // the only useful answer; reporting it beside the table would leave them retrying a change
+      // that cannot succeed until they do.
+      return new NextResponse(null, { status: 303, headers: { Location: LOGIN_PATH } });
+    }
 
-    return back({ error: "The API could not be reached." });
-  }
+    // Includes the 403 a non-administrator gets, the 400 a change that would break a system
+    // invariant gets and the 409 a taken address gets. All are shown beside the form rather than
+    // turned into a redirect elsewhere: the operator is on the right page and the sentence is
+    // the whole of what they need. The underlying reason is also logged, because a failure to
+    // reach the API at all is an operational fact this server's log should carry.
+    await logError("An account change was refused.", { account_id: userId });
 
-  // The session expired, was revoked, or was never there. Sending the operator to sign in is
-  // the only useful answer; reporting it beside the table would leave them retrying a change
-  // that cannot succeed until they do.
-  if (response.status === 401) {
-    return new NextResponse(null, { status: 303, headers: { Location: LOGIN_PATH } });
-  }
-
-  if (!response.ok) {
-    // Includes the 403 a non-administrator gets and the 400 a change that would break a system
-    // invariant gets. Both are shown beside the table rather than turned into a redirect: the
-    // operator is on the right page and the sentence is the whole of what they need.
-    return back({ error: await failureText(response) });
+    return back(destination, { error: result.error });
   }
 
   // Which account, and by nothing more than its id. The email is personal data and does not
@@ -169,5 +154,5 @@ export async function POST(request: Request): Promise<NextResponse> {
   // authoritative line naming both the administrator and the values it stored.
   await logInfo("Forwarded an account change to the API.", { account_id: userId });
 
-  return back({ updated: userId });
+  return back(destination, { updated: userId });
 }

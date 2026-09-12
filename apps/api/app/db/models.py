@@ -900,6 +900,26 @@ class ShadowRun(Base):
 # make a reader parse the action name to learn something the payload already states exactly.
 AUDIT_ACTION_USER_UPDATED = "USER_UPDATED"
 
+# The other two things an administrator can do to an account, added in R8-T8 and written by
+# `admin_users.py` beside the change above.
+#
+# Split out rather than folded into `USER_UPDATED`, and for the reason the API key pair is
+# split while the account change is not: these are not two fields of one event. An account
+# coming into existence and an account's credential being replaced are different facts with
+# different consequences, and "when was this account created" and "when was this password
+# reset" are the two questions an operator actually asks of this log. Recording either as a
+# `USER_UPDATED` with a telltale field in the payload would make the action column a thing a
+# reader has to look past rather than read.
+#
+# **Neither event carries a password.** Not the plaintext, which exists in the process for the
+# length of one request and is never written anywhere, and not the Argon2id hash either: the
+# digest is the credential's stored form, and a log that reprints it has widened what a reader
+# of the audit screen can see. `USER_CREATED` records the address, the role and the activation
+# it was created with; `USER_PASSWORD_RESET` records that the credential moved and how many
+# sessions that ended, and nothing about what it moved to.
+AUDIT_ACTION_USER_CREATED = "USER_CREATED"
+AUDIT_ACTION_USER_PASSWORD_RESET = "USER_PASSWORD_RESET"
+
 # The two halves of an API key's life, added in R8-T6 and written by `admin_api_keys.py`.
 #
 # Split into two actions where the account change above is deliberately one, because these are

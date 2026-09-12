@@ -27,6 +27,24 @@
  * the change is applied, and a page rendered seconds earlier cannot know it — a control hidden
  * on this page's arithmetic would be hidden on a stale answer. The API decides, and its
  * refusal is shown above the table like any other.
+ *
+ * **This route stays the single source of truth for the account list (R8-T8).** There is no
+ * `/admin/users` listing and there must not be one: two screens answering "who has an account
+ * here" would be two tables to keep in step and two places an operator could read a stale one.
+ * What R8-T8 added is a creation form at the top of this page and a link from each row to
+ * `/admin/users/[id]`, which is about one account and shows what a row cannot — the address in
+ * full, the password reset, and the deactivation policy stated in words.
+ *
+ * **The creation form is a `<details>` disclosure, not a modal.** A modal needs JavaScript to
+ * open, to trap focus and to close, and this surface has none by design; a disclosure is a
+ * browser primitive that does all three. It is collapsed by default so the page still opens on
+ * the table, which is what an operator came for.
+ *
+ * **The password field is a plain `<input type="password">` in a form that POSTs.** That is
+ * safe in a way the equivalent for an API key would not be: the secret travels inwards in a
+ * request body and nothing comes back but a status, so no credential is ever put in the query
+ * string this page reads its feedback out of. `/admin/create-user` states the same trade from
+ * the other side.
  */
 
 import Link from "next/link";
@@ -39,8 +57,9 @@ import {
   USER_ROLE_ADMIN,
   USER_ROLE_USER,
   WORKSPACE_PATH,
+  adminAccountPath,
 } from "../session";
-import { AdminAccount, fetchAccounts } from "./users";
+import { MINIMUM_PASSWORD_LENGTH, AdminAccount, fetchAccounts } from "./users";
 
 /* ------------------------------------------------------------------ *
  * Primitives
@@ -192,6 +211,119 @@ function ActivityControl({ account }: { account: AdminAccount }) {
   );
 }
 
+/**
+ * The creation form, collapsed behind a disclosure at the top of the page.
+ *
+ * A `<details>` rather than a modal for the reason stated at the top of this file: a modal needs
+ * JavaScript and this surface has none. Collapsed by default so the page still opens on the
+ * table, which is what an operator came here for.
+ *
+ * **The password is typed here and travels in the POST body, which is why this is safe as a
+ * plain form.** Nothing comes back but a status, so the redirect that follows carries an id and
+ * never a credential. That is the whole difference between this control and the API key one,
+ * which cannot redirect at all.
+ *
+ * `minLength` on the password field is a courtesy, not a check. The API enforces
+ * `MINIMUM_PASSWORD_LENGTH` and refuses anything shorter whatever the browser did; this is so an
+ * operator learns the floor while typing rather than after a round trip. `required` is the same
+ * kind of thing — the handler refuses an empty field too, and a reader with JavaScript disabled
+ * or a browser that ignores the attribute gets the same refusal, just later.
+ *
+ * `autoComplete="new-password"` so the browser does not offer the *administrator's* own saved
+ * credential for a field that sets somebody else's, and does not offer to remember what is typed
+ * here as though it were theirs.
+ *
+ * There is no activation control. An account is created able to sign in, because an account
+ * created deactivated is one somebody has to remember to come back and switch on — and the
+ * detail page can deactivate it a moment later if that is really what was wanted.
+ */
+function CreateAccount() {
+  return (
+    <details className="overflow-hidden rounded-lg border border-line bg-ink-2">
+      <summary className="cursor-pointer px-5 py-4 text-[13px] font-medium text-bone select-none">
+        Create an account
+      </summary>
+
+      <form
+        action="/admin/create-user"
+        method="post"
+        className="border-t border-hair px-5 py-5"
+      >
+        <p className="max-w-[68ch] text-[13px] leading-relaxed text-muted">
+          The password is set here and told to the person by whoever creates the account. This
+          deployment sends no mail, so there is no invitation and no reset link — an account that
+          needs a new password gets one from its own page.
+        </p>
+
+        <div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,1fr)]">
+          <div>
+            <label
+              htmlFor="new-account-email"
+              className="block text-[11px] font-medium tracking-[0.08em] text-muted uppercase"
+            >
+              Email
+            </label>
+            <input
+              id="new-account-email"
+              name="email"
+              type="email"
+              required
+              autoComplete="off"
+              className="mt-1.5 w-full rounded-md border border-line bg-ink px-2.5 py-1.5 font-mono text-[12px] text-bone transition-colors duration-150 hover:border-rule"
+            />
+          </div>
+
+          <div>
+            <label
+              htmlFor="new-account-password"
+              className="block text-[11px] font-medium tracking-[0.08em] text-muted uppercase"
+            >
+              Password
+            </label>
+            <input
+              id="new-account-password"
+              name="password"
+              type="password"
+              required
+              minLength={MINIMUM_PASSWORD_LENGTH}
+              autoComplete="new-password"
+              className="mt-1.5 w-full rounded-md border border-line bg-ink px-2.5 py-1.5 font-mono text-[12px] text-bone transition-colors duration-150 hover:border-rule"
+            />
+            <p className="mt-1.5 text-[11px] text-muted">
+              At least {MINIMUM_PASSWORD_LENGTH} characters.
+            </p>
+          </div>
+
+          <div>
+            <label
+              htmlFor="new-account-role"
+              className="block text-[11px] font-medium tracking-[0.08em] text-muted uppercase"
+            >
+              Role
+            </label>
+            <select
+              id="new-account-role"
+              name="role"
+              defaultValue={USER_ROLE_USER}
+              className="mt-1.5 w-full rounded-md border border-line bg-ink px-2.5 py-1.5 text-[12px] text-bone transition-colors duration-150 hover:border-rule"
+            >
+              <option value={USER_ROLE_USER}>User</option>
+              <option value={USER_ROLE_ADMIN}>Admin</option>
+            </select>
+          </div>
+        </div>
+
+        <button
+          type="submit"
+          className="mt-4 rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+        >
+          Create account
+        </button>
+      </form>
+    </details>
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * The table
  * ------------------------------------------------------------------ */
@@ -203,10 +335,18 @@ function AccountRow({ account, self }: { account: AdminAccount; self: boolean })
       <div className="min-w-0">
         {/* Monospace: an address is a machine value the reader has to be able to check
             character by character, which is the same reason the URL field on the workspace is
-            set this way and its label is not. */}
-        <div className="truncate font-mono text-[13px] text-bone" title={account.email}>
+            set this way and its label is not.
+
+            It is the link to the account's own page rather than a separate "view" control in
+            the last column, because the address is what identifies the row — the thing an
+            operator is already pointing at when they want to see more of it. */}
+        <Link
+          href={adminAccountPath(account.id)}
+          className="block truncate font-mono text-[13px] text-bone underline-offset-2 hover:underline"
+          title={account.email}
+        >
           {account.email}
-        </div>
+        </Link>
         {/* The API's own timestamp, shown as stored rather than reformatted into a local
             rendering the record does not hold — the convention the case log already follows. */}
         <div className="mt-1 font-mono text-[11px] text-muted">{account.created_at}</div>
@@ -231,9 +371,21 @@ function AccountRow({ account, self }: { account: AdminAccount; self: boolean })
           // nothing here. A disabled control invites the reader to work out how to enable it,
           // and this one never can be — the rule is about who they are, not about what state
           // the page is in.
-          <span className="text-[12px] text-muted">
-            Your own account — another administrator must change it.
-          </span>
+          //
+          // The link beside it is the one thing a reader may do to their own account from here.
+          // The detail page draws the password reset even for one's own account, because unlike
+          // a role change that is not a change nobody can undo.
+          <>
+            <span className="text-[12px] text-muted">
+              Your own account — another administrator must change it.
+            </span>
+            <Link
+              href={adminAccountPath(account.id)}
+              className="text-[12px] text-muted underline hover:text-bone"
+            >
+              Open
+            </Link>
+          </>
         ) : (
           <>
             <RoleControl account={account} />
@@ -286,6 +438,7 @@ export default async function Admin({
 
   const error = singleParam(params.error);
   const updated = singleParam(params.updated);
+  const createdAccount = singleParam(params.created);
 
   return (
     <main className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-14 sm:px-8">
@@ -313,6 +466,25 @@ export default async function Admin({
           </Alert>
         </div>
       )}
+      {createdAccount !== null && !error && (
+        <div className="mt-6">
+          <Alert tone="success">
+            Account created. The password is not recoverable from anywhere — tell the person what
+            it is, or set a new one from{" "}
+            <Link
+              href={adminAccountPath(createdAccount)}
+              className="underline hover:text-bone"
+            >
+              their account page
+            </Link>
+            .
+          </Alert>
+        </div>
+      )}
+
+      <div className="mt-6">
+        <CreateAccount />
+      </div>
 
       <div className="mt-6">
         {!result.ok ? (

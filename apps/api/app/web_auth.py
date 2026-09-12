@@ -38,6 +38,7 @@ import hashlib
 import logging
 import os
 import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from argon2 import PasswordHasher
@@ -67,6 +68,26 @@ PASSWORD_HASHER = PasswordHasher()
 # Built from fresh randomness at import: nothing can ever verify against it, and no fixed
 # string that looks like a credential is committed to the repository.
 _UNMATCHED_PASSWORD_HASH = PASSWORD_HASHER.hash(secrets.token_urlsafe(32))
+
+# The shortest password this application will store, wherever a password is set.
+#
+# It moved here in R8-T8. `create_admin.py` held it, said it was "not a policy", and said a
+# real one "belongs with the account management this task explicitly does not build" — which
+# is the admin user CRUD this constant is now shared with. Two floors, one in the bootstrap
+# script and one in the administrative route, would be two answers to "what may a password
+# be" and the weaker of them would be the one that actually held.
+#
+# It is still a floor rather than a policy. There is no character-class rule, no dictionary
+# check and no expiry: those are decisions a deployment makes, and inventing them here would
+# be composing a password policy out of folklore. What this prevents is the empty or
+# one-character password a distracted operator would otherwise set on an account.
+MINIMUM_PASSWORD_LENGTH = 12
+
+# The longest one this application will hash. Argon2 will faithfully spend time on however
+# many megabytes it is handed, so an unbounded field would let the caller choose the server's
+# workload — the same bound `Credentials` in `app/api/auth.py` puts on a sign-in, stated here
+# so the sign-in and the two routes that set a password share one number.
+MAX_PASSWORD_LENGTH = 1024
 
 # The cookie the browser carries a session in. Prefixed so it is recognisable in a browser's
 # storage inspector as this application's.
@@ -344,6 +365,44 @@ def authenticate(session: Session, email: str, password: str) -> User | None:
     return stored
 
 
+def revoke_user_sessions(
+    session: Session, user_id: uuid.UUID, *, now: datetime | None = None
+) -> int:
+    """End every session this account still holds open, and say how many that was.
+
+    **It does not commit, and that is the whole point of it being a function.** Both callers
+    revoke sessions as one part of something larger — `start_session` replaces them with a new
+    one, and the administrative password reset in `app/api/admin_users.py` replaces the
+    credential they were opened against — and in both cases a commit in here would split that
+    into two transactions. The window between them is short and is exactly the wrong window:
+    an account whose password has been changed but whose old sessions are still live, or one
+    with no session at all because the insert that was going to follow rolled back.
+
+    Written as one `UPDATE ... WHERE revoked_at IS NULL` rather than by loading the rows and
+    setting a field on each. The database can do this in one statement, the set of rows it
+    applies to is decided by the database at the moment it runs rather than by what a `SELECT`
+    saw a moment earlier, and `revoked_at IS NULL` keeps an already-revoked session's
+    timestamp as the moment it actually ended instead of overwriting it with this one.
+
+    The count is `rowcount` — the sessions that were open and are not any more. It is returned
+    because the password reset records it in its audit event: "this ended three sessions" is
+    the operationally interesting half of a reset, and the caller cannot recover the number
+    after the statement has run.
+    """
+    revoked_at = now if now is not None else datetime.now(timezone.utc)
+
+    result = session.execute(
+        update(AuthSession)
+        .where(AuthSession.user_id == user_id, AuthSession.revoked_at.is_(None))
+        .values(revoked_at=revoked_at)
+    )
+
+    # `rowcount` is -1 on a driver that cannot report it. psycopg2 always can, and the value
+    # only ever reaches an audit payload, so an unknown count is floored at zero rather than
+    # recorded as a negative number somebody would have to interpret.
+    return max(result.rowcount, 0)
+
+
 def start_session(session: Session, user: User) -> str:
     """Open a web session for this user and return its token — the one plaintext copy.
 
@@ -359,11 +418,7 @@ def start_session(session: Session, user: User) -> str:
     """
     now = datetime.now(timezone.utc)
 
-    session.execute(
-        update(AuthSession)
-        .where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
-        .values(revoked_at=now)
-    )
+    revoke_user_sessions(session, user.id, now=now)
 
     token = generate_session_token()
     session.add(

@@ -26,12 +26,13 @@ from sqlalchemy import select
 
 from app.db.models import USER_ROLE_ADMIN, User
 from app.db.session import SessionLocal
-from app.web_auth import hash_password, normalize_email
+from app.web_auth import MINIMUM_PASSWORD_LENGTH, hash_password, normalize_email
 
-# Short, and not a policy. A real password policy belongs with the account management this
-# task explicitly does not build; what this floor prevents is the empty or one-character
-# password a distracted operator would otherwise create the first administrator with.
-MINIMUM_PASSWORD_LENGTH = 12
+# The floor this script enforces is imported rather than named here. It used to be a local
+# constant with a note saying a real policy belonged with the account management that did not
+# exist yet; R8-T8 built that, and the number now lives in `app.web_auth` beside the hashing it
+# constrains. Two copies would be two answers to "what may a password be", and the weaker of
+# them — whichever route an operator happened to use — would be the one that actually held.
 
 
 def prompt_email() -> str:
