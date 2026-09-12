@@ -44,6 +44,12 @@ export const ADMIN_PATH = "/admin";
 // from spelling it twice.
 export const ADMIN_JOBS_PATH = "/admin/jobs";
 
+// The operational summary inside that surface (R8-T4). A third address for the same reason
+// the second one exists: it reads its own API, and it is the one page in the surface that
+// shows no record at all — only counts — which makes it a different screen rather than a
+// panel on one of the others.
+export const ADMIN_ANALYTICS_PATH = "/admin/analytics";
+
 // The privileged role, as the API spells it. It must match `USER_ROLE_ADMIN` in
 // `apps/api/app/db/models.py`, which is where a role is assigned and where every decision
 // that actually grants access is made; this is the same restating across languages that

@@ -4,6 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.api.admin_analytics import router as admin_analytics_router
 from app.api.admin_jobs import router as admin_jobs_router
 from app.api.admin_users import router as admin_users_router
 from app.api.analyses import router as analyses_router
@@ -54,6 +55,13 @@ app.include_router(admin_users_router)
 # because a requeued job would write a second forensic signal per provider over the first
 # one's. The reason is stated in full at the top of `admin_jobs.py`.
 app.include_router(admin_jobs_router)
+# The third administrative module (R8-T4): counts rather than rows. Where `admin_users`
+# answers "who is here" and `admin_jobs` answers "what is this piece of work doing", this
+# one answers "what has the deployment been doing lately" — aggregated by PostgreSQL over a
+# fixed seven-day window and returning no record of any kind. Mounted here rather than folded
+# into `admin_jobs` because a route that exposes no row is a different exposure question from
+# one that exposes every job, and the two should not share a file that reviews as one.
+app.include_router(admin_analytics_router)
 # The external B2B surface. Mounted under its own prefix and carrying its own API-key
 # dependency, so the internal routes above stay exactly as unauthenticated as they were.
 app.include_router(public_analyses_router)
