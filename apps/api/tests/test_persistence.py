@@ -175,6 +175,15 @@ def test_migration_created_the_analysis_schema(database):
         # a guess into a stored fact.
         "acquisition_method",
         "source_host",
+        # The two dimension pairs a rotated video has, and the rotation that explains the
+        # difference. `width`/`height` above are the original's coded size; these are the
+        # size of the artifact a detector was actually handed, measured off that artifact.
+        # All three nullable and none backfilled — a row from before them was analysed by a
+        # worker that never measured its derivative, and there is no value for it that would
+        # not be invented.
+        "display_rotation",
+        "analyzed_width",
+        "analyzed_height",
         "derivative_storage_key",
         "derivative_sha256",
     }
@@ -402,6 +411,16 @@ def test_persisted_analyses_can_be_read_back_through_the_listing_endpoint(sessio
     assert listed["media"] == {
         "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
         "codec_name": "h264",
+        "original_width": 1920,
+        "original_height": 1080,
+        # The row this test inserts sets neither pair, which is exactly the shape of an
+        # analysis stored before the derivative was ever measured. It reads back as null
+        # rather than borrowing the encoded figures above.
+        "display_rotation": None,
+        "analyzed_width": None,
+        "analyzed_height": None,
+        # The aliases follow the original pair, which this row does have — a historical row
+        # loses its analysed figures, never its encoded ones.
         "width": 1920,
         "height": 1080,
         "duration": pytest.approx(12.34),

@@ -40,6 +40,7 @@ from app.audio_detector import (
     WindowEvidence,
 )
 from app.c2pa_extractor import C2paEvidence
+from app.media import MediaProbeError
 from app.face_detector import (
     FaceDetectorModelUnavailable,
     FaceDetectorNoFaceFound,
@@ -188,7 +189,7 @@ def queue(database):
     """Creates queued uploads exactly as the route commits them, and removes them again."""
     created = []
 
-    def enqueue(*, was_normalized=False, age=0, request_id=None):
+    def enqueue(*, was_normalized=False, age=0, request_id=None, display_rotation=0):
         with SessionLocal() as session:
             analysis = Analysis(status="queued")
             session.add(analysis)
@@ -215,6 +216,13 @@ def queue(database):
                     # the original's own key when none will ever be produced.
                     derivative_storage_key=None if was_normalized else f"originals/{digest}",
                     derivative_sha256=None,
+                    display_rotation=display_rotation,
+                    # Also exactly as the upload commits it. Media that needs no transcode is
+                    # analysed as the original, so the probe that admitted it already measured
+                    # the artifact; media that needs one has no artifact yet, and this worker
+                    # is what measures it.
+                    analyzed_width=None if was_normalized else 1920,
+                    analyzed_height=None if was_normalized else 1080,
                 )
             )
             job = AnalysisJob(
@@ -3386,3 +3394,122 @@ def test_a_worker_that_was_not_asked_for_shadow_mode_queues_nothing(
 
     assert read_analysis(analysis_id).status == "completed"
     assert shadow_runs_for(analysis_id) == []
+
+
+# Analysed dimensions. The worker is the only thing that ever sees the derivative, so it is
+# the only thing that can say what shape the detectors were handed. These cover that the
+# measurement reaches `media_files`, and that every path with nothing to measure leaves the
+# columns null rather than filling them from the original.
+
+
+@pytest.fixture
+def fake_probe(monkeypatch):
+    """Measure the derivative as a fixed shape, since the fake transcode writes no video.
+
+    Only the probe is replaced. Which artifact gets measured, whether the figures are
+    carried to the database and which paths skip them entirely are the real code under test.
+    """
+
+    class Recorder:
+        def __init__(self):
+            self.dimensions = (1080, 1920)
+            self.error = None
+            self.paths = []
+
+        async def run(self, path):
+            self.paths.append(Path(path))
+            if self.error:
+                raise self.error
+            return self.dimensions
+
+    recorder = Recorder()
+    monkeypatch.setattr(normalization, "probe_dimensions", recorder.run)
+    return recorder
+
+
+@pytest.mark.integration
+def test_the_analysed_dimensions_are_measured_off_the_derivative(
+    queue, fake_storage, fake_ffmpeg, fake_probe
+):
+    """The rotated phone video, as the database ends up holding it.
+
+    The original is encoded 1920x1080 and the artifact the detectors read is 1080x1920.
+    Both survive, in their own columns, and the analysed pair came from probing the
+    transcoded file rather than from turning the original's figures on paper.
+    """
+    analysis_id, _ = queue(was_normalized=True, display_rotation=90)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    media = read_media(analysis_id)
+    assert (media.analyzed_width, media.analyzed_height) == (1080, 1920)
+    # The forensic original's own geometry is untouched by any of this.
+    assert (media.width, media.height) == (1920, 1080)
+    assert media.display_rotation == 90
+    # Measured off the derivative the transcode wrote, not the original it was made from.
+    assert fake_probe.paths == [fake_ffmpeg.calls[0][1]]
+
+
+@pytest.mark.integration
+def test_media_needing_no_derivative_keeps_the_dimensions_the_upload_wrote(
+    queue, fake_storage, fake_probe
+):
+    """Nothing is transcoded, so there is no second artifact and no second measurement.
+
+    The upload already measured the only artifact there will ever be — the original is what
+    the detector receives — so the worker leaves these alone exactly as it leaves the
+    storage key alone.
+    """
+    analysis_id, _ = queue(was_normalized=False)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    media = read_media(analysis_id)
+    assert (media.analyzed_width, media.analyzed_height) == (1920, 1080)
+    assert fake_probe.paths == []
+
+
+@pytest.mark.integration
+def test_a_failed_transcode_records_no_analysed_dimensions(
+    queue, fake_storage, fake_ffmpeg, fake_probe
+):
+    """No artifact was produced, so there is nothing to have measured.
+
+    The columns stay null rather than falling back to the original's figures: the detectors
+    never received anything, and stating a shape for what they read would be inventing it.
+    """
+    fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
+    analysis_id, _ = queue(was_normalized=True)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    media = read_media(analysis_id)
+    assert media.analyzed_width is None
+    assert media.analyzed_height is None
+
+
+@pytest.mark.integration
+def test_a_derivative_that_cannot_be_measured_still_completes_the_job(
+    queue, fake_storage, fake_ffmpeg, fake_probe
+):
+    """A probe failure costs the two figures and nothing else.
+
+    ffmpeg produced a file, it was stored, and the detectors read it. Only the record of its
+    shape is missing, which is a gap in reporting rather than a fact about the media — so
+    the analysis finishes and the derivative is named as usual.
+    """
+    fake_probe.error = MediaProbeError("no video stream")
+    analysis_id, job_id = queue(was_normalized=True)
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    media = read_media(analysis_id)
+    assert media.analyzed_width is None
+    assert media.analyzed_height is None
+    # The artifact itself was produced, stored and recorded regardless.
+    assert media.derivative_storage_key in fake_storage.uploaded_bytes
+    assert read_job(job_id).status == "completed"

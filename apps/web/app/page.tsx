@@ -758,10 +758,21 @@ function frameRateText(rate: number): string {
  * evidence does not establish.
  */
 function Media({ media }: { media: MediaFacts }) {
+  // The size the detectors actually worked on, which is the derivative's where one was made
+  // and differs from the encoded size on any rotated video. A row from before that was
+  // measured has none, and falls back to the encoded size — the full report is where the
+  // two are named apart, and this line has no room to label which it is showing.
+  const analysed =
+    media.analyzed_width !== null && media.analyzed_height !== null
+      ? `${media.analyzed_width}×${media.analyzed_height}`
+      : `${media.original_width}×${media.original_height}`;
+
   const detail = [
     `${media.duration.toFixed(2)}s`,
     media.pix_fmt,
     media.constant_frame_rate ? "constant frame rate" : "variable frame rate",
+    // Named in the hover, where there is room to say which figure is which.
+    `encoded ${media.original_width}×${media.original_height}`,
   ]
     .filter((part) => part !== null)
     .join(" · ");
@@ -769,7 +780,7 @@ function Media({ media }: { media: MediaFacts }) {
   return (
     <div title={detail}>
       <div>
-        {media.codec_name} · {media.width}×{media.height} · {frameRateText(media.frame_rate)} fps
+        {media.codec_name} · {analysed} · {frameRateText(media.frame_rate)} fps
       </div>
       <div className="mt-1 text-muted">{media.format_name}</div>
     </div>

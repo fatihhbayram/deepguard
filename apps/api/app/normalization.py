@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.limits import normalization_timeout_seconds
-from app.media import MediaMetadata
+from app.media import MediaMetadata, MediaProbeError, MediaProbeUnavailable, probe_dimensions
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +91,22 @@ class NormalizationUnavailable(Exception):
 
 @dataclass(frozen=True)
 class NormalizedMedia:
-    """A derivative on local disk, with its own content identity."""
+    """A derivative on local disk, with its own content identity and its own geometry."""
 
     path: Path
     sha256: str
+    # The picture size this derivative was actually written at, measured off it rather than
+    # carried over from the source. The transcode is where the two diverge: ffmpeg applies
+    # the source's display matrix, so a rotated phone video comes out with its sides
+    # swapped, and `EVEN_DIMENSION_PAD_FILTER` can add a row or column on top of that. This
+    # is the geometry a detector receives, and it belongs to the artifact, not to the
+    # original.
+    #
+    # Null when the derivative was produced but could not be measured. That is a gap in the
+    # record and nothing more — the transcode succeeded, the file is sound, and detection
+    # proceeds against it exactly as it would have. See `_probed_dimensions`.
+    width: int | None = None
+    height: int | None = None
 
 
 def needs_normalization(metadata: MediaMetadata) -> bool:
@@ -203,6 +215,29 @@ def _terminate(process: asyncio.subprocess.Process) -> None:
         pass
 
 
+async def _probed_dimensions(derivative: Path) -> tuple[int | None, int | None]:
+    """Measure the derivative that was just written, and never fail the transcode over it.
+
+    The measurement is the whole point of doing it here: this is the file a detector will
+    be handed, so its geometry is read out of it rather than computed from the source's
+    columns and ffmpeg's rotation and padding rules. Those rules are ffmpeg's to change;
+    the bytes are not open to interpretation.
+
+    A probe that fails costs the figures and nothing else. The transcode already succeeded —
+    ffmpeg wrote a file it was happy with — and the artifact is handed downstream unchanged,
+    so turning an unreadable probe into a `NormalizationError` would refuse detectable media
+    over a reporting field. The columns stay null, which the report reads as "not recorded".
+    """
+    try:
+        return await probe_dimensions(derivative)
+    except (MediaProbeError, MediaProbeUnavailable):
+        logger.warning(
+            "Measuring the derivative failed; its analysed dimensions go unrecorded.",
+            exc_info=True,
+        )
+        return None, None
+
+
 def _sha256_of(path: Path) -> str:
     """Hash the derivative bytes; the original's hash identifies a different artifact."""
     hasher = hashlib.sha256()
@@ -233,7 +268,13 @@ async def normalize_to_mp4(source: Path, frame_rate: float) -> NormalizedMedia:
 
     try:
         await _run_ffmpeg(source, destination, frame_rate)
-        return NormalizedMedia(path=destination, sha256=_sha256_of(destination))
+        width, height = await _probed_dimensions(destination)
+        return NormalizedMedia(
+            path=destination,
+            sha256=_sha256_of(destination),
+            width=width,
+            height=height,
+        )
     except BaseException:
         try:
             os.unlink(destination)

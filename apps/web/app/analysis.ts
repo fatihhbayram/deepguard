@@ -237,8 +237,21 @@ export type LipForensicsSignal = {
 export type MediaFacts = {
   format_name: string;
   codec_name: string;
-  width: number;
-  height: number;
+  // The original's *coded* picture size, before any display matrix is applied. Named for
+  // what it is: a bare `width` invited the report to present it as the geometry a detector
+  // examined, and for a rotated phone video it is not.
+  original_width: number;
+  original_height: number;
+  // What the original's container asks for when the picture is displayed, in degrees
+  // clockwise. `0` when the probe found no rotation; null on an analysis from before
+  // rotation was read at all. It explains a difference between the two pairs and is never
+  // what this page uses to work one out.
+  display_rotation: number | null;
+  // The size of the artifact the detectors were actually handed, measured off that artifact
+  // — the transcoded derivative where one was made, the original where none was needed.
+  // Null means it was never recorded, which is every analysis from before it was measured.
+  analyzed_width: number | null;
+  analyzed_height: number | null;
   duration: number;
   frame_rate: number;
   pix_fmt: string | null;
@@ -1897,8 +1910,11 @@ export function parseMedia(payload: unknown): MediaFacts | undefined {
   const {
     format_name,
     codec_name,
-    width,
-    height,
+    original_width,
+    original_height,
+    display_rotation,
+    analyzed_width,
+    analyzed_height,
     duration,
     frame_rate,
     pix_fmt,
@@ -1906,20 +1922,29 @@ export function parseMedia(payload: unknown): MediaFacts | undefined {
   } = payload as Record<string, unknown>;
 
   const parsedPixFmt = parseOptionalString(pix_fmt);
+  // The three that may legitimately be null, because the row predates them being recorded.
+  // `undefined` from these means the field was present but malformed, which is a response
+  // that cannot be trusted rather than a state to render.
+  const parsedRotation = parseOptionalNumber(display_rotation);
+  const parsedAnalysedWidth = parseOptionalNumber(analyzed_width);
+  const parsedAnalysedHeight = parseOptionalNumber(analyzed_height);
 
   if (
     typeof format_name !== "string" ||
     typeof codec_name !== "string" ||
-    typeof width !== "number" ||
-    !Number.isFinite(width) ||
-    typeof height !== "number" ||
-    !Number.isFinite(height) ||
+    typeof original_width !== "number" ||
+    !Number.isFinite(original_width) ||
+    typeof original_height !== "number" ||
+    !Number.isFinite(original_height) ||
     typeof duration !== "number" ||
     !Number.isFinite(duration) ||
     typeof frame_rate !== "number" ||
     !Number.isFinite(frame_rate) ||
     typeof constant_frame_rate !== "boolean" ||
-    parsedPixFmt === undefined
+    parsedPixFmt === undefined ||
+    parsedRotation === undefined ||
+    parsedAnalysedWidth === undefined ||
+    parsedAnalysedHeight === undefined
   ) {
     return undefined;
   }
@@ -1927,8 +1952,11 @@ export function parseMedia(payload: unknown): MediaFacts | undefined {
   return {
     format_name,
     codec_name,
-    width,
-    height,
+    original_width,
+    original_height,
+    display_rotation: parsedRotation,
+    analyzed_width: parsedAnalysedWidth,
+    analyzed_height: parsedAnalysedHeight,
     duration,
     frame_rate,
     pix_fmt: parsedPixFmt,

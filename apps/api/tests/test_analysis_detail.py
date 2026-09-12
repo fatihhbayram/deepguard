@@ -258,3 +258,173 @@ def test_an_analysis_with_no_signals_reads_no_evidence_tables(client, fake_sessi
     detail(client, row.id)
 
     assert len(fake_session.statements) == 1
+
+
+# Dimensions. A rotated phone video has two different picture sizes — the one encoded in the
+# original and the one a detector was handed — and the report is only truthful if it can
+# tell them apart. What is under test here is that the endpoint carries both through
+# untransformed, and that a row which never recorded the second says so rather than
+# substituting the first.
+
+
+def test_both_dimension_pairs_are_reported_separately(client, fake_session):
+    """The rotated phone video: encoded landscape, analysed portrait.
+
+    These are the figures the worker measured off the derivative, and the endpoint states
+    them as such beside the original's own. Nothing here multiplies out `display_rotation`
+    to reach the second pair — the pair is stored, and the rotation only explains it.
+    """
+    fake_session.rows = [
+        listing_row(
+            width=1920,
+            height=1080,
+            display_rotation=90,
+            analyzed_width=1080,
+            analyzed_height=1920,
+        )
+    ]
+
+    media = detail(client, fake_session.rows[0].id).json()["media"]
+
+    assert (media["original_width"], media["original_height"]) == (1920, 1080)
+    assert (media["analyzed_width"], media["analyzed_height"]) == (1080, 1920)
+    assert media["display_rotation"] == 90
+
+
+def test_unrotated_media_reports_the_same_pair_twice(client, fake_session):
+    """The overwhelmingly common case, and the one that must not regress.
+
+    Landscape video that needed no turning is analysed at the size it was encoded at. The
+    two pairs agreeing is a measured result here, not a shortcut: the second pair was still
+    probed off the artifact.
+    """
+    fake_session.rows = [
+        listing_row(
+            width=1920,
+            height=1080,
+            display_rotation=0,
+            analyzed_width=1920,
+            analyzed_height=1080,
+        )
+    ]
+
+    media = detail(client, fake_session.rows[0].id).json()["media"]
+
+    assert (media["original_width"], media["original_height"]) == (1920, 1080)
+    assert (media["analyzed_width"], media["analyzed_height"]) == (1920, 1080)
+
+
+def test_natively_portrait_media_is_not_treated_as_rotated(client, fake_session):
+    """A physically portrait encode carries no rotation and needs none."""
+    fake_session.rows = [
+        listing_row(
+            width=1080,
+            height=1920,
+            display_rotation=0,
+            analyzed_width=1080,
+            analyzed_height=1920,
+        )
+    ]
+
+    media = detail(client, fake_session.rows[0].id).json()["media"]
+
+    assert (media["original_width"], media["original_height"]) == (1080, 1920)
+    assert (media["analyzed_width"], media["analyzed_height"]) == (1080, 1920)
+    assert media["display_rotation"] == 0
+
+
+def test_a_historical_row_reports_null_rather_than_the_encoded_size(client, fake_session):
+    """The whole point of the nullable columns.
+
+    An analysis from before the derivative was measured has no analysed geometry, and there
+    is no honest value for it — the artifact it was detected against may or may not have
+    been the shape the original was encoded at. Filling the gap with `original_width` would
+    assert exactly the thing this pair was added to stop, so it stays null and the reader
+    falls back to reporting the encoded size *as* the encoded size.
+    """
+    fake_session.rows = [
+        listing_row(
+            width=1920,
+            height=1080,
+            display_rotation=None,
+            analyzed_width=None,
+            analyzed_height=None,
+        )
+    ]
+
+    media = detail(client, fake_session.rows[0].id).json()["media"]
+
+    assert media["analyzed_width"] is None
+    assert media["analyzed_height"] is None
+    # Null, not `0`: nobody probed this row for rotation, which is a different fact from a
+    # probe that found none.
+    assert media["display_rotation"] is None
+    # The encoded pair is untouched and still reported — the gap costs the analysed figures
+    # and nothing else.
+    assert (media["original_width"], media["original_height"]) == (1920, 1080)
+
+
+def test_the_dimension_columns_ride_the_same_statement(client, fake_session):
+    """No extra query for the analysed pair: it is on the joined media row already."""
+    fake_session.rows = [listing_row()]
+
+    detail(client, fake_session.rows[0].id)
+
+    sql = compiled(fake_session)
+    for column in ("media_files.analyzed_width", "media_files.analyzed_height"):
+        assert column in sql
+
+
+# The compatibility aliases. `width`/`height` were the only dimension fields this object had
+# before the two pairs were separated, and they always meant the original's coded size. They
+# are kept meaning exactly that, so a reader written against the old shape keeps getting the
+# figures it always got.
+
+
+def test_the_legacy_names_alias_the_original_pair(client, fake_session):
+    fake_session.rows = [listing_row(width=1920, height=1080)]
+
+    media = detail(client, fake_session.rows[0].id).json()["media"]
+
+    assert (media["width"], media["height"]) == (1920, 1080)
+    assert (media["original_width"], media["original_height"]) == (1920, 1080)
+
+
+def test_the_legacy_names_never_follow_the_analysed_pair(client, fake_session):
+    """The guardrail, on the row where the two pairs actually disagree.
+
+    A rotated phone video is the whole reason these fields were split. A reader asking for
+    `width` is asking the old question — what does the submitted file encode — and answering
+    it with the analysed geometry would reintroduce the exact misreporting this task removed,
+    in the one place nobody would think to look for it.
+    """
+    fake_session.rows = [
+        listing_row(
+            width=1920,
+            height=1080,
+            display_rotation=90,
+            analyzed_width=1080,
+            analyzed_height=1920,
+        )
+    ]
+
+    media = detail(client, fake_session.rows[0].id).json()["media"]
+
+    assert (media["width"], media["height"]) == (1920, 1080)
+    assert (media["analyzed_width"], media["analyzed_height"]) == (1080, 1920)
+    # Stated as an inequality too, so a change that made the aliases track the analysed pair
+    # fails here rather than passing on figures that happen to match.
+    assert media["width"] != media["analyzed_width"]
+    assert media["height"] != media["analyzed_height"]
+
+
+def test_the_legacy_names_survive_a_row_with_no_analysed_pair(client, fake_session):
+    """A historical row loses its analysed figures, never its encoded ones."""
+    fake_session.rows = [
+        listing_row(width=1920, height=1080, analyzed_width=None, analyzed_height=None)
+    ]
+
+    media = detail(client, fake_session.rows[0].id).json()["media"]
+
+    assert (media["width"], media["height"]) == (1920, 1080)
+    assert media["analyzed_width"] is None

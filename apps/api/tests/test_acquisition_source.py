@@ -181,6 +181,13 @@ def summary_row(**overrides):
         "codec_name": "h264",
         "width": 1920,
         "height": 1080,
+        # This module's subject is the row that predates a column, so the analysed
+        # dimensions are null here for the same reason the acquisition columns are: nobody
+        # measured the artifact these analyses were detected against, and the read path has
+        # to stay readable without inventing a shape for it.
+        "display_rotation": None,
+        "analyzed_width": None,
+        "analyzed_height": None,
         "duration": 12.34,
         "frame_rate": 30.0,
         "pix_fmt": "yuv420p",

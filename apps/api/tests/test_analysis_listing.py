@@ -68,6 +68,17 @@ EXPECTED_FIELDS = {
 EXPECTED_MEDIA_FIELDS = {
     "format_name",
     "codec_name",
+    # Two dimension pairs, because a rotated video has two. The first is the original's
+    # coded size; the second is the size of the artifact a detector was actually handed,
+    # measured off that artifact. `display_rotation` explains a divergence between them and
+    # is never what produces one.
+    "original_width",
+    "original_height",
+    "display_rotation",
+    "analyzed_width",
+    "analyzed_height",
+    # The pre-split names, kept as aliases of the original pair so that separating the two
+    # pairs did not break a reader written against the old shape.
     "width",
     "height",
     "duration",
@@ -223,6 +234,11 @@ def listing_row(**overrides):
         "codec_name": "h264",
         "width": 1280,
         "height": 720,
+        # An upright clip that needed no transcode: the artifact analysed is the original,
+        # so the two pairs agree and no rotation is recorded.
+        "display_rotation": 0,
+        "analyzed_width": 1280,
+        "analyzed_height": 720,
         "duration": 5.0,
         "frame_rate": 30.0,
         "pix_fmt": "yuv420p",
@@ -709,6 +725,11 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
             "media": {
                 "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
                 "codec_name": "h264",
+                "original_width": 1280,
+                "original_height": 720,
+                "display_rotation": 0,
+                "analyzed_width": 1280,
+                "analyzed_height": 720,
                 "width": 1280,
                 "height": 720,
                 "duration": 5.0,
@@ -970,8 +991,11 @@ def test_the_probed_media_facts_are_exposed(client, fake_session):
     assert set(media) == EXPECTED_MEDIA_FIELDS
     assert media["format_name"] == "mov,mp4,m4a,3gp,3g2,mj2"
     assert media["codec_name"] == "h264"
-    assert media["width"] == 1280
-    assert media["height"] == 720
+    assert media["original_width"] == 1280
+    assert media["original_height"] == 720
+    assert media["display_rotation"] == 0
+    assert media["analyzed_width"] == 1280
+    assert media["analyzed_height"] == 720
     assert media["duration"] == 5.0
     assert media["frame_rate"] == 30.0
     assert media["pix_fmt"] == "yuv420p"
@@ -1000,7 +1024,7 @@ def test_media_facts_are_reported_untransformed(client, fake_session):
     media = client.get("/api/v1/analyses").json()[0]["media"]
 
     assert media["frame_rate"] == pytest.approx(30000 / 1001, rel=1e-12)
-    assert (media["width"], media["height"]) == (1920, 1080)
+    assert (media["original_width"], media["original_height"]) == (1920, 1080)
 
 
 def test_media_without_a_pixel_format_reports_null(client, fake_session):

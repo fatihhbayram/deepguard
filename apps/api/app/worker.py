@@ -235,6 +235,12 @@ class AnalysisArtifact:
     path: Path
     storage_key: str | None = None
     sha256: str | None = None
+    # The picture size of this artifact, measured off it when it was transcoded. Null on the
+    # bypass path, where the artifact is the original and its analysed dimensions were
+    # already written at upload from the same probe that admitted it — there is no second
+    # artifact to measure and no second measurement to record.
+    width: int | None = None
+    height: int | None = None
 
 
 def lease_deadline():
@@ -530,7 +536,15 @@ def prepared_artifact(claimed: ClaimedJob, original: Path) -> Iterator[AnalysisA
     try:
         key = store_derivative(derivative.path, derivative.sha256)
         yield AnalysisArtifact(
-            path=derivative.path, storage_key=key, sha256=derivative.sha256
+            path=derivative.path,
+            storage_key=key,
+            sha256=derivative.sha256,
+            # Measured by the transcode, off the file it just wrote. This is the geometry the
+            # detectors below are about to see, and it is carried rather than re-derived
+            # because the original's columns cannot reproduce it: ffmpeg has applied the
+            # display matrix and the even-dimension pad by this point.
+            width=derivative.width,
+            height=derivative.height,
         )
     finally:
         derivative.path.unlink(missing_ok=True)
@@ -655,6 +669,12 @@ class Evidence:
     audio_authenticity: SignalEvidence
     derivative_storage_key: str | None = None
     derivative_sha256: str | None = None
+    # The geometry of the derivative the findings above were read from, as the transcode
+    # measured it. Travels with the key for the same reason the hash does: it is a fact
+    # about that artifact, it only exists when that artifact does, and recording it apart
+    # from the key it belongs to would let the two describe different files.
+    analyzed_width: int | None = None
+    analyzed_height: int | None = None
 
     def entries(self) -> tuple[SignalEvidence, ...]:
         """The artifact-dependent findings that exist, in the order they are written.
@@ -707,6 +727,8 @@ class AnalysisTimedOut(Exception):
         produced: tuple[SignalEvidence, ...] = (),
         derivative_storage_key: str | None = None,
         derivative_sha256: str | None = None,
+        analyzed_width: int | None = None,
+        analyzed_height: int | None = None,
     ) -> None:
         self.error = error
         self.produced = produced
@@ -716,6 +738,11 @@ class AnalysisTimedOut(Exception):
         # provably exists and was provably used.
         self.derivative_storage_key = derivative_storage_key
         self.derivative_sha256 = derivative_sha256
+        # Measured off that same derivative, and kept for the same reason the evidence above
+        # is: a timeout in the audio chain does not make the geometry the detector already
+        # read any less true.
+        self.analyzed_width = analyzed_width
+        self.analyzed_height = analyzed_height
         super().__init__(type(error).__name__)
 
 
@@ -795,6 +822,8 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
                     produced=(detected, *local),
                     derivative_storage_key=artifact.storage_key,
                     derivative_sha256=artifact.sha256,
+                    analyzed_width=artifact.width,
+                    analyzed_height=artifact.height,
                 ) from error
 
             return Evidence(
@@ -808,6 +837,8 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
                 ),
                 derivative_storage_key=artifact.storage_key,
                 derivative_sha256=artifact.sha256,
+                analyzed_width=artifact.width,
+                analyzed_height=artifact.height,
             )
     except NormalizationTimeout as error:
         # Nothing artifact-dependent was reached: the transcode is what timed out, and every
@@ -900,6 +931,8 @@ def persist_evidence(
         (SignalEvidence(signal=provenance_signal, segments=[]), *evidence.entries()),
         derivative_storage_key=evidence.derivative_storage_key,
         derivative_sha256=evidence.derivative_sha256,
+        analyzed_width=evidence.analyzed_width,
+        analyzed_height=evidence.analyzed_height,
     )
 
 
@@ -909,6 +942,8 @@ def write_evidence(
     persisted: tuple[SignalEvidence, ...],
     derivative_storage_key: str | None = None,
     derivative_sha256: str | None = None,
+    analyzed_width: int | None = None,
+    analyzed_height: int | None = None,
 ) -> None:
     """Commit exactly the signals it is given, and the derivative they were read from.
 
@@ -923,7 +958,14 @@ def write_evidence(
     point: an empty row is not evidence, and a `FAILED` one would be a finding nobody made.
     """
     if derivative_storage_key is not None:
-        _record_derivative(session, claimed, derivative_storage_key, derivative_sha256)
+        _record_derivative(
+            session,
+            claimed,
+            derivative_storage_key,
+            derivative_sha256,
+            analyzed_width,
+            analyzed_height,
+        )
 
     for entry in persisted:
         entry.signal.analysis_id = claimed.analysis_id
@@ -1132,21 +1174,39 @@ def _record_derivative(
     claimed: ClaimedJob,
     storage_key: str,
     sha256: str | None,
+    analyzed_width: int | None = None,
+    analyzed_height: int | None = None,
 ) -> None:
-    """Name the artifact this analysis was detected against, now that it exists.
+    """Name the artifact this analysis was detected against, and record its shape.
 
     Only ever called with a derivative this worker created and uploaded. Media that was
     already canonical had its own key written at upload and is not touched here: there is
     no second artifact, and overwriting the column would say there was.
 
-    Takes the two values rather than the `Evidence` they used to come from, because since
+    Takes the values rather than the `Evidence` they used to come from, because since
     R1-T3 they also arrive on a job that timed out — where detection read the derivative and
     the signals that would have completed the `Evidence` do not exist.
+
+    The analysed dimensions are written here, in the same statement as the key, because they
+    describe that exact object: they were measured off the derivative by the transcode that
+    produced it, and a row naming a derivative whose geometry came from somewhere else would
+    be the very confusion this task exists to remove. They are null when the probe failed,
+    and null is written rather than skipped for the same reason — the alternative is leaving
+    an earlier value standing beside a newer artifact.
+
+    Media that was already canonical is not touched here at all. It has no derivative, its
+    key was written at upload, and its analysed dimensions were written there too from the
+    probe that admitted it.
     """
     session.execute(
         MediaFile.__table__.update()
         .where(MediaFile.analysis_id == claimed.analysis_id)
-        .values(derivative_storage_key=storage_key, derivative_sha256=sha256)
+        .values(
+            derivative_storage_key=storage_key,
+            derivative_sha256=sha256,
+            analyzed_width=analyzed_width,
+            analyzed_height=analyzed_height,
+        )
     )
 
 
@@ -1199,6 +1259,8 @@ def abandon_job(
             persisted,
             derivative_storage_key=timed_out.derivative_storage_key,
             derivative_sha256=timed_out.derivative_sha256,
+            analyzed_width=timed_out.analyzed_width,
+            analyzed_height=timed_out.analyzed_height,
         )
 
     fail_job(session, claimed, timed_out.error)

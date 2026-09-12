@@ -411,6 +411,10 @@ def test_declared_mp4_is_accepted(client, fake_session, new_temp_uploads, fake_m
             "frame_rate": 30.0,
             "pix_fmt": "yuv420p",
             "constant_frame_rate": True,
+            # No display matrix in these bytes, so no rotation is recorded. The picture is
+            # analysed at the size it is encoded at, and the probe says so rather than
+            # leaving the reader to assume it.
+            "display_rotation": 0,
         },
         "was_normalized": False,
         # An upload is never assembled: the client sends one file and the pipeline stores

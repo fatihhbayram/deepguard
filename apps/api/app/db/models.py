@@ -244,6 +244,42 @@ class MediaFile(Base):
     pix_fmt: Mapped[str | None] = mapped_column(String(32), nullable=True)
     constant_frame_rate: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
+    # How the original's container says its picture should be turned for display, in degrees
+    # clockwise: 0, 90, 180 or 270. Read from the display matrix, or from the legacy
+    # `rotate` tag for media that carries only that — see `app.media._parse_display_rotation`
+    # for the two conventions and how they are reconciled.
+    #
+    # Null means the row predates this column, which is not the same fact as `0`. `0` is a
+    # probe that ran and found no rotation recorded; null is no probe for rotation having
+    # happened at all, and resolving it to `0` would state an upright original on evidence
+    # nobody gathered.
+    #
+    # Nothing reads this to decide anything. It explains the divergence between the two
+    # dimension pairs below rather than producing either of them, and no risk rule,
+    # threshold or detector sees it.
+    display_rotation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # The picture size of the artifact a detector was actually pointed at, probed from that
+    # artifact's own bytes.
+    #
+    # `width`/`height` above are the *original's* coded dimensions, and for a rotated phone
+    # video they are not what any detector saw: ffmpeg bakes the display matrix into the
+    # derivative, so a 1920x1080 original becomes a genuine 1080x1920 derivative, and the
+    # even-dimension pad can shift a side by a pixel on top of that. Reporting the original's
+    # figures as the analysed ones told the reader a detector examined geometry it never
+    # received, which is the error this pair exists to end.
+    #
+    # Never inferred. These are measured off the file — the derivative when one was
+    # transcoded, the original when it was canonical enough to be sent as-is — because the
+    # alternative is reimplementing ffmpeg's geometry here and trusting it to stay in step.
+    #
+    # Null in three cases, all of them honest: a row written before this column existed, a
+    # job whose transcode never produced a derivative to measure, and a derivative that was
+    # produced but could not be probed. A reader must take null as "not recorded" and fall
+    # back to reporting the original's encoded size as such — never as the analysed size.
+    analyzed_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    analyzed_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Whether this media has to be transcoded before a detector can read it. Decided at
     # upload from the probe, because that decision needs `major_brand` and no column
     # holds it — the worker could not re-derive it from this table. Past tense is

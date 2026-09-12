@@ -248,3 +248,68 @@ def test_the_derivative_is_hashed_from_its_own_bytes(monkeypatch, tmp_path):
         assert derivative.path.suffix == ".mp4"
     finally:
         derivative.path.unlink(missing_ok=True)
+
+
+# Derivative geometry. The transcode is where the analysed picture stops being the same
+# shape as the encoded one — ffmpeg applies the display matrix and the even-dimension pad —
+# so the derivative is measured rather than reasoned about.
+
+
+def test_the_derivative_is_measured_rather_than_derived(monkeypatch, tmp_path):
+    """The rotated-phone case, end to end through this module.
+
+    A 1920x1080 original with a quarter turn is written out as a real 1080x1920 picture.
+    Nothing here is told that, and nothing computes it: the figures come back from a probe
+    of the file ffmpeg produced.
+    """
+    async def fake_ffmpeg(source, destination, frame_rate):
+        Path(destination).write_bytes(b"rotated-derivative")
+
+    probed = []
+
+    async def fake_probe(path):
+        probed.append(Path(path))
+        return 1080, 1920
+
+    monkeypatch.setattr(normalization, "_run_ffmpeg", fake_ffmpeg)
+    monkeypatch.setattr(normalization, "probe_dimensions", fake_probe)
+
+    derivative = asyncio.run(normalization.normalize_to_mp4(tmp_path / "in.mov", metadata()))
+
+    try:
+        assert (derivative.width, derivative.height) == (1080, 1920)
+        # Measured off the derivative, not the source it was made from.
+        assert probed == [derivative.path]
+    finally:
+        derivative.path.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [normalization.MediaProbeError("no video stream"), normalization.MediaProbeUnavailable("gone")],
+)
+def test_an_unmeasurable_derivative_is_still_a_usable_derivative(monkeypatch, tmp_path, failure):
+    """A probe that fails costs the figures and nothing else.
+
+    ffmpeg wrote a file it was happy with, and detection runs against it exactly as it
+    would have. Turning this into a `NormalizationError` would refuse detectable media over
+    a reporting field, so the columns go null and the artifact goes downstream.
+    """
+    async def fake_ffmpeg(source, destination, frame_rate):
+        Path(destination).write_bytes(b"derivative-bytes")
+
+    async def failing_probe(path):
+        raise failure
+
+    monkeypatch.setattr(normalization, "_run_ffmpeg", fake_ffmpeg)
+    monkeypatch.setattr(normalization, "probe_dimensions", failing_probe)
+
+    derivative = asyncio.run(normalization.normalize_to_mp4(tmp_path / "in.mkv", metadata()))
+
+    try:
+        assert derivative.width is None and derivative.height is None
+        # The artifact itself is untouched by the failed measurement.
+        assert derivative.path.exists()
+        assert derivative.sha256 == hashlib.sha256(b"derivative-bytes").hexdigest()
+    finally:
+        derivative.path.unlink(missing_ok=True)

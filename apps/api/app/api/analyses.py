@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 from sqlalchemy import and_, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased
@@ -437,13 +437,64 @@ class MediaFacts(BaseModel):
 
     format_name: str
     codec_name: str
-    width: int
-    height: int
+    # The original's *coded* picture size, as ffprobe read it out of the submitted bytes —
+    # before any display matrix is applied. Named for what it is since the rotated-video
+    # fix: a bare `width` invited every reader to take it as the geometry a detector saw,
+    # and for a rotated phone video it is not.
+    original_width: int
+    original_height: int
+    # What the original's container asks for when the picture is displayed, in degrees
+    # clockwise. `0` when the probe found no rotation recorded; null on a row from before
+    # rotation was read at all, which is the absence of the record rather than an upright
+    # original.
+    #
+    # Reported as the explanation for a divergence between the two pairs, never as the
+    # derivation of one. A reader must not multiply this out to work out what was analysed;
+    # the analysed figures below are measured, and they are the answer.
+    display_rotation: int | None = None
+    # The picture size of the artifact a detector was actually handed, measured off that
+    # artifact — the transcoded derivative where one was produced, the original itself where
+    # it was canonical enough to send unchanged.
+    #
+    # Null means not recorded, and there are only honest reasons for it: an analysis from
+    # before this was measured, a job whose transcode never produced an artifact, or a
+    # derivative that could not be probed. A reader that filled the gap with
+    # `original_width` would be asserting the exact thing this pair was added to stop.
+    analyzed_width: int | None = None
+    analyzed_height: int | None = None
     duration: float
     frame_rate: float
     # Null whenever ffprobe reported no pixel format for the stream.
     pix_fmt: str | None
     constant_frame_rate: bool
+
+    # The names this object carried before the two dimension pairs were separated, kept so
+    # that splitting them did not silently break a reader written against the old shape.
+    #
+    # They are aliases of the *original* pair and nothing else. That is the same meaning
+    # they have always had — these fields were only ever `media_files.width`/`height`, the
+    # original's coded size — so an existing reader keeps getting exactly the figures it
+    # was getting before, and the fix takes nothing away from it. What changed is that the
+    # analysed geometry is now stated separately instead of being confused with this.
+    #
+    # They must never be made to follow `analyzed_width`/`analyzed_height`. A reader that
+    # asks for `width` is asking the old question, and quietly answering the new one would
+    # turn a compatibility shim into the exact misreporting this task removed.
+    #
+    # Computed rather than stored, so there is one source of truth and no way for the alias
+    # and the field it mirrors to drift apart.
+
+    @computed_field
+    @property
+    def width(self) -> int:
+        """Deprecated alias of `original_width`; never the analysed width."""
+        return self.original_width
+
+    @computed_field
+    @property
+    def height(self) -> int:
+        """Deprecated alias of `original_height`; never the analysed height."""
+        return self.original_height
 
 
 class RiskContribution(BaseModel):
@@ -795,6 +846,25 @@ def persist_analysis(
             frame_rate=metadata.frame_rate,
             pix_fmt=metadata.pix_fmt,
             constant_frame_rate=metadata.constant_frame_rate,
+            # What the container asks for when this picture is displayed, recorded so a
+            # report can explain a divergence between the two dimension pairs. It drives
+            # nothing: the analysed geometry below is measured, never computed from this.
+            display_rotation=metadata.display_rotation,
+            # The analysed dimensions, but only for media that needs no derivative — which
+            # is the same condition, and the same reasoning, as `canonical_key` above. When
+            # the original is sent to the detector unchanged, the artifact a detector sees
+            # *is* these bytes, and the probe that just admitted them measured exactly that
+            # file. Nothing is inferred and no rotation arithmetic happens: the figures are
+            # the ones ffprobe read out of the artifact itself.
+            #
+            # Null when a transcode is owed, because the artifact that will be analysed does
+            # not exist yet. The worker measures it and fills these in alongside
+            # `derivative_storage_key`, in the same statement, once there is a real file to
+            # measure — writing the original's figures here in the meantime would state the
+            # analysed geometry before anything had been analysed, and for a rotated phone
+            # video it would state it wrongly.
+            analyzed_width=None if was_normalized else metadata.width,
+            analyzed_height=None if was_normalized else metadata.height,
             was_normalized=was_normalized,
             was_assembled=was_assembled,
             acquisition_method=acquisition_method,
@@ -1537,6 +1607,9 @@ def analysis_evidence_select():
                 MediaFile.codec_name,
                 MediaFile.width,
                 MediaFile.height,
+                MediaFile.display_rotation,
+                MediaFile.analyzed_width,
+                MediaFile.analyzed_height,
                 MediaFile.duration,
                 MediaFile.frame_rate,
                 MediaFile.pix_fmt,
@@ -1681,8 +1754,15 @@ def analysis_payloads(session: Session, rows: list[Any]) -> list[AnalysisSummary
             media=MediaFacts(
                 format_name=row.format_name,
                 codec_name=row.codec_name,
-                width=row.width,
-                height=row.height,
+                # Passed through exactly as stored, null included. The analysed pair is null
+                # on every row analysed before it was measured, and stays null: substituting
+                # the encoded figures would turn a gap in the record into a false claim about
+                # what a detector examined.
+                original_width=row.width,
+                original_height=row.height,
+                display_rotation=row.display_rotation,
+                analyzed_width=row.analyzed_width,
+                analyzed_height=row.analyzed_height,
                 duration=row.duration,
                 frame_rate=row.frame_rate,
                 pix_fmt=row.pix_fmt,

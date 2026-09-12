@@ -169,7 +169,38 @@ function MediaSection({
         <Field label="Declared content type" value={analysis.declared_content_type} />
         <Field label="Container (ffprobe)" value={media.format_name} />
         <Field label="Video codec" value={media.codec_name} />
-        <Field label="Resolution" value={`${media.width} × ${media.height}`} />
+        {/* Two figures, because a rotated video has two, and one label would have to be
+            wrong about one of them. The original is what the submitted bytes encode; the
+            analysed figure is what the detectors were handed, measured off that artifact
+            after ffmpeg applied the display matrix. A phone video encoded 1920×1080 with a
+            quarter turn is analysed as a real 1080×1920 picture, and a report that printed
+            only the first was telling the reader a detector examined geometry it never
+            received.
+
+            On an analysis from before that was measured the second figure is absent, and it
+            stays absent. Filling it with the encoded size would restate the original claim
+            as though it had been checked. */}
+        <Field
+          label="Original encoded resolution"
+          value={`${media.original_width} × ${media.original_height}`}
+        />
+        <Field
+          label="Analysed resolution"
+          value={
+            media.analyzed_width !== null && media.analyzed_height !== null
+              ? `${media.analyzed_width} × ${media.analyzed_height}`
+              : ABSENT
+          }
+        />
+        {/* Shown only when there is a turn to explain. `0` on every upright video would be a
+            row of noise, and a null — nobody probed this row for rotation — is not a fact
+            about the picture worth printing beside one. */}
+        {media.display_rotation !== null && media.display_rotation !== 0 && (
+          <Field
+            label="Display rotation"
+            value={`${media.display_rotation}° clockwise`}
+          />
+        )}
         <Field label="Frame rate" value={`${frameRateText(media.frame_rate)} fps`} />
         <Field label="Duration" value={`${media.duration.toFixed(2)} s`} />
         <Field label="Pixel format" value={media.pix_fmt ?? ABSENT} />
