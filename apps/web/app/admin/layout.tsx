@@ -13,11 +13,11 @@
  * also case-sensitive, and the API spells the role in capitals.
  *
  * Since R8-T3 it also carries the surface's own navigation, which is the one piece of markup
- * it owns. There are three administrative screens now — the accounts, the detection queue and
- * the operational summary — and a link to each from a place that is on all of them beats each
- * page linking to the others, which is what it was doing while there were two. It is a strip
- * of links and not a shell: the pages below still own their own `main`, their own heading and
- * their own ground.
+ * it owns. There are four administrative screens now — the accounts, the detection queue, the
+ * operational summary and the audit log — and a link to each from a place that is on all of
+ * them beats each page linking to the others, which is what it was doing while there were two.
+ * It is a strip of links and not a shell: the pages below still own their own `main`, their own
+ * heading and their own ground.
  *
  * Like the workspace guard, this is a signpost rather than a lock. The privileged data an
  * administrator can read is privileged in the API — `app/web_auth.py` makes the same check
@@ -33,6 +33,7 @@ import Link from "next/link";
 import { fetchSession } from "../analysis";
 import {
   ADMIN_ANALYTICS_PATH,
+  ADMIN_AUDIT_PATH,
   ADMIN_JOBS_PATH,
   ADMIN_PATH,
   LOGIN_PATH,
@@ -90,6 +91,9 @@ export default async function AdminLayout({
         </Link>
         <Link href={ADMIN_ANALYTICS_PATH} className="text-sm text-muted hover:text-bone">
           Analytics
+        </Link>
+        <Link href={ADMIN_AUDIT_PATH} className="text-sm text-muted hover:text-bone">
+          Audit
         </Link>
       </nav>
       {children}

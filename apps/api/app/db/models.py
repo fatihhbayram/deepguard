@@ -19,6 +19,12 @@ Apart from all of them is `shadow_runs` (R6-T1): what an uncalibrated experiment
 observed about an analysis, kept in a table no customer-facing reader and no risk rule names.
 Its docstring says why that separation is structural rather than a filter.
 
+Since R8-T5 there is also `admin_audit_events`: an append-only record of the privileged
+mutations an administrator makes to somebody else's account. It is the one table here that
+deliberately duplicates data — the two email snapshots are copies of `users.email` frozen at
+the moment of the change — because an audit row is a historical statement and a join would
+let a later rename rewrite what the record says happened.
+
 Media identity is not analysis identity. Storage keys and hashes are content-addressed,
 so the same bytes can legitimately be uploaded and analysed more than once; none of
 those columns is unique.
@@ -29,6 +35,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -874,4 +881,115 @@ class ShadowRun(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+
+# What an audit row says was done. One action today, because there is one privileged mutation
+# in this application: `PATCH /api/v1/admin/users/{id}`. Named as a constant rather than
+# written as a literal at the one call site so that the writer, the reader and the test that
+# proves they agree all name the same thing.
+#
+# Deliberately coarse. The action is "an administrator changed this account", and *what*
+# changed is the `changes` payload — a taxonomy that split this into USER_ROLE_CHANGED and
+# USER_DEACTIVATED would have to decide what to call the request that does both, and would
+# make a reader parse the action name to learn something the payload already states exactly.
+AUDIT_ACTION_USER_UPDATED = "USER_UPDATED"
+
+# What kind of thing an audit row is about. `target_id` is a string rather than a typed
+# foreign key precisely so this column can mean something: the next auditable object will not
+# be a user, and a row that names its own type is a row that stays readable when it is not.
+AUDIT_TARGET_USER = "USER"
+
+
+class AdminAuditEvent(Base):
+    """One privileged change an administrator made, recorded as it happened (R8-T5).
+
+    **Append-only, and that is a property of the application rather than of the table.** There
+    is no route that deletes or edits one of these rows, and `app/api/admin_audit.py` offers
+    nothing but a GET — the reasoning is stated there. PostgreSQL would happily accept an
+    UPDATE; what makes this an audit log is that nothing in the codebase issues one.
+
+    **Written in the same transaction as the change it describes.** `update_user` adds the
+    event to the session that holds the mutated `User` and commits both together, so there is
+    no window in which the account has been changed and the record of it has not — and a
+    request that fails its invariant check rolls back the event along with the change it never
+    made. An audit log written afterwards, or by a listener, is a log that disagrees with the
+    database exactly when something went wrong, which is the only time anybody reads it.
+
+    **The two email snapshots are copies on purpose.** They are `users.email` as it read at
+    the moment of the change, frozen. The obvious alternative — join to `users` at read time —
+    would mean that renaming an account silently rewrote the history of what it did, and that
+    deleting one blanked it. An audit row is a statement about the past and has to keep saying
+    the same thing; that is worth the duplication, and it is the one place in this schema
+    where duplication is the correct answer.
+
+    **Nothing here points at another row.** Neither the actor nor the target is a foreign key,
+    so no part of this table can be made to disappear, cascade or blank out by something that
+    happens to the accounts it describes. That is what lets these rows outlive the lifecycle of
+    the people in them, which is the whole proposition of an audit log.
+
+    What is never in here: a password hash, a session token, a cookie, an API key. `changes`
+    holds `role` and `is_active` and nothing else — both are already visible to every
+    administrator through the account listing, so the audit log does not widen what anybody
+    can see. It records who did it and when, which the listing cannot.
+    """
+
+    __tablename__ = "admin_audit_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+
+    # Who made the change. Taken from the `require_admin` dependency at the call site, never
+    # from the request body — an actor a caller can name is not an actor, and this column is
+    # the whole point of the table.
+    #
+    # **Deliberately not a foreign key.** It holds a `users.id` and is not constrained to one,
+    # which is the same decision `target_id` makes one field down and is made here for the same
+    # reason: an audit event is a historical fact, and a fact that the database can refuse to
+    # keep once the account it names is gone is not one. A foreign key would make this table an
+    # obstacle to deleting a user — `RESTRICT` by blocking it outright, `CASCADE` by destroying
+    # exactly the evidence the log exists to preserve, and `SET NULL` by quietly erasing who
+    # did it. All three let the account lifecycle edit the past.
+    #
+    # What makes the row still readable after such a deletion is that it does not depend on the
+    # account at all: `actor_email_snapshot` beside this column was frozen at the time, so the
+    # event names the administrator in its own right rather than by pointing at a row that may
+    # no longer be there. The id remains the durable handle for correlating events by actor,
+    # and it is indexed for that; it is simply not a promise that the account still exists.
+    actor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+
+    # The actor's address as it read at the time. Nullable because a snapshot is a record of
+    # what was known, and a null here would mean it was not — not that the account had no
+    # address. See the class docstring for why this is a copy and not a join.
+    actor_email_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # What sort of object was changed, and which one. The id is text rather than a foreign key
+    # to `users`: a typed column would have to be replaced the first time something that is
+    # not a user becomes auditable, and a foreign key would put this table back in the
+    # business of caring whether the row it describes still exists.
+    target_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_email_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # The fields that actually moved, as `{"field": {"old": ..., "new": ...}}`. Only the ones
+    # that changed: a payload restating an untouched field would make every row look like a
+    # change to everything, and the no-op case would produce a row saying nothing happened.
+    #
+    # Plain `JSON`, not the `JSONB` the rest of this module uses. Nothing queries inside this
+    # document — it is read back whole, by one screen, in the order it was written — and JSONB
+    # buys indexable containment operators at the cost of not round-tripping key order. Here
+    # the ordering is the only structure the payload has.
+    changes: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+    # The correlation id of the request that made the change, when there was one. Same id the
+    # application's logs carry, so an audit row and the log lines around it can be lined up
+    # without matching on timestamps.
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Indexed because the only read this table has orders by it, newest first.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
     )

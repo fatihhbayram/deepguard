@@ -21,6 +21,10 @@ column added to `User` later cannot leak by being added.
 
 Two rules constrain what a PATCH may do, and both are enforced here rather than in the
 browser. They are stated in full on `update_user`.
+
+Since R8-T5 a successful change also writes an `AdminAuditEvent` — in the same transaction,
+so the account and the record of who changed it commit or roll back together. `update_user`
+says what that means for the request that changes nothing and for the one that is refused.
 """
 
 import logging
@@ -32,8 +36,16 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import USER_ROLE_ADMIN, USER_ROLE_USER, User
+from app.db.models import (
+    AUDIT_ACTION_USER_UPDATED,
+    AUDIT_TARGET_USER,
+    USER_ROLE_ADMIN,
+    USER_ROLE_USER,
+    AdminAuditEvent,
+    User,
+)
 from app.db.session import get_session
+from app.observability import current_request_id
 from app.web_auth import require_admin, require_same_origin
 
 logger = logging.getLogger(__name__)
@@ -154,6 +166,31 @@ def refused(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
 
+def account_changes(user: User, role: str, is_active: bool) -> dict[str, dict[str, object]]:
+    """What this request would actually change about the account, field by field.
+
+    Only the fields that genuinely move. A payload restating an untouched field would make
+    every audit row read as a change to everything, and — more importantly — it would make the
+    "did anything change" question below unanswerable, because a dict that always has two keys
+    in it is never empty.
+
+    Computed against the stored row, so it must be called *before* the mutation. After the
+    assignment the old values are gone and every diff is empty.
+
+    Booleans and strings go into this dict as themselves; it is serialized to JSON as the
+    event's `changes` payload, and nothing here is a hash, a token or an address.
+    """
+    changes: dict[str, dict[str, object]] = {}
+
+    if user.role != role:
+        changes["role"] = {"old": user.role, "new": role}
+
+    if user.is_active != is_active:
+        changes["is_active"] = {"old": user.is_active, "new": is_active}
+
+    return changes
+
+
 def other_active_admins(session: Session, user: User) -> int:
     """How many active administrators there would still be if this account were not one.
 
@@ -252,6 +289,21 @@ def update_user(
     404 for an id that names nothing. Not the uniform 404 the analyses routes give an
     unreachable record, and for a reason: there is nothing to conceal from this caller, who is
     entitled to list every account in the system and can see for themselves which ids exist.
+
+    **A change that sticks is recorded; nothing else is.** Since R8-T5 a successful mutation
+    also writes one `AdminAuditEvent`, added to this same session so that the account and the
+    record of who changed it commit together. Three cases fall out of where that `session.add`
+    sits, and all three are deliberate:
+
+    A request that would change nothing returns before any of it — no UPDATE, no event. A
+    request refused by either rule above raises before it, so the event is never added; and
+    even if a later rule were added below the `add`, the raise would roll the session back and
+    take the event with it. And a request that succeeds writes exactly one event, never two,
+    because the fields it touched are one row's worth of change however many of them moved.
+
+    The audit row is not a second answer to "what does this account look like now" — that is
+    the account itself. It is the answer to "who made it look like this, and when", which is
+    the one question the `users` table cannot answer at all.
     """
     if user_id == administrator.id:
         logger.info("Administrator %s was refused a change to their own account.", administrator.id)
@@ -272,6 +324,20 @@ def update_user(
     role = change.role if change.role is not None else target.role
     is_active = change.is_active if change.is_active is not None else target.is_active
 
+    # What would actually move. Computed here, against the row as it still stands, because
+    # after the assignment below there is nothing left to compare against.
+    changes = account_changes(target, role, is_active)
+
+    # A request that changes nothing writes nothing — no UPDATE and, above all, no audit row.
+    # An audit log that records the times somebody opened the form and pressed save without
+    # touching a control is a log whose real entries are buried in noise, and the dashboard
+    # submits both controls together, so this is the common case rather than a strange one.
+    #
+    # It returns 200 with the account as it stands. The caller asked for a state and that is
+    # the state; nothing about "you asked for what was already true" is an error.
+    if not changes:
+        return visible_user(target)
+
     # Only a change that stops this account being an active administrator can reduce the
     # count, so only that case is asked about. Promoting somebody, reactivating somebody, or
     # editing an ordinary account cannot break the invariant and does not pay for a query.
@@ -284,6 +350,29 @@ def update_user(
 
     target.role = role
     target.is_active = is_active
+
+    # The record of the change, added to the session that holds the change itself so that one
+    # `commit()` writes both or neither. That is the whole reason this is here rather than in
+    # a listener or a line after the commit: those write the audit row in a second transaction,
+    # which is exactly the arrangement that produces a log entry for a change that got rolled
+    # back, or loses the entry for one that stuck.
+    #
+    # The actor is `administrator.id` — the account `require_admin` resolved the session to,
+    # never anything the request body could name. The emails are copied in as they read right
+    # now; see `AdminAuditEvent` for why they are snapshots rather than a join.
+    session.add(
+        AdminAuditEvent(
+            actor_id=administrator.id,
+            actor_email_snapshot=administrator.email,
+            action=AUDIT_ACTION_USER_UPDATED,
+            target_type=AUDIT_TARGET_USER,
+            target_id=str(target.id),
+            target_email_snapshot=target.email,
+            changes=changes,
+            request_id=current_request_id(),
+        )
+    )
+
     session.commit()
     session.refresh(target)
 

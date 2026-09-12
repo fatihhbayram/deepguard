@@ -92,6 +92,11 @@ def session(database):
     Sessions before users: `auth_sessions.user_id` is a foreign key, and an account with a
     live session cannot be deleted. Nothing here creates an analysis, which is the other thing
     that pins a user row down.
+
+    The audit events these tests now write are deliberately not swept up here. Nothing in
+    `admin_audit_events` references an account — `actor_id` is a bare UUID, by design — so an
+    account deletes cleanly with its events still standing, which is exactly the property that
+    table exists to have. Leaving them is the assertion.
     """
     users: list[uuid.UUID] = []
 

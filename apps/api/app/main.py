@@ -5,6 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.admin_analytics import router as admin_analytics_router
+from app.api.admin_audit import router as admin_audit_router
 from app.api.admin_jobs import router as admin_jobs_router
 from app.api.admin_users import router as admin_users_router
 from app.api.analyses import router as analyses_router
@@ -62,6 +63,12 @@ app.include_router(admin_jobs_router)
 # into `admin_jobs` because a route that exposes no row is a different exposure question from
 # one that exposes every job, and the two should not share a file that reviews as one.
 app.include_router(admin_analytics_router)
+# The fourth administrative module (R8-T5): what administrators have done, rather than what
+# the deployment has. Read-only like the two above it, and read-only in a stronger sense —
+# there is no route anywhere that edits or deletes one of these rows, which is what makes
+# the table append-only. The events are written by `admin_users`, inside the transaction
+# that makes the change they record; this router only reads them back.
+app.include_router(admin_audit_router)
 # The external B2B surface. Mounted under its own prefix and carrying its own API-key
 # dependency, so the internal routes above stay exactly as unauthenticated as they were.
 app.include_router(public_analyses_router)

@@ -50,6 +50,11 @@ export const ADMIN_JOBS_PATH = "/admin/jobs";
 // panel on one of the others.
 export const ADMIN_ANALYTICS_PATH = "/admin/analytics";
 
+// The audit log inside that surface (R8-T5). A fourth address on the same grounds as the
+// third: its own API, its own question. This is the only administrative screen that is
+// about the administrators rather than about the system they administer.
+export const ADMIN_AUDIT_PATH = "/admin/audit";
+
 // The privileged role, as the API spells it. It must match `USER_ROLE_ADMIN` in
 // `apps/api/app/db/models.py`, which is where a role is assigned and where every decision
 // that actually grants access is made; this is the same restating across languages that
