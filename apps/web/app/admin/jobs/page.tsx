@@ -27,7 +27,13 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { fetchSession } from "../../analysis";
-import { ADMIN_JOBS_PATH, ADMIN_PATH, LOGIN_PATH, WORKSPACE_PATH } from "../../session";
+import {
+  ADMIN_JOBS_PATH,
+  ADMIN_PATH,
+  LOGIN_PATH,
+  WORKSPACE_PATH,
+  adminAnalysisPath,
+} from "../../session";
 import { AdminJob, fetchJobs } from "../jobs";
 
 /* ------------------------------------------------------------------ *
@@ -139,8 +145,17 @@ function JobRow({ job }: { job: AdminJob }) {
           {/* The analysis first and the job second: the analysis id is what an operator has in
               front of them from the workspace, the report or a customer's message, and the job
               id is the thing they only ever learn here. */}
+          {/* A link since R8-T7: the analysis id is the handle an operator already has, and
+              the review screen is the only page that is about one analysis. The row itself
+              stays a row — nothing else in this table is clickable, and the job id below is
+              deliberately still plain text, because there is no page about a job. */}
           <div className="truncate font-mono text-[13px] text-bone" title={job.analysis_id}>
-            {job.analysis_id}
+            <Link
+              href={adminAnalysisPath(job.analysis_id)}
+              className="underline decoration-hair underline-offset-2 transition-colors duration-150 hover:decoration-rule"
+            >
+              {job.analysis_id}
+            </Link>
           </div>
           <div className="mt-1 truncate" title={job.id}>
             <Value>{`job ${job.id}`}</Value>

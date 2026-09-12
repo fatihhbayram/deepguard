@@ -25,6 +25,12 @@ deliberately duplicates data — the two email snapshots are copies of `users.em
 the moment of the change — because an audit row is a historical statement and a join would
 let a later rename rewrite what the record says happened.
 
+Since R8-T7 there is `analysis_reviews` alongside them: what a human said about an analysis,
+in its own table precisely so that it is not on `analyses`. The forensic columns there are
+written once by the worker and no administrative route may reach them; a review is a mutable
+opinion, and keeping the two in separate rows is what makes "the detectors said this, a person
+said that" readable as two statements instead of one overwritten record.
+
 Media identity is not analysis identity. Storage keys and hashes are content-addressed,
 so the same bytes can legitimately be uploaded and analysed more than once; none of
 those columns is unique.
@@ -915,6 +921,25 @@ AUDIT_ACTION_API_KEY_REVOKED = "API_KEY_REVOKED"
 # it is not.
 AUDIT_TARGET_USER = "USER"
 AUDIT_TARGET_API_KEY = "API_KEY"
+# Since R8-T7 an audit row may also be about an analysis. It is the first target type here
+# that is not a credential or an account, and it names the analysis the review was attached
+# to — never the review row, which has no identity of its own beyond the analysis it belongs
+# to.
+AUDIT_TARGET_ANALYSIS = "ANALYSIS"
+
+# The two halves of a human review's life (R8-T7), written by `admin_analyses.py`.
+#
+# Split into two actions for the reason the API key pair is split and the account change is
+# not: the first review of an analysis and a later revision of it are genuinely different
+# events. "When was this looked at" and "when was that answer changed" are separate questions,
+# and a reader of the log should not have to inspect the `changes` payload to tell which of
+# the two a row is.
+#
+# **Neither event carries the note.** `changes` records that the note moved, as a boolean, and
+# not what it moved to — see `AnalysisReview.note` for why the text stays on the review row
+# alone. The action names say a review happened; the review says what it says.
+AUDIT_ACTION_REVIEW_CREATED = "REVIEW_CREATED"
+AUDIT_ACTION_REVIEW_UPDATED = "REVIEW_UPDATED"
 
 
 class AdminAuditEvent(Base):
@@ -1008,4 +1033,152 @@ class AdminAuditEvent(Base):
     # Indexed because the only read this table has orders by it, newest first.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+
+
+# What a human reviewer has said about an analysis, as workflow state (R8-T7). Two values, and
+# the vocabulary is deliberately operational: `REVIEWED` means somebody looked, and
+# `NEEDS_FOLLOW_UP` means somebody looked and wants it looked at again.
+#
+# **Neither of them is a forensic answer, and no value here ever will be.** "Genuine", "fake",
+# "confirmed" and the like belong to `Analysis.risk_level`, which is written by the risk engine
+# under a named ruleset and a named calibration, and which nothing on this table may
+# contradict. A status that reads as a verdict would turn this row into a second, unversioned,
+# unexplainable classification of the same media sitting beside the real one — and the day the
+# two disagreed, there would be no way to say which of them the report meant.
+REVIEW_STATUS_REVIEWED = "REVIEWED"
+REVIEW_STATUS_NEEDS_FOLLOW_UP = "NEEDS_FOLLOW_UP"
+
+# Every status that may be stored. Named as a tuple so the validator, the check constraint and
+# the test that proves they agree all read the same list.
+REVIEW_STATUSES = (REVIEW_STATUS_REVIEWED, REVIEW_STATUS_NEEDS_FOLLOW_UP)
+
+# The third state, which is not in the tuple above because it is not a value: an analysis with
+# no `AnalysisReview` row has not been reviewed. It is named here because the API says the word
+# in its responses and the screen prints it, and a spelling invented separately in each of
+# those places is a spelling that eventually differs.
+#
+# Not stored, and there is no route that writes it. "Unreviewed" is the absence of the row, so
+# every analysis that existed before this table did is already in that state with nothing
+# backfilled — and un-reviewing one would be a deletion, which this application does not offer.
+REVIEW_STATUS_UNREVIEWED = "UNREVIEWED"
+
+# The longest note the column will hold. Bounded because an unbounded text field on a row an
+# administrator can rewrite is an unbounded row an administrator can rewrite; a thousand
+# characters is enough for "checked the source video against the broadcaster's upload, the
+# timestamps disagree" and short of enough to paste a case file into.
+MAX_REVIEW_NOTE_LENGTH = 1000
+
+# The constraint holding `status` to the two names above. Named here because the model, the
+# migration and the test that proves it bites all have to mean the same constraint — the same
+# reason `SINGLE_OWNER_CONSTRAINT` is a name rather than a string written three times.
+REVIEW_STATUS_CONSTRAINT = "ck_analysis_reviews_status"
+
+
+class AnalysisReview(Base):
+    """What a human said about an analysis, kept strictly apart from what the detectors said.
+
+    **This table is mutable and the forensic record is not, which is the whole reason it is a
+    table.** `Analysis` holds `risk_level`, `risk_rules_version`, `risk_calibration_id` and
+    `risk_rule_id`; `AnalysisSignal` holds what each detector answered. All of those are
+    statements about evidence, written once by the worker, and an administrator has no route to
+    any of them. The obvious alternative to this table — two more columns on `analyses` — would
+    have put a mutable opinion in the same row as the immutable measurement, and the first
+    person to write an UPDATE against that row by hand would have had every risk column within
+    reach of a typo. Here, the widest mistake anybody can make through this application is to
+    the review, and the analysis it describes is untouched by construction.
+
+    So the two layers are readable apart, and stay apart: the report renders the detector
+    result and renders the review beside it, and never merges them into one answer.
+
+    **One review per analysis, enforced by making the analysis the key.** There is no history
+    of previous notes and no second reviewer — a revision overwrites. That is a real limitation
+    and it is the deliberate one: what actually changed, when, and who did it is in
+    `admin_audit_events`, written in the same transaction as the change, which is a stronger
+    record than a version chain on this table would be and one that cannot be edited from here.
+    A second opinion, a threaded discussion, or an assignment queue are all features this
+    schema does not have; each of them is a new table when somebody has the requirement.
+
+    `ON DELETE CASCADE` from the analysis. A review of an analysis that no longer exists is not
+    a historical fact worth keeping — unlike an audit event, which is about a *person's action*
+    and survives everything — it is an annotation with nothing left to annotate.
+    """
+
+    __tablename__ = "analysis_reviews"
+
+    # In the database and not only in the request model. The status vocabulary is the one thing
+    # about this table that must never widen by accident — see `status` below — and a rule that
+    # lives only in a Pydantic model is one route away from not running.
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('%s')" % "', '".join(REVIEW_STATUSES),
+            name=REVIEW_STATUS_CONSTRAINT,
+        ),
+    )
+
+    # The analysis this is about, and the primary key. One column doing both jobs is what makes
+    # "one review per analysis" a property of the table rather than a rule the endpoint
+    # remembers: a second insert for the same analysis is a duplicate key, not a second row.
+    #
+    # A surrogate id plus a unique index would express the same constraint and would also
+    # invite a second row later by relaxing the index. There is nothing to relax here.
+    analysis_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("analyses.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    # `REVIEWED` or `NEEDS_FOLLOW_UP`. Constrained in the database as well as in the request
+    # model, because this is the column whose vocabulary the whole design rests on: a value
+    # outside the two — inserted by hand, by a migration, or by a route added later — would be
+    # a forensic-sounding word in a governance column, which is exactly what this table exists
+    # to keep out. The application would refuse it; the database refuses it too.
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    # Why, in the reviewer's own words. Plain text and nothing else: no Markdown, no HTML, no
+    # rendering of any kind on the way in or the way out. The screen prints it as text, which
+    # is what makes a note containing `<script>` a note containing `<script>` rather than an
+    # administrator-authored injection into another administrator's browser.
+    #
+    # `nullable=False` with an empty string as the "no note" value, rather than a null. The
+    # endpoint's no-op comparison is the reason: two spellings of "nothing" would make `None`
+    # and `""` compare unequal and write an audit row for a change that did not happen.
+    note: Mapped[str] = mapped_column(String(MAX_REVIEW_NOTE_LENGTH), nullable=False)
+
+    # Who reviewed it, as `users.id` — taken from the session the request authenticated with,
+    # never from anything a request body could name.
+    #
+    # **Deliberately not a foreign key**, the same decision `AdminAuditEvent.actor_id` makes and
+    # for a version of the same reason. A reference here would make this table an obstacle to
+    # removing an account: `RESTRICT` would block the deletion outright, `CASCADE` would delete
+    # the reviews that person wrote — quietly losing governance attached to analyses that are
+    # still live — and `SET NULL` would leave a review nobody signed. The id stays the durable
+    # handle for "everything this reviewer looked at", and is indexed for exactly that; it is
+    # simply not a promise that the account still exists.
+    reviewer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+
+    # The reviewer's address as it read when they last wrote this review, frozen. What keeps
+    # the row readable once the account is renamed or gone, which is the half of the decision
+    # above that makes the missing foreign key safe rather than merely convenient.
+    #
+    # Nullable because a snapshot records what was known, and a null says it was not — not that
+    # the account had no address.
+    reviewer_email_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    # When the review last actually moved. `onupdate` in the model and not only a server
+    # default, so a revision written through the ORM carries a new timestamp — and because the
+    # endpoint returns before writing when nothing changed, a request that altered nothing
+    # leaves this alone. "Last reviewed" therefore means the last time somebody changed their
+    # answer, not the last time somebody opened the form.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )

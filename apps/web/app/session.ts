@@ -62,6 +62,22 @@ export const ADMIN_AUDIT_PATH = "/admin/audit";
 // navigation links to it, and its two mutations redirect back to it.
 export const ADMIN_API_KEYS_PATH = "/admin/api-keys";
 
+// The review screen for one analysis (R8-T7), which is the first administrative address that
+// is not a fixed string — it names an analysis, so it is a function rather than a constant.
+//
+// A sixth screen and not a panel on one of the five above, because it is the only one that is
+// about a single forensic record. It is also not on the layout's navigation: there is no
+// "reviews" page to land on, only the review of a particular analysis, so the way in is a link
+// from a row that already names one.
+//
+// `encodeURIComponent` even though the id is a UUID and the API refuses anything else with a
+// 422. What it guards is this process building the address: the value reaching here comes from
+// a payload or a form field, and a helper that trusts its argument to be a UUID is a helper
+// that stops being safe the first time somebody calls it with something else.
+export function adminAnalysisPath(analysisId: string): string {
+  return `/admin/analyses/${encodeURIComponent(analysisId)}`;
+}
+
 // The privileged role, as the API spells it. It must match `USER_ROLE_ADMIN` in
 // `apps/api/app/db/models.py`, which is where a role is assigned and where every decision
 // that actually grants access is made; this is the same restating across languages that

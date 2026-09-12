@@ -4,6 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.api.admin_analyses import router as admin_analyses_router
 from app.api.admin_analytics import router as admin_analytics_router
 from app.api.admin_api_keys import router as admin_api_keys_router
 from app.api.admin_audit import router as admin_audit_router
@@ -79,6 +80,15 @@ app.include_router(admin_audit_router)
 # decision `admin_users` makes and matters more here: a route that issues credentials, reachable
 # by presenting one, would let any customer mint themselves another.
 app.include_router(admin_api_keys_router)
+# The sixth administrative module (R8-T7): the human review attached to a forensic result. It
+# is the only administrative router that writes anything about an analysis, and what it writes
+# is a row in a table of its own — `analysis_reviews` — never a column on `analyses` and never
+# a signal.
+#
+# That separation is the reason it is mounted as its own module rather than folded into the
+# read-only `admin_jobs`: an opinion about a result and the result itself have to stay legible
+# apart, and a file that can only reach the review is a file that cannot revise the evidence.
+app.include_router(admin_analyses_router)
 # The external B2B surface. Mounted under its own prefix and carrying its own API-key
 # dependency, so the internal routes above stay exactly as unauthenticated as they were.
 app.include_router(public_analyses_router)
