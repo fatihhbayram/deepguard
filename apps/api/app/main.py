@@ -5,6 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.admin_analytics import router as admin_analytics_router
+from app.api.admin_api_keys import router as admin_api_keys_router
 from app.api.admin_audit import router as admin_audit_router
 from app.api.admin_jobs import router as admin_jobs_router
 from app.api.admin_users import router as admin_users_router
@@ -69,6 +70,15 @@ app.include_router(admin_analytics_router)
 # the table append-only. The events are written by `admin_users`, inside the transaction
 # that makes the change they record; this router only reads them back.
 app.include_router(admin_audit_router)
+# The fifth administrative module (R8-T6): the credentials the public surface below
+# authenticates with. It is the only administrative router that writes something other than an
+# account, and the only place in this application that mints an API key — the verification that
+# consumes those keys stays where it is, in `app/auth.py`, untouched by this.
+#
+# Mounted on the internal prefix rather than anywhere a key could reach, which is the same
+# decision `admin_users` makes and matters more here: a route that issues credentials, reachable
+# by presenting one, would let any customer mint themselves another.
+app.include_router(admin_api_keys_router)
 # The external B2B surface. Mounted under its own prefix and carrying its own API-key
 # dependency, so the internal routes above stay exactly as unauthenticated as they were.
 app.include_router(public_analyses_router)

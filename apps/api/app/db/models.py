@@ -884,10 +884,9 @@ class ShadowRun(Base):
     )
 
 
-# What an audit row says was done. One action today, because there is one privileged mutation
-# in this application: `PATCH /api/v1/admin/users/{id}`. Named as a constant rather than
-# written as a literal at the one call site so that the writer, the reader and the test that
-# proves they agree all name the same thing.
+# What an audit row says was done. Named as constants rather than written as literals at the
+# call sites so that the writer, the reader and the test that proves they agree all name the
+# same thing.
 #
 # Deliberately coarse. The action is "an administrator changed this account", and *what*
 # changed is the `changes` payload — a taxonomy that split this into USER_ROLE_CHANGED and
@@ -895,10 +894,27 @@ class ShadowRun(Base):
 # make a reader parse the action name to learn something the payload already states exactly.
 AUDIT_ACTION_USER_UPDATED = "USER_UPDATED"
 
+# The two halves of an API key's life, added in R8-T6 and written by `admin_api_keys.py`.
+#
+# Split into two actions where the account change above is deliberately one, because these are
+# genuinely two different events rather than two fields of the same one: a key is created once
+# and revoked once, the two carry different `changes` payloads, and an operator reading the log
+# for "when did this customer lose access" is asking about exactly one of them. The coarseness
+# argument that keeps USER_UPDATED single does not apply — there is no request that does both.
+#
+# **Neither event carries the key.** Not the plaintext, which exists only in the response to
+# the creation request and is never written anywhere, and not `key_hash` either: the digest is
+# the credential's stored form, and a log that reprints it has widened what a reader of the
+# audit screen can see. What these rows say is which key, by id, and who did it.
+AUDIT_ACTION_API_KEY_CREATED = "API_KEY_CREATED"
+AUDIT_ACTION_API_KEY_REVOKED = "API_KEY_REVOKED"
+
 # What kind of thing an audit row is about. `target_id` is a string rather than a typed
-# foreign key precisely so this column can mean something: the next auditable object will not
-# be a user, and a row that names its own type is a row that stays readable when it is not.
+# foreign key precisely so this column can mean something — and since R8-T6 it earns that: an
+# API key is not a user, and a row that names its own type is a row that stays readable when
+# it is not.
 AUDIT_TARGET_USER = "USER"
+AUDIT_TARGET_API_KEY = "API_KEY"
 
 
 class AdminAuditEvent(Base):

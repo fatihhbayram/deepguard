@@ -13,9 +13,12 @@
  * also case-sensitive, and the API spells the role in capitals.
  *
  * Since R8-T3 it also carries the surface's own navigation, which is the one piece of markup
- * it owns. There are four administrative screens now — the accounts, the detection queue, the
- * operational summary and the audit log — and a link to each from a place that is on all of
- * them beats each page linking to the others, which is what it was doing while there were two.
+ * it owns. There are five administrative screens now — the accounts, the detection queue, the
+ * operational summary, the audit log and the API keys — and a link to each from a place that is
+ * on all of them beats each page linking to the others, which is what it was doing while there
+ * were two. The last of them is the only one about the public API rather than about this
+ * application, and it is in the same strip because it is the same audience: one operator, one
+ * surface, one place to find everything they administer.
  * It is a strip of links and not a shell: the pages below still own their own `main`, their own
  * heading and their own ground.
  *
@@ -33,6 +36,7 @@ import Link from "next/link";
 import { fetchSession } from "../analysis";
 import {
   ADMIN_ANALYTICS_PATH,
+  ADMIN_API_KEYS_PATH,
   ADMIN_AUDIT_PATH,
   ADMIN_JOBS_PATH,
   ADMIN_PATH,
@@ -94,6 +98,9 @@ export default async function AdminLayout({
         </Link>
         <Link href={ADMIN_AUDIT_PATH} className="text-sm text-muted hover:text-bone">
           Audit
+        </Link>
+        <Link href={ADMIN_API_KEYS_PATH} className="text-sm text-muted hover:text-bone">
+          API keys
         </Link>
       </nav>
       {children}

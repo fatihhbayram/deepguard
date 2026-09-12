@@ -55,6 +55,13 @@ export const ADMIN_ANALYTICS_PATH = "/admin/analytics";
 // about the administrators rather than about the system they administer.
 export const ADMIN_AUDIT_PATH = "/admin/audit";
 
+// The API key management screen inside that surface (R8-T6). A fifth address, and the only
+// administrative screen that is about the *other* surface — the credentials B2B callers
+// authenticate `/api/public/v1` with, rather than anything about this application's own
+// accounts. Named here for the reason the four above are: the page links to it, the layout's
+// navigation links to it, and its two mutations redirect back to it.
+export const ADMIN_API_KEYS_PATH = "/admin/api-keys";
+
 // The privileged role, as the API spells it. It must match `USER_ROLE_ADMIN` in
 // `apps/api/app/db/models.py`, which is where a role is assigned and where every decision
 // that actually grants access is made; this is the same restating across languages that
