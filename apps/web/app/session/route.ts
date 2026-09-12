@@ -21,7 +21,7 @@ import { NextResponse } from "next/server";
 
 import { apiUrl } from "../analysis";
 import { requestIdHeaders } from "../observability";
-import { LOGIN_PATH, isSameOrigin } from "../session";
+import { LOGIN_PATH, WORKSPACE_PATH, isSameOrigin } from "../session";
 
 // How long the API is given to answer a sign-in. Argon2id is deliberately slow — that is
 // what makes a stolen hash expensive to attack — so this is generous next to the read
@@ -87,7 +87,13 @@ export async function POST(request: Request): Promise<NextResponse> {
     return failed();
   }
 
-  const signedIn = new NextResponse(null, { status: 303, headers: { Location: "/" } });
+  // Into the workspace, not to `/`: since R8-T1 that address is the public page, and landing
+  // a reader who has just signed in back on the marketing surface would read as a sign-in
+  // that did not take.
+  const signedIn = new NextResponse(null, {
+    status: 303,
+    headers: { Location: WORKSPACE_PATH },
+  });
 
   // Every `Set-Cookie` the API sent, verbatim and in order. `getSetCookie` rather than
   // `get("set-cookie")`, which would fold multiple cookies into one comma-joined string and

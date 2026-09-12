@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
-import { LOGIN_PATH } from "../../session";
+import { LOGIN_PATH, WORKSPACE_PATH } from "../../../session";
 import {
   ACQUISITION_METHOD_URL,
   ActiveSpeakerSignal,
@@ -33,7 +33,7 @@ import {
   isSupportedRiskLevel,
   riskRationale,
   unavailableReasonText,
-} from "../../analysis";
+} from "../../../analysis";
 
 import { PrintButton } from "./print-button";
 
@@ -1295,7 +1295,7 @@ export default async function Report({ params }: { params: Promise<{ id: string 
       // suggest they had landed somewhere else.
       <div className="light flex flex-1 flex-col bg-paper text-doc">
         <main className="mx-auto w-full max-w-3xl px-6 py-10 sm:px-8">
-          <Link href="/" className="text-sm underline print:hidden">
+          <Link href={WORKSPACE_PATH} className="text-sm underline print:hidden">
             ← Back to dashboard
           </Link>
           <h1 className="mt-6 text-xl font-semibold">Report unavailable</h1>
@@ -1345,7 +1345,7 @@ export default async function Report({ params }: { params: Promise<{ id: string 
           </div>
           {/* Screen-only controls. Hidden in print so the document carries no dead UI. */}
           <div className="flex shrink-0 items-center gap-4 print:hidden">
-            <Link href="/" className="text-sm underline">
+            <Link href={WORKSPACE_PATH} className="text-sm underline">
               ← Dashboard
             </Link>
             <PrintButton />

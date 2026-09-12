@@ -24,6 +24,25 @@ export const SESSION_COOKIE_NAME = "deepguard_session";
 // Where an unauthenticated reader is sent, and where a sign-out ends.
 export const LOGIN_PATH = "/login";
 
+// The root of the authenticated workspace, and so the destination of every "back to the
+// application" move this server makes: the redirect after a successful sign-in, the one the
+// upload route sends the browser back along, and the fallback a non-admin is returned to.
+// Named because `/` stopped being that place in R8-T1 — it is the public surface now — and a
+// literal `"/"` left in any of those three spots would quietly land a signed-in reader on
+// the marketing page instead of their dashboard.
+export const WORKSPACE_PATH = "/app";
+
+// The privileged role, as the API spells it. It must match `USER_ROLE_ADMIN` in
+// `apps/api/app/db/models.py`, which is where a role is assigned and where every decision
+// that actually grants access is made; this is the same restating across languages that
+// `SESSION_COOKIE_NAME` above is, and for the same reason — there is no way to derive one
+// from the other, so the pairing is stated in both.
+//
+// What this constant is for is presentation and navigation, not authorization. The API
+// narrows every listing by role in its own `WHERE` clause, and the `/admin` guard that reads
+// this is a signpost in front of a door the API keeps locked, not the lock.
+export const USER_ROLE_ADMIN = "ADMIN";
+
 // How long the API is given to answer "who is this session". It is one indexed lookup, so
 // it is held to the same short bound as the other reads the dashboard does on render.
 export const SESSION_TIMEOUT_MS = 5000;

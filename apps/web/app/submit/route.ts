@@ -31,7 +31,13 @@ import { NextResponse } from "next/server";
 
 import { HEALTH_TIMEOUT_MS, apiUrl } from "../analysis";
 import { logError, logInfo, requestIdHeaders } from "../observability";
-import { LOGIN_PATH, forwardedOrigin, isSameOrigin, sessionHeaders } from "../session";
+import {
+  LOGIN_PATH,
+  WORKSPACE_PATH,
+  forwardedOrigin,
+  isSameOrigin,
+  sessionHeaders,
+} from "../session";
 
 // How long the API is given to answer. A URL submission waits for the download, which is a
 // real network fetch of up to 100 MiB, so this is generous where the dashboard's read
@@ -58,7 +64,10 @@ const MAX_ERROR_LENGTH = 200;
 function back(params: Record<string, string>): NextResponse {
   const query = new URLSearchParams(params);
 
-  return new NextResponse(null, { status: 303, headers: { Location: `/?${query}` } });
+  return new NextResponse(null, {
+    status: 303,
+    headers: { Location: `${WORKSPACE_PATH}?${query}` },
+  });
 }
 
 /** What the API said went wrong, or a generic statement when it said nothing usable. */

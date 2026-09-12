@@ -32,6 +32,30 @@ import type { NextConfig } from "next";
 const UPLOAD_TRANSPORT_CEILING_BYTES = 110 * 1024 * 1024;
 
 const nextConfig: NextConfig = {
+  // Where the reports used to be (R8-T1).
+  //
+  // `/report/[id]` was the report's address for the whole of R7, and those addresses are in
+  // the places a forensic report ends up: a case file, a mail thread, somebody's bookmarks.
+  // Moving the route under `/app` without this would turn every one of them into a 404 —
+  // silently, and only for the readers who kept a link rather than navigating from the
+  // dashboard.
+  //
+  // Stated here rather than as a server component at the old path that calls `redirect()`.
+  // Both work; this one is checked before the filesystem, so the answer is one 308 with no
+  // React render behind it, and it leaves nothing under `/report` for a later reader to
+  // mistake for a live route.
+  //
+  // `permanent: true` — 308, not 301. The status preserves the request method, and it tells
+  // a client that kept the old address to stop asking for it. The move is not provisional.
+  redirects() {
+    return [
+      {
+        source: "/report/:id",
+        destination: "/app/report/:id",
+        permanent: true,
+      },
+    ];
+  },
   experimental: {
     // Next.js caps the request body it will carry through middleware, and this application
     // runs middleware on every path (`middleware.ts` matches everything but static assets),
