@@ -4,6 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.api.admin_users import router as admin_users_router
 from app.api.analyses import router as analyses_router
 from app.api.auth import router as auth_router
 from app.api.public_v1.analyses import router as public_analyses_router
@@ -39,6 +40,13 @@ app.include_router(url_analyses_router)
 # routes above demand one of these sessions — per route, through `require_user`, and never
 # through a blanket middleware, so `/health` and the public surface stay untouched by it.
 app.include_router(auth_router)
+# Account administration, on the same internal prefix again and behind `require_admin` rather
+# than the `require_user` the routes above carry. It is mounted separately from the auth
+# router deliberately: `/api/v1/auth` is what every signed-in browser talks to about itself,
+# and `/api/v1/admin` is what one role talks to about everybody else — one module per audience
+# keeps the privileged routes from sitting one forgotten dependency away from the unprivileged
+# ones.
+app.include_router(admin_users_router)
 # The external B2B surface. Mounted under its own prefix and carrying its own API-key
 # dependency, so the internal routes above stay exactly as unauthenticated as they were.
 app.include_router(public_analyses_router)

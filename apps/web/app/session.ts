@@ -32,6 +32,12 @@ export const LOGIN_PATH = "/login";
 // the marketing page instead of their dashboard.
 export const WORKSPACE_PATH = "/app";
 
+// The administrative surface, and so the destination every administrative form comes back
+// along. Named for the same reason `WORKSPACE_PATH` is: the account controls post to a route
+// handler which answers with a redirect, and a literal `"/admin"` written into that handler
+// and into the page that links to it would be two copies of one address.
+export const ADMIN_PATH = "/admin";
+
 // The privileged role, as the API spells it. It must match `USER_ROLE_ADMIN` in
 // `apps/api/app/db/models.py`, which is where a role is assigned and where every decision
 // that actually grants access is made; this is the same restating across languages that
@@ -42,6 +48,12 @@ export const WORKSPACE_PATH = "/app";
 // narrows every listing by role in its own `WHERE` clause, and the `/admin` guard that reads
 // this is a signpost in front of a door the API keeps locked, not the lock.
 export const USER_ROLE_ADMIN = "ADMIN";
+
+// The ordinary role, and the other half of the pair the account controls move an account
+// between. It has no authorization meaning at all — it is the absence of the one above — but
+// the role control has to be able to name it, and naming it here keeps both spellings of the
+// column in one place rather than leaving the demotion value as a bare string in a `<select>`.
+export const USER_ROLE_USER = "USER";
 
 // How long the API is given to answer "who is this session". It is one indexed lookup, so
 // it is held to the same short bound as the other reads the dashboard does on render.
