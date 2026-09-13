@@ -876,7 +876,7 @@ def test_a_missing_signal_row_reaches_the_trace_as_an_unavailable_reading():
 
 WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 WEB_ANALYSIS = WEB_ROOT / "app" / "analysis.ts"
-WEB_REPORT = WEB_ROOT / "app" / "report" / "[id]" / "page.tsx"
+WEB_REPORT = WEB_ROOT / "app" / "app" / "report" / "[id]" / "page.tsx"
 
 requires_web = pytest.mark.skipif(
     not WEB_ROOT.exists(), reason="the web application is not present"
