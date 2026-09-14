@@ -85,6 +85,30 @@ RISK_HIGH = "HIGH"
 RISK_MEDIUM = "MEDIUM"
 RISK_UNKNOWN = "UNKNOWN"
 
+# What `r9-v5.0.0` may conclude, transcribed here as the three levels above were: a frozen copy
+# of the vocabulary that version decided in, not an import from the engine. The two vocabularies
+# are never merged and never mapped onto one another — a stored `MEDIUM` is not an
+# `INCONCLUSIVE` and is never re-labelled as one (R9-T1 invariant 4) — so a reader resolves
+# which of the two a decision speaks through `rules_version` and nothing else.
+#
+# `NO_CALIBRATED_MANIPULATION_SIGNAL` says the decision-eligible detectors were read and none
+# reached its operating point. It is not "Real", "Genuine", "Authentic" or "Clean", here as in
+# the engine: this module already refuses to convert silence into reassurance, and it refuses to
+# convert a below-threshold reading into it either.
+VERDICT_MANIPULATION_DETECTED = "MANIPULATION_DETECTED"
+VERDICT_NO_SIGNAL = "NO_CALIBRATED_MANIPULATION_SIGNAL"
+VERDICT_INCONCLUSIVE = "INCONCLUSIVE"
+
+# The two conditions in which a detector actually produced a reading the persisted decision
+# could use. Reaching a threshold and not reaching it are both readings; `unavailable` is the
+# absence of one, and `not_interpreted` is a reading this build cannot say was read against
+# anything. This set is what `decision_coverage` counts, and it is deliberately the only
+# definition of usability in this module: a second, looser one — "status was SUCCESS", say —
+# would let the trace report coverage the engine never had.
+USABLE_READING_CONDITIONS = frozenset(
+    {CONDITION_THRESHOLD_REACHED, CONDITION_THRESHOLD_NOT_REACHED}
+)
+
 
 @dataclass(frozen=True)
 class CalibratedSignal:
@@ -130,12 +154,50 @@ class Ruleset:
     `R103` is the sharpest case and the reason nothing here is ever edited in place: it exists in
     `r5-v3.0.0` and in no other version. A stored v3 row naming it must keep reading as the
     sentence v3 wrote, and a v4 row can never name it, because v4 has no such rule.
+
+    `decision_total` is the `D_total` of R9-T1 section 2.4: how many decision-eligible
+    detectors this version *expected*, frozen as a literal on the version itself. It is None on
+    every ruleset that predates the R9 coverage model, and a None here means this module reports
+    no coverage for that version rather than a plausible-looking fraction. v4's `R200` is "all
+    three were readable and neither deciding one reached its threshold", which is a statement
+    about three detectors under a rule that never counted a denominator; rendering it as "2/2"
+    would be a coverage claim v4 never made and R9-T1 forbids inventing.
+
+    `decisive_level` is the conclusion under which a detector that reached its own threshold is
+    the reason for the decision. It is `HIGH` for every version decided in the legacy vocabulary
+    and `MANIPULATION_DETECTED` for v5, because the two vocabularies name the same position with
+    different words. Reading a v5 decision against `HIGH` would report every detector that
+    actually produced the verdict as merely `considered`.
     """
 
     rules_version: str
     calibration_id: str
     signals: tuple[CalibratedSignal, ...]
     rules: dict[str, str]
+    decision_total: int | None = None
+    decisive_level: str = RISK_HIGH
+
+    def __post_init__(self) -> None:
+        """Refuse a version whose frozen denominator and decision-eligible detectors disagree.
+
+        `decision_total` is written as a literal, exactly as the engine writes `D_TOTAL_V5`, and
+        is never `len()` of anything: a denominator derived from the detectors present would let
+        a detector that was never listed improve coverage by being absent. What this checks is
+        that the literal still describes the table beside it — if a later edit adds or demotes a
+        decision-eligible detector without moving the number, coverage silently stops meaning
+        what it says, and a loud failure at import is the only acceptable outcome (R9-T1
+        invariant 9).
+        """
+        if self.decision_total is None:
+            return
+
+        declared = sum(1 for signal in self.signals if signal.decisional)
+        if declared != self.decision_total:
+            raise ValueError(
+                f"{self.rules_version} freezes D_total at {self.decision_total} but lists "
+                f"{declared} decision-eligible detectors; the denominator and the detectors "
+                "it counts have gone out of step."
+            )
 
 
 # NVIDIA's synthetic-video deployment, unchanged across every ruleset. The threshold is
@@ -359,6 +421,108 @@ RULESET_V4 = Ruleset(
     },
 )
 
+
+# --- `r9-v5.0.0`: the R9 verdict vocabulary, and the first version that counts coverage ------
+#
+# Added beside v4, never over it. Every entry above is untouched, and a decision persisted under
+# `r7-v4.0.0` is still explained by v4's sentences against v4's thresholds — the two versions
+# share a calibration identity and differ in `rules_version`, exactly as v3 and v4 already do.
+#
+# The detectors, their deployments and their operating points are transcribed from v4 unchanged,
+# because R9-T2 moved no threshold: the same two detectors decide on the same two measured
+# points, and the mouth-dynamics detector is `decisional=False` here as it is there. What is new
+# is the vocabulary the rules conclude in and the coverage statement beside it.
+#
+# One thing is worth saying plainly, because the table cannot: under v5 the engine does not read
+# the mouth-dynamics signal at all — it is outside the coverage arithmetic rather than a zero
+# inside it, and its failure, absence or abstention removes no coverage and changes no verdict.
+# It is listed here anyway, and banded against R5-T3's operating point, for the reason v4 lists
+# it: a stored score a reader can see is better explained beside the point its own study
+# measured than left unexplained. It lands in `supplementary_evidence`, never in
+# `decision_eligible_detectors`, and `decision_coverage` never counts it.
+RULESET_V5 = Ruleset(
+    rules_version="r9-v5.0.0",
+    # Unchanged from v4, deliberately. This column names the *measurements* a decision was taken
+    # under and v5 adopted no artifact and dropped none; minting an identity here would assert a
+    # measurement nobody took and leave every v5 decision unresolvable against the artifacts it
+    # actually rests on.
+    calibration_id="a74f6b9dbc64cead34cb8e31a03791228cdeb19497e8e5e0bc1a67c0337fc5f7",
+    signals=(
+        CalibratedSignal(
+            signal_type=_SVD_SIGNAL_TYPE,
+            provider=_SVD_PROVIDER,
+            provider_version=_SVD_PROVIDER_VERSION,
+            threshold=0.9550971388816833,
+            count_key=_SVD_COUNT_KEY,
+        ),
+        CalibratedSignal(
+            signal_type=_FACE_SIGNAL_TYPE,
+            provider=_FACE_PROVIDER,
+            provider_version=_FACE_PROVIDER_VERSION,
+            threshold=0.9867589175701141,
+            count_key=_FACE_COUNT_KEY,
+        ),
+        CalibratedSignal(
+            signal_type=_LIP_SIGNAL_TYPE,
+            provider=_LIP_PROVIDER,
+            provider_version=_LIP_PROVIDER_VERSION,
+            threshold=0.22962537594139576,
+            count_key=_LIP_COUNT_KEY,
+            decisional=False,
+        ),
+    ),
+    # Two, frozen as a literal by this version and checked against the table above at import.
+    # Not a count of the rows an analysis happens to carry: if the denominator came from the
+    # evidence present, a detector that was never invoked would *improve* coverage by being
+    # absent, which is the most dangerous defect a coverage model can have.
+    decision_total=2,
+    decisive_level=VERDICT_MANIPULATION_DETECTED,
+    # The v5 rule ids are disjoint from every id above, by construction and not by coincidence.
+    # An `R100` was stored against `r7-v4.0.0` and `R9-100` never can be, so no sentence here can
+    # rewrite what a historical row said — the same reasoning that keeps `R103` retired.
+    rules={
+        "R9-100": (
+            "Both detectors this ruleset takes a decision from — synthetic-video and "
+            "face-manipulation — produced usable readings and independently reached their "
+            "measured thresholds. The verdict is not strengthened by the agreement; there is "
+            "no verdict above MANIPULATION_DETECTED and no measurement that says two "
+            "detectors reaching their own thresholds mean more than one."
+        ),
+        "R9-101": (
+            "The calibrated synthetic-video detector produced a usable reading and reached its "
+            "measured threshold. The verdict stands whatever the other decision-eligible "
+            "detector did: a detector that failed, abstained or read below its own threshold "
+            "carries no information about the manipulation family this one is calibrated for, "
+            "and any coverage it left incomplete is reported beside the verdict rather than "
+            "folded into it."
+        ),
+        "R9-102": (
+            "The calibrated face-manipulation detector produced a usable reading and reached "
+            "its measured threshold. The verdict stands whatever the other decision-eligible "
+            "detector did, on the same terms and for the same measured reason."
+        ),
+        "R9-200": (
+            "Both detectors this ruleset takes a decision from produced usable readings and "
+            "neither reached its measured threshold. This is not a finding that the media is "
+            "authentic: a detector reports a score below its threshold for a manipulation "
+            "family it is blind to as readily as for genuine media. The mouth-dynamics score "
+            "is reported beside its measured threshold as independent evidence; it decides "
+            "nothing here and is counted in no coverage, whether or not it reached it."
+        ),
+        "R9-300": (
+            "Some but not all of the expected decision coverage was obtained, and no detector "
+            "that did produce a usable reading reached its measured threshold. The assessment "
+            "could not be completed; nothing about the media follows from that."
+        ),
+        "R9-301": (
+            "None of the expected decision coverage was obtained: neither detector this "
+            "ruleset takes a decision from produced a usable reading. The assessment could "
+            "not be completed; nothing about the media follows from that."
+        ),
+    },
+)
+
+
 # Keyed by the string the decision persisted. A version absent from this table is a version
 # this module cannot explain, and it says so rather than reaching for the nearest one.
 RULESETS: dict[str, Ruleset] = {
@@ -366,6 +530,7 @@ RULESETS: dict[str, Ruleset] = {
     RULESET_V2.rules_version: RULESET_V2,
     RULESET_V3.rules_version: RULESET_V3,
     RULESET_V4.rules_version: RULESET_V4,
+    RULESET_V5.rules_version: RULESET_V5,
 }
 
 
@@ -418,12 +583,47 @@ class SignalContribution:
 
 
 @dataclass(frozen=True)
+class DecisionCoverage:
+    """How much of the decision coverage a ruleset version expected was actually obtained.
+
+    `D_usable / D_total` of R9-T1 section 2.3, restated for a reader of an already-decided
+    analysis. Both numbers are about the *decision-eligible* detectors only; an evidence-only
+    detector is outside this arithmetic rather than a zero inside it, so nothing it did — or
+    failed to do — moves either number (R9-T1 invariant 1).
+
+    `total` is the version's frozen `decision_total`, never a count of the rows this analysis
+    happens to carry. A detector that was never invoked stays in the denominator and shows up as
+    missing coverage instead of vanishing from it.
+
+    `usable` counts the decision-eligible detectors that produced a `usable_reading` — the
+    calibrated deployment answered successfully *and* its figures can be read against that
+    version's own operating point. `SUCCESS` alone is not enough and never has been: a row from
+    an uncalibrated deployment, a score that is not a probability, and a mean taken over zero
+    units all carry that status and none of them is a reading.
+
+    This is a count of readings, not of findings. A detector that read below its threshold is as
+    usable as one that read above it, and neither says anything here about the media.
+    """
+
+    usable: int
+    total: int
+
+
+@dataclass(frozen=True)
 class RiskTrace:
     """The persisted decision, plus how each detector in scope stood when it was taken.
 
     The first four fields are the decision itself, copied from the analysis row without
     alteration; they are the source of truth and this object never contradicts them.
-    `rule_summary` and `contributions` are the derived part.
+    `rule_summary`, `contributions` and the three R9 fields below are the derived part.
+
+    `decision_eligible_detectors` and `supplementary_evidence` partition `contributions` by the
+    `decisional` flag the *persisted* version set on each detector, so the split is that
+    version's own and not today's: the mouth-dynamics detector is decision-eligible in a
+    `r5-v3.0.0` trace and supplementary in a `r7-v4.0.0` one, with the same score on both sides.
+    Every contribution appears in exactly one of the two, and the union is `contributions`
+    unchanged — they exist so a consumer never has to reconstruct which detectors could decide,
+    which is the reconstruction R9-T4 is here to make unnecessary.
     """
 
     risk_level: str
@@ -438,6 +638,17 @@ class RiskTrace:
     # False when the ruleset version or its calibration identity could not be resolved, so a
     # reader can tell "no detector contributed" from "this trace could not be interpreted".
     interpreted: bool
+    # `D_usable / D_total` for the decision-eligible detectors, and null whenever this version
+    # cannot honestly state it: every ruleset before `r9-v5.0.0` predates the coverage model and
+    # took its decisions without a denominator, and an uninterpreted trace has read nothing
+    # against anything. Null is "this decision makes no coverage claim", which is a different
+    # fact from "coverage was zero" and must never be rendered as one.
+    decision_coverage: DecisionCoverage | None = None
+    # `contributions`, partitioned by the persisted version's own `decisional` flag. Both are
+    # populated for every interpretable version, legacy included, because the flag is already
+    # frozen per version and says exactly what that version's rules could decide from.
+    decision_eligible_detectors: tuple[SignalContribution, ...] = ()
+    supplementary_evidence: tuple[SignalContribution, ...] = ()
 
 
 def _is_calibrated_probability(score: object) -> bool:
@@ -478,6 +689,7 @@ def _contribution(
     persisted: PersistedSignal | None,
     threshold: float | None,
     risk_level: str,
+    decisive_level: str,
 ) -> SignalContribution:
     """Read one detector's persisted row against one historical threshold.
 
@@ -568,13 +780,65 @@ def _contribution(
         # mouth-dynamics detector cannot, so a crossing of its threshold alongside a HIGH taken
         # from another detector is `considered`: the level was not reached on its evidence, and
         # `decisive` beside a score that could not have decided would be a false attribution.
-        # Under any level other than HIGH no detector reached one, and nothing here is decisive.
+        # Under any conclusion other than that one, no detector's threshold produced the
+        # decision and nothing here is decisive.
+        #
+        # `decisive_level` rather than the literal `HIGH`, because v5 concludes in a different
+        # vocabulary and names the same position `MANIPULATION_DETECTED`. Comparing a v5 verdict
+        # against `HIGH` would report the very detector that produced it as merely `considered`,
+        # which is the misattribution this field exists to prevent — in the opposite direction
+        # from the one `decisional` guards.
         role=(
             ROLE_DECISIVE
-            if reached and risk_level == RISK_HIGH and calibrated.decisional
+            if reached and risk_level == decisive_level and calibrated.decisional
             else ROLE_CONSIDERED
         ),
     )
+
+
+def _coverage(
+    ruleset: Ruleset,
+    decision_eligible: tuple[SignalContribution, ...],
+    thresholds_resolved: bool,
+) -> DecisionCoverage | None:
+    """State how much of a version's expected decision coverage this analysis obtained.
+
+    Null in the two cases where there is no honest statement to make, and both are silences
+    rather than zeros:
+
+    * the version declares no `decision_total` — every ruleset before `r9-v5.0.0`. Those
+      decisions were taken without a denominator and none of their rules counted one, so a
+      fraction here would be a coverage claim the decision never made. R9-T1 forbids retrofitting
+      the coverage model onto them and this is where that refusal is enforced;
+    * the thresholds could not be resolved, which means no contribution was read against an
+      operating point at all. Every detector is `not_interpreted`, so a count of usable readings
+      would be `0` — indistinguishable from the genuinely uncovered analysis that `R9-301`
+      describes, and a far stronger statement than "this build could not interpret the trace".
+
+    `usable` counts `USABLE_READING_CONDITIONS` over the decision-eligible contributions and
+    nothing else, which is what keeps the one definition of usability in this module. Those
+    conditions are set in `_contribution` by exactly the checks the engine made before it would
+    read a score: a row exists, the detector reported `SUCCESS`, the deployment is the one the
+    operating point was measured on, the score is a probability, and the provider's own count
+    says it aggregated something. A `FAILED` or `TIMEOUT` row, an abstention, a missing row, an
+    uncalibrated deployment and unreadable figures are all `unavailable` there, so none of them
+    can be counted here — `SUCCESS` is necessary and was never sufficient.
+
+    `total` is the frozen literal off the version, never `len(decision_eligible)`. The two agree
+    by construction — `Ruleset.__post_init__` refuses a version where they do not — and the
+    literal is still what is reported, because a denominator that counted the detectors present
+    would be a different and much weaker guarantee.
+    """
+    if ruleset.decision_total is None or not thresholds_resolved:
+        return None
+
+    usable = sum(
+        1
+        for contribution in decision_eligible
+        if contribution.condition in USABLE_READING_CONDITIONS
+    )
+
+    return DecisionCoverage(usable=usable, total=ruleset.decision_total)
 
 
 def build_trace(
@@ -595,6 +859,16 @@ def build_trace(
     Every level, rule id, ruleset version and calibration id in the result is the persisted
     one. Nothing here can produce them, and `app.risk_engine.evaluate` is never called — the
     module is not even imported.
+
+    That holds for the R9 fields too, and it is the point of them. `decision_coverage` is read
+    off the same persisted evidence the decision was taken from, under the same version's frozen
+    identities and thresholds, so it *explains* the stored verdict rather than checking it: a
+    coverage of 1/2 beside a `MANIPULATION_DETECTED` is the engine's own "a hit is never
+    softened" rule showing through, not a disagreement. Nothing here compares the coverage it
+    computed against the verdict it was given, and nothing here would change the verdict if the
+    two ever looked odd together — an inconsistency in the record is something a reader must be
+    able to see, and a trace that quietly corrected it would be the one place the record could
+    be rewritten without anyone noticing.
     """
     if risk_level is None:
         return None
@@ -604,7 +878,8 @@ def build_trace(
     if ruleset is None:
         # A ruleset this build does not know. The decision is still reported in full; what is
         # withheld is the interpretation, because there is none to give that would not be a
-        # guess about what those rules meant.
+        # guess about what those rules meant — including which of its detectors could decide
+        # and how much coverage it expected, which is why all three R9 fields are empty here.
         return RiskTrace(
             risk_level=risk_level,
             rule_id=rule_id,
@@ -613,6 +888,9 @@ def build_trace(
             rule_summary=None,
             contributions=(),
             interpreted=False,
+            decision_coverage=None,
+            decision_eligible_detectors=(),
+            supplementary_evidence=(),
         )
 
     # The thresholds are only this version's if the decision was taken under this version's
@@ -621,14 +899,26 @@ def build_trace(
     # from a measurement it did not use.
     thresholds_resolved = calibration_id == ruleset.calibration_id
 
-    contributions = tuple(
-        _contribution(
+    read = tuple(
+        (
             calibrated,
-            _find(signals, calibrated.signal_type),
-            calibrated.threshold if thresholds_resolved else None,
-            risk_level,
+            _contribution(
+                calibrated,
+                _find(signals, calibrated.signal_type),
+                calibrated.threshold if thresholds_resolved else None,
+                risk_level,
+                ruleset.decisive_level,
+            ),
         )
         for calibrated in ruleset.signals
+    )
+
+    contributions = tuple(contribution for _, contribution in read)
+    decision_eligible = tuple(
+        contribution for calibrated, contribution in read if calibrated.decisional
+    )
+    supplementary = tuple(
+        contribution for calibrated, contribution in read if not calibrated.decisional
     )
 
     return RiskTrace(
@@ -639,4 +929,7 @@ def build_trace(
         rule_summary=ruleset.rules.get(rule_id) if rule_id else None,
         contributions=contributions,
         interpreted=thresholds_resolved,
+        decision_coverage=_coverage(ruleset, decision_eligible, thresholds_resolved),
+        decision_eligible_detectors=decision_eligible,
+        supplementary_evidence=supplementary,
     )

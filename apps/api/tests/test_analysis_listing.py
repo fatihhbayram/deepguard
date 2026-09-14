@@ -713,6 +713,27 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
                     }
                 ],
                 "interpreted": True,
+                # Null, and that is the contract for every ruleset before `r9-v5.0.0`
+                # (R9-T4): `p7-v1.0.0` decided without a denominator and none of its rules
+                # counted one, so there is no coverage fraction to state. "1/1" would be a
+                # claim this decision never made.
+                "decision_coverage": None,
+                # The same contribution, partitioned by what v1's rules could decide from.
+                # That version read one detector and could decide on it, so it is the whole
+                # decision-eligible list and there is no supplementary evidence beside it.
+                "decision_eligible_detectors": [
+                    {
+                        "signal": "synthetic_video",
+                        "provider": "nvidia",
+                        "provider_version": FUNCTION_ID,
+                        "score": PROBABILITY,
+                        "threshold": 0.98,
+                        "condition": "threshold_not_reached",
+                        "unavailable_reason": None,
+                        "role": "considered",
+                    }
+                ],
+                "supplementary_evidence": [],
             },
             "original_filename": "clip.mp4",
             "declared_content_type": "video/mp4",

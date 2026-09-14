@@ -42,6 +42,17 @@ V3_CALIBRATION = "a74f6b9dbc64cead34cb8e31a03791228cdeb19497e8e5e0bc1a67c0337fc5
 V4_VERSION = "r7-v4.0.0"
 V4_CALIBRATION = "a74f6b9dbc64cead34cb8e31a03791228cdeb19497e8e5e0bc1a67c0337fc5f7"
 
+# v5 shares that calibration identity for the same reason v4 shares v3's: R9-T2 rewrote the
+# vocabulary and the coverage arithmetic and moved no threshold, so the artifacts a v5 decision
+# rests on are the artifacts a v4 decision rested on. `rules_version` is what tells them apart,
+# and it is the only field a consumer may resolve the verdict vocabulary through.
+V5_VERSION = "r9-v5.0.0"
+V5_CALIBRATION = "a74f6b9dbc64cead34cb8e31a03791228cdeb19497e8e5e0bc1a67c0337fc5f7"
+
+MANIPULATION_DETECTED = "MANIPULATION_DETECTED"
+NO_SIGNAL = "NO_CALIBRATED_MANIPULATION_SIGNAL"
+INCONCLUSIVE = "INCONCLUSIVE"
+
 SVD_T_HIGH = 0.9550971388816833
 FACE_T_HIGH = 0.9867589175701141
 LIP_T_HIGH = 0.22962537594139576
@@ -373,8 +384,13 @@ def test_the_v3_ruleset_entry_is_byte_for_byte_what_it_was():
     }
 
 
-def test_only_the_mouth_dynamics_detector_is_non_decisional_and_only_under_v4():
-    """Which detector each version could take a HIGH from, across the whole table."""
+def test_only_the_mouth_dynamics_detector_is_non_decisional_and_only_after_v3():
+    """Which detector each version could take its top conclusion from, across the whole table.
+
+    v5 inherits v4's answer exactly: R9-T2 changed the vocabulary and the coverage arithmetic and
+    did not readmit the mouth-dynamics detector to the decision. v3 remains the one version it
+    could decide under, and that entry is never edited.
+    """
     decisional = {
         version: {s.signal_type for s in ruleset.signals if s.decisional}
         for version, ruleset in risk_trace.RULESETS.items()
@@ -385,6 +401,7 @@ def test_only_the_mouth_dynamics_detector_is_non_decisional_and_only_under_v4():
         V2_VERSION: {"synthetic_video", "face_manipulation"},
         V3_VERSION: {"synthetic_video", "face_manipulation", "lip_forensics"},
         V4_VERSION: {"synthetic_video", "face_manipulation"},
+        V5_VERSION: {"synthetic_video", "face_manipulation"},
     }
 
 
@@ -938,11 +955,17 @@ def test_the_reports_v4_rationales_cover_every_rule_v4_can_fire_and_no_others():
     declared = {
         value
         for name, value in vars(risk_engine).items()
-        if name.startswith("RULE_") and isinstance(value, str)
+        # v4's own rule ids and no others. `RULE_V5_*` names the `r9-v5.0.0` table, which is a
+        # separate vocabulary with a disjoint set of ids (`R9-100` and the rest); an entry for
+        # one of them in `V4_RATIONALES` would explain a v4 decision with a v5 sentence.
+        if name.startswith("RULE_")
+        and not name.startswith("RULE_V5_")
+        and isinstance(value, str)
     }
 
     assert rule_ids == declared
     assert "R103" not in rule_ids
+    assert not any(rule_id.startswith("R9-") for rule_id in rule_ids)
 
 
 @requires_web
@@ -1022,3 +1045,621 @@ def test_the_report_never_says_the_mouth_dynamics_model_reached_this_level_under
     # v3 is untouched: its `R103` still says this detector decided, because it did.
     v3_block = source.split("const V3_RATIONALES", 1)[1].split("\n};", 1)[0]
     assert 'role: "decided"' in v3_block.split("R103:", 1)[1]
+
+
+# --- R9-T4: the decision trace API under `r9-v5.0.0` -----------------------------------------
+#
+# One property runs through every test below and is worth stating once: the trace is
+# *explanatory*. It reads persisted columns and persisted evidence and says what the ruleset
+# that took the decision made of them. It does not re-decide, and a coverage figure that sits
+# oddly beside a verdict is a fact about the record rather than a correction to be applied.
+
+
+def v5(level, rule, **signals):
+    """A v5 trace over the persisted evidence given, under v5's own calibration identity."""
+    return trace(level, rule, V5_VERSION, V5_CALIBRATION, **signals)
+
+
+def coverage_of(result):
+    return (result.decision_coverage.usable, result.decision_coverage.total)
+
+
+def test_both_deciding_detectors_readable_is_two_of_two():
+    """`D_usable == D_total`, and it is a count of readings rather than of findings.
+
+    Neither detector reached its threshold here and the coverage is complete anyway: a reading
+    below an operating point is a reading. The verdict beside it is the persisted one and is
+    what separates this from the case above — `2/2` sits under a `MANIPULATION_DETECTED` just
+    as readily.
+    """
+    result = v5(NO_SIGNAL, "R9-200", svd=svd(score=0.5), face=face(score=0.5))
+
+    assert coverage_of(result) == (2, 2)
+    assert {c.signal for c in result.decision_eligible_detectors} == {
+        "synthetic_video",
+        "face_manipulation",
+    }
+    assert all(
+        c.condition == risk_trace.CONDITION_THRESHOLD_NOT_REACHED
+        for c in result.decision_eligible_detectors
+    )
+
+
+@pytest.mark.parametrize(
+    "face_row",
+    [
+        None,
+        face(status="FAILED"),
+        face(status="TIMEOUT"),
+        # An abstention: recorded as a `FAILED` row with no score, because no sampled frame held
+        # a face. A statement about the media and not a finding about it, and it completes no
+        # coverage.
+        face(status="FAILED", score=None),
+    ],
+    ids=["no_row", "failed", "timeout", "abstained"],
+)
+def test_a_deciding_detector_that_produced_no_reading_is_one_of_two(face_row):
+    """Coverage the detector never obtained is missing coverage, not a zero-valued reading."""
+    signals = {"synthetic_video": svd(score=0.5)}
+    if face_row is not None:
+        signals["face_manipulation"] = face_row
+
+    result = build_trace(
+        risk_level=INCONCLUSIVE,
+        rule_id="R9-300",
+        rules_version=V5_VERSION,
+        calibration_id=V5_CALIBRATION,
+        signals=signals,
+    )
+
+    assert coverage_of(result) == (1, 2)
+    contribution = by_signal(result)["face_manipulation"]
+    assert contribution.condition == risk_trace.CONDITION_UNAVAILABLE
+    assert contribution.condition != risk_trace.CONDITION_THRESHOLD_NOT_REACHED
+    assert contribution.score is None
+
+
+@pytest.mark.parametrize(
+    "svd_row",
+    [
+        # The whole point of the case: the provider said `SUCCESS` in every one of these.
+        svd(provider_version="847b6e53-0133-452d-ab85-d7acf3ace723-preview"),
+        svd(score=None),
+        svd(score=1.4),
+        svd(score=float("nan")),
+        svd(total_clips=0),
+        svd(total_clips="seven"),
+    ],
+    ids=[
+        "uncalibrated_deployment",
+        "no_score",
+        "score_out_of_range",
+        "score_not_a_number",
+        "zero_units",
+        "unreadable_units",
+    ],
+)
+def test_success_is_not_enough_to_count_as_coverage(svd_row):
+    """`SUCCESS != usable_reading`, asserted on the status that most looks like one.
+
+    This is the case a loose coverage model gets wrong. Counting `decisional=True` rows whose
+    status is `SUCCESS` would report `2/2` for every row here — including a score from a
+    deployment no operating point was ever measured on, which is the reading R6-T1 exists to
+    keep out of a verdict.
+    """
+    result = build_trace(
+        risk_level=INCONCLUSIVE,
+        rule_id="R9-300",
+        rules_version=V5_VERSION,
+        calibration_id=V5_CALIBRATION,
+        signals={"synthetic_video": svd_row, "face_manipulation": face(score=0.5)},
+    )
+
+    assert svd_row.status == "SUCCESS"
+    assert coverage_of(result) == (1, 2)
+    assert by_signal(result)["synthetic_video"].condition == (
+        risk_trace.CONDITION_UNAVAILABLE
+    )
+
+
+def test_neither_deciding_detector_readable_is_zero_of_two():
+    """The denominator survives an analysis in which nothing was read."""
+    result = v5(INCONCLUSIVE, "R9-301", svd=svd(status="FAILED"), lip=lip(score=0.9))
+
+    assert coverage_of(result) == (0, 2)
+    assert result.decision_coverage.total == 2
+
+
+@pytest.mark.parametrize(
+    "lip_row",
+    [
+        None,
+        lip(score=0.9),
+        lip(score=0.01),
+        lip(status="FAILED"),
+        lip(status="TIMEOUT"),
+        lip(score=None),
+        lip(windows_scored=0),
+        lip(provider_version="https://github.com/ahaliassos/LipForensics@deadbeef"),
+    ],
+    ids=[
+        "no_row",
+        "above_its_threshold",
+        "below_its_threshold",
+        "failed",
+        "timeout",
+        "no_score",
+        "zero_windows",
+        "uncalibrated_deployment",
+    ],
+)
+def test_the_evidence_only_detector_moves_neither_coverage_nor_explanation(lip_row):
+    """R9-T1 invariant 1, asserted across every state this detector can be in.
+
+    It is outside the coverage arithmetic rather than a zero inside it: its absence removes no
+    coverage, its failure removes no coverage, and a score above the operating point R5-T3
+    measured for it adds none and decides nothing. Everything that explains the verdict —
+    coverage, the rule's sentence, and how the two deciding detectors stood — is identical in
+    all eight.
+    """
+    signals = {"synthetic_video": svd(score=0.99), "face_manipulation": face(score=0.5)}
+    if lip_row is not None:
+        signals["lip_forensics"] = lip_row
+
+    result = build_trace(
+        risk_level=MANIPULATION_DETECTED,
+        rule_id="R9-101",
+        rules_version=V5_VERSION,
+        calibration_id=V5_CALIBRATION,
+        signals=signals,
+    )
+    baseline = v5(
+        MANIPULATION_DETECTED, "R9-101", svd=svd(score=0.99), face=face(score=0.5)
+    )
+
+    assert coverage_of(result) == coverage_of(baseline) == (2, 2)
+    assert result.risk_level == baseline.risk_level
+    assert result.rule_summary == baseline.rule_summary
+    assert result.decision_eligible_detectors == baseline.decision_eligible_detectors
+
+    # It is reported — banded against its own measured threshold, as v4 already bands it — and
+    # reported strictly as supplementary. It is never in the decision-eligible list, whatever
+    # it scored.
+    eligible = {c.signal for c in result.decision_eligible_detectors}
+    assert [c.signal for c in result.supplementary_evidence] == ["lip_forensics"]
+    assert "lip_forensics" not in eligible
+    assert all(
+        c.role == risk_trace.ROLE_CONSIDERED for c in result.supplementary_evidence
+    )
+
+
+def test_the_two_lists_partition_the_contributions_under_every_ruleset():
+    """Every contribution in exactly one list, and the union unchanged — v5 and legacy alike."""
+    for version, calibration in (
+        (V1_VERSION, V1_CALIBRATION),
+        (V2_VERSION, V2_CALIBRATION),
+        (V3_VERSION, V3_CALIBRATION),
+        (V4_VERSION, V4_CALIBRATION),
+        (V5_VERSION, V5_CALIBRATION),
+    ):
+        result = trace(
+            "MEDIUM" if version != V5_VERSION else INCONCLUSIVE,
+            None,
+            version,
+            calibration,
+            svd=svd(score=0.5),
+            face=face(score=0.5),
+            lip=lip(score=0.5),
+        )
+
+        eligible = result.decision_eligible_detectors
+        supplementary = result.supplementary_evidence
+
+        assert set(eligible) | set(supplementary) == set(result.contributions), version
+        assert len(eligible) + len(supplementary) == len(result.contributions), version
+        assert not set(eligible) & set(supplementary), version
+
+    # The split is the persisted version's own: the same detector, decision-eligible under v3
+    # and supplementary under v4 and v5, with the same stored score on every side of that line.
+    for version, calibration in (
+        (V4_VERSION, V4_CALIBRATION),
+        (V5_VERSION, V5_CALIBRATION),
+    ):
+        result = trace("MEDIUM", None, version, calibration, lip=lip(score=0.9))
+        assert "lip_forensics" in {c.signal for c in result.supplementary_evidence}
+
+    v3_result = trace("MEDIUM", "R200", V3_VERSION, V3_CALIBRATION, lip=lip(score=0.9))
+    assert "lip_forensics" in {c.signal for c in v3_result.decision_eligible_detectors}
+
+
+def test_the_denominator_is_the_frozen_expectation_and_not_the_rows_present():
+    """A detector that was never invoked stays in the denominator.
+
+    The defect this rules out is the one R9-T1 section 2.4 names as the most dangerous available
+    to a coverage model: if `D_total` came from the evidence present, an analysis on which a
+    detector never ran would report complete coverage — the detector would *buy* coverage by
+    being absent.
+    """
+    nothing_ran = build_trace(
+        risk_level=INCONCLUSIVE,
+        rule_id="R9-301",
+        rules_version=V5_VERSION,
+        calibration_id=V5_CALIBRATION,
+        signals={},
+    )
+
+    assert coverage_of(nothing_ran) == (0, 2)
+    assert risk_trace.RULESET_V5.decision_total == 2
+
+
+def test_the_frozen_denominator_must_match_the_detectors_it_counts():
+    """A version whose literal and table disagree fails loudly at construction.
+
+    The literal is the contract and is never `len()` of anything. What must not happen quietly
+    is the two drifting apart — a later edit that demotes a deciding detector without moving the
+    number would leave every coverage figure overstating itself by one.
+    """
+    with pytest.raises(ValueError, match="out of step"):
+        risk_trace.Ruleset(
+            rules_version="r9-v9.9.9",
+            calibration_id=V5_CALIBRATION,
+            signals=risk_trace.RULESET_V5.signals,
+            rules={},
+            decision_total=3,
+        )
+
+
+def test_a_hit_beside_incomplete_coverage_is_reported_as_both():
+    """The trace explains the verdict; it does not second-guess it.
+
+    `MANIPULATION_DETECTED` on 1/2 coverage is the engine's own rule showing through — a hit is
+    never softened by the other detector failing, because R4-T1 measured that a quiet detector
+    carries no information about the family the flagging one is calibrated for. The trace's job
+    is to report the hit *and* the missing coverage, and to change neither.
+    """
+    result = v5(
+        MANIPULATION_DETECTED, "R9-101", svd=svd(score=0.99), face=face(status="FAILED")
+    )
+
+    assert result.risk_level == MANIPULATION_DETECTED
+    assert coverage_of(result) == (1, 2)
+    assert by_signal(result)["synthetic_video"].role == risk_trace.ROLE_DECISIVE
+    assert "whatever the other decision-eligible detector did" in result.rule_summary
+
+
+def test_the_detector_that_produced_a_v5_verdict_is_reported_as_decisive():
+    """`MANIPULATION_DETECTED` is v5's word for the position `HIGH` names in the legacy table.
+
+    A trace that compared the persisted verdict against the literal `HIGH` would report the very
+    detector that produced it as merely `considered`, which is a false attribution in the
+    opposite direction from the one `decisional` guards.
+    """
+    result = v5(
+        MANIPULATION_DETECTED, "R9-100", svd=svd(score=0.99), face=face(score=0.99)
+    )
+
+    roles = {c.signal: c.role for c in result.decision_eligible_detectors}
+    assert roles == {
+        "synthetic_video": risk_trace.ROLE_DECISIVE,
+        "face_manipulation": risk_trace.ROLE_DECISIVE,
+    }
+
+    # And not under a verdict no threshold produced: the same evidence read back under a
+    # persisted `INCONCLUSIVE` marks nothing decisive.
+    inconclusive = v5(INCONCLUSIVE, "R9-300", svd=svd(score=0.99), face=face(score=0.99))
+    assert all(c.role == risk_trace.ROLE_CONSIDERED for c in inconclusive.contributions)
+
+
+def test_the_v5_trace_never_recalculates_the_persisted_verdict(monkeypatch):
+    """The persisted columns come back untouched, whatever the evidence beside them says.
+
+    The evidence here reaches both operating points and the stored verdict is `INCONCLUSIVE` —
+    a combination the engine would not produce. The trace reports it exactly as stored, because
+    an inconsistency in the record is something a reader must be able to see; a trace that
+    quietly corrected it would be the one place the record could be rewritten unnoticed.
+    """
+    for name in ("evaluate", "evaluate_v5"):
+        monkeypatch.setattr(
+            risk_engine,
+            name,
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("the trace re-ran the risk engine")
+            ),
+        )
+
+    result = v5(INCONCLUSIVE, "R9-301", svd=svd(score=0.99), face=face(score=0.99))
+
+    assert result.risk_level == INCONCLUSIVE
+    assert result.rule_id == "R9-301"
+    assert result.rules_version == V5_VERSION
+    assert result.calibration_id == V5_CALIBRATION
+    assert "None of the expected decision coverage" in result.rule_summary
+    # The coverage is read off the evidence and is free to disagree with the rule beside it.
+    assert coverage_of(result) == (2, 2)
+
+
+def test_moving_todays_v5_constants_does_not_reinterpret_a_stored_v5_decision(
+    monkeypatch,
+):
+    """The engine's v5 constants are moved under the trace's feet; nothing shifts."""
+    before = v5(NO_SIGNAL, "R9-200", svd=svd(score=0.5), face=face(score=0.5))
+
+    monkeypatch.setattr(risk_engine, "SVD_T_HIGH", 0.1)
+    monkeypatch.setattr(risk_engine, "FACE_T_HIGH", 0.1)
+    monkeypatch.setattr(risk_engine, "D_TOTAL_V5", 99)
+    monkeypatch.setattr(risk_engine, "RULES_VERSION_V5", "r9-v9.0.0")
+
+    after = v5(NO_SIGNAL, "R9-200", svd=svd(score=0.5), face=face(score=0.5))
+
+    assert after == before
+    assert coverage_of(after) == (2, 2)
+    assert by_signal(after)["synthetic_video"].threshold == SVD_T_HIGH
+
+
+# Legacy integrity: v1-v4 still resolve, and v5's coverage model is not retrofitted onto them.
+
+
+@pytest.mark.parametrize(
+    ("version", "calibration", "level", "rule"),
+    [
+        (V1_VERSION, V1_CALIBRATION, "MEDIUM", "R200"),
+        (V2_VERSION, V2_CALIBRATION, "MEDIUM", "R200"),
+        (V3_VERSION, V3_CALIBRATION, "HIGH", "R103"),
+        (V4_VERSION, V4_CALIBRATION, "MEDIUM", "R200"),
+    ],
+)
+def test_a_legacy_decision_still_resolves_and_states_no_coverage(
+    version, calibration, level, rule
+):
+    """Every stored version still reads, and none of them acquires a coverage claim.
+
+    v4's `R200` is "all three detectors were readable and neither deciding one reached its
+    threshold" — a sentence about three detectors, taken under rules that counted no
+    denominator. Explaining it as "2/2" would be a coverage claim v4 never made, and R9-T1
+    invariant 4 forbids retrofitting the R9 model onto a decision taken without it.
+    """
+    result = trace(
+        level,
+        rule,
+        version,
+        calibration,
+        svd=svd(score=0.5),
+        face=face(score=0.5),
+        lip=lip(score=0.9),
+    )
+
+    assert result.interpreted is True
+    assert result.rule_summary is not None
+    assert result.decision_coverage is None
+    assert result.decision_eligible_detectors
+
+
+def test_the_legacy_trace_is_byte_for_byte_what_it_was_before_r9():
+    """The fields that existed before R9-T4 are unchanged on a v4 trace.
+
+    Asserted against literals rather than against a regenerated expectation, so a change in how
+    the trace is assembled cannot move a stored decision's explanation and agree with itself.
+    """
+    result = trace(
+        "HIGH",
+        "R100",
+        V4_VERSION,
+        V4_CALIBRATION,
+        svd=svd(score=0.99),
+        lip=lip(score=0.9),
+    )
+
+    contributions = by_signal(result)
+
+    assert result.risk_level == "HIGH"
+    assert result.interpreted is True
+    assert len(result.contributions) == 3
+    assert contributions["synthetic_video"].threshold == SVD_T_HIGH
+    assert contributions["synthetic_video"].condition == (
+        risk_trace.CONDITION_THRESHOLD_REACHED
+    )
+    assert contributions["synthetic_video"].role == risk_trace.ROLE_DECISIVE
+    # A mouth-dynamics crossing under v4 is still `considered` and still not decisive.
+    assert contributions["lip_forensics"].condition == (
+        risk_trace.CONDITION_THRESHOLD_REACHED
+    )
+    assert contributions["lip_forensics"].role == risk_trace.ROLE_CONSIDERED
+    assert contributions["face_manipulation"].condition == (
+        risk_trace.CONDITION_UNAVAILABLE
+    )
+
+
+def test_an_uninterpretable_v5_trace_reports_no_coverage_rather_than_zero():
+    """A calibration identity v5 was not measured under withholds the fraction entirely.
+
+    Nothing was read against an operating point, so every detector is `not_interpreted` and a
+    count of usable readings would come out `0` — indistinguishable from the genuinely uncovered
+    analysis `R9-301` describes, and a far stronger statement than "this could not be read".
+    """
+    result = build_trace(
+        risk_level=NO_SIGNAL,
+        rule_id="R9-200",
+        rules_version=V5_VERSION,
+        calibration_id="0" * 64,
+        signals={
+            "synthetic_video": svd(score=0.5),
+            "face_manipulation": face(score=0.5),
+        },
+    )
+
+    assert result.interpreted is False
+    assert result.decision_coverage is None
+    assert all(
+        c.condition == risk_trace.CONDITION_NOT_INTERPRETED
+        for c in result.decision_eligible_detectors
+    )
+
+
+def test_an_unknown_ruleset_version_carries_none_of_the_r9_fields():
+    """A version this build cannot explain gets no coverage and no detector roles invented."""
+    result = build_trace(
+        risk_level="SOMETHING_ELSE",
+        rule_id="R9-999",
+        rules_version="r99-v9.0.0",
+        calibration_id=V5_CALIBRATION,
+        signals={"synthetic_video": svd(score=0.99)},
+    )
+
+    assert result.interpreted is False
+    assert result.decision_coverage is None
+    assert result.decision_eligible_detectors == ()
+    assert result.supplementary_evidence == ()
+
+
+def test_the_v5_rule_ids_are_disjoint_from_every_legacy_table():
+    """No v5 sentence can rewrite what a stored legacy row said, and none of them reuses an id."""
+    v5_ids = set(risk_trace.RULESET_V5.rules)
+
+    assert v5_ids == {"R9-100", "R9-101", "R9-102", "R9-200", "R9-300", "R9-301"}
+
+    for version, ruleset in risk_trace.RULESETS.items():
+        if version == V5_VERSION:
+            continue
+        assert not v5_ids & set(ruleset.rules), version
+
+
+def test_the_v5_entry_matches_the_engine_that_writes_it():
+    """The drift guard for v5, on the same terms as the one for the current ruleset.
+
+    `RULESET_V5` is a transcription, and a transcription that has fallen behind is worse than an
+    absent one: it would explain every v5 decision confidently and wrongly.
+    """
+    entry = risk_trace.RULESETS[risk_engine.RULES_VERSION_V5]
+
+    assert entry.calibration_id == risk_engine.CALIBRATION_ID
+    assert entry.decision_total == risk_engine.D_TOTAL_V5
+    assert entry.decisive_level == risk_engine.VERDICT_MANIPULATION_DETECTED
+
+    thresholds = {s.signal_type: s.threshold for s in entry.signals}
+    assert thresholds == {
+        risk_engine.SVD_SIGNAL_TYPE: risk_engine.SVD_T_HIGH,
+        risk_engine.FACE_SIGNAL_TYPE: risk_engine.FACE_T_HIGH,
+        risk_engine.LIP_SIGNAL_TYPE: risk_engine.LIP_T_HIGH,
+    }
+
+    decisional = {s.signal_type for s in entry.signals if s.decisional}
+    assert decisional == {risk_engine.SVD_SIGNAL_TYPE, risk_engine.FACE_SIGNAL_TYPE}
+
+    assert set(entry.rules) == {
+        risk_engine.RULE_V5_HIGH_MULTIPLE,
+        risk_engine.RULE_V5_HIGH_SVD,
+        risk_engine.RULE_V5_HIGH_FACE,
+        risk_engine.RULE_V5_NO_SIGNAL,
+        risk_engine.RULE_V5_INCONCLUSIVE_PARTIAL,
+        risk_engine.RULE_V5_INCONCLUSIVE_ALL,
+    }
+
+
+def test_the_v5_coverage_the_trace_reports_is_the_coverage_the_engine_counted():
+    """The two modules agree on `D_usable` across every combination of the two deciding rows.
+
+    The one comparison of the two implementations, and it has to exist: the trace computes
+    usability from persisted columns without importing the engine, so nothing structural stops
+    the two definitions from drifting. What is asserted is the count, over the same evidence,
+    every way round.
+    """
+    rows = {
+        "usable_low": (svd(score=0.5), face(score=0.5)),
+        "usable_high": (svd(score=0.99), face(score=0.99)),
+        "failed": (svd(status="FAILED"), face(status="FAILED")),
+        "uncalibrated": (
+            svd(provider_version="not-the-deployment"),
+            face(provider_version="not-the-deployment"),
+        ),
+        "unreadable": (svd(score=None), face(score=None)),
+        "zero_units": (svd(total_clips=0), face(frames_scored=0)),
+        "missing": (None, None),
+    }
+
+    for svd_key, (svd_row, _) in rows.items():
+        for face_key, (_, face_row) in rows.items():
+            engine_usable = sum(
+                (
+                    risk_engine.is_eligible_svd(_svd_evidence(svd_row))
+                    and risk_engine.is_usable_svd(_svd_evidence(svd_row)),
+                    risk_engine.is_eligible_face(_face_evidence(face_row))
+                    and risk_engine.is_usable_face(_face_evidence(face_row)),
+                )
+            )
+
+            signals = {s.signal_type: s for s in (svd_row, face_row) if s is not None}
+            result = build_trace(
+                risk_level=INCONCLUSIVE,
+                rule_id="R9-300",
+                rules_version=V5_VERSION,
+                calibration_id=V5_CALIBRATION,
+                signals=signals,
+            )
+
+            assert result.decision_coverage.usable == engine_usable, (
+                svd_key,
+                face_key,
+            )
+
+
+def _svd_evidence(persisted):
+    """The same persisted row, in the shape the engine's usability predicates take."""
+    if persisted is None:
+        return None
+    metadata = persisted.metadata if isinstance(persisted.metadata, dict) else {}
+    return risk_engine.SvdEvidence(
+        provider=persisted.provider,
+        signal_type=persisted.signal_type,
+        status=persisted.status,
+        provider_version=persisted.provider_version,
+        score=persisted.score,
+        total_clips=metadata.get("total_clips"),
+    )
+
+
+def _face_evidence(persisted):
+    if persisted is None:
+        return None
+    metadata = persisted.metadata if isinstance(persisted.metadata, dict) else {}
+    return risk_engine.FaceEvidence(
+        provider=persisted.provider,
+        signal_type=persisted.signal_type,
+        status=persisted.status,
+        provider_version=persisted.provider_version,
+        score=persisted.score,
+        frames_scored=metadata.get("frames_scored"),
+    )
+
+
+# The API contract, as `/api/v1/analyses` serves it.
+
+
+def test_the_api_trace_carries_the_r9_fields():
+    """The three fields R9-T4 adds survive the pydantic boundary with their meanings intact."""
+    rendered = RiskTraceResponse.model_validate(
+        v5(NO_SIGNAL, "R9-200", svd=svd(score=0.5), face=face(score=0.5)),
+        from_attributes=True,
+    )
+
+    assert rendered.risk_level == NO_SIGNAL
+    assert rendered.decision_coverage.usable == 2
+    assert rendered.decision_coverage.total == 2
+    assert [c.signal for c in rendered.decision_eligible_detectors] == [
+        "synthetic_video",
+        "face_manipulation",
+    ]
+    # The mouth-dynamics detector is listed by v5 and is always supplementary — here with no row
+    # at all, which is `unavailable` and still not part of any coverage count.
+    assert [c.signal for c in rendered.supplementary_evidence] == ["lip_forensics"]
+    assert rendered.supplementary_evidence[0].condition == "unavailable"
+
+
+def test_the_api_trace_states_no_coverage_for_a_legacy_decision():
+    """Serialized, a legacy trace carries `decision_coverage: null` — never `0`."""
+    rendered = RiskTraceResponse.model_validate(
+        trace("MEDIUM", "R200", V4_VERSION, V4_CALIBRATION, svd=svd(score=0.5)),
+        from_attributes=True,
+    )
+
+    assert rendered.model_dump()["decision_coverage"] is None
+    assert [c.signal for c in rendered.supplementary_evidence] == ["lip_forensics"]

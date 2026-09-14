@@ -532,10 +532,38 @@ class RiskContribution(BaseModel):
     # Why this detector contributed nothing, set only alongside `unavailable` or
     # `not_interpreted`. Never a finding about the media.
     unavailable_reason: str | None
-    # `decisive` only on a detector that reached its own threshold under a HIGH decision —
-    # the HIGH rules are disjunctive, so such a detector is a reason for the level.
+    # `decisive` only on a detector that reached its own threshold under the conclusion its
+    # own ruleset version takes from a threshold being reached — `HIGH` in the legacy
+    # vocabulary, `MANIPULATION_DETECTED` under `r9-v5.0.0`. Those rules are disjunctive, so
+    # such a detector is a reason for the verdict.
     # `considered` otherwise: in scope of the ruleset and read by it, nothing more.
     role: str
+
+
+class DecisionCoverage(BaseModel):
+    """How much of the decision coverage the persisted ruleset expected was obtained.
+
+    `D_usable / D_total` (R9-T1), over the decision-eligible detectors only. Evidence-only
+    detectors are outside this arithmetic entirely: nothing LipForensics did or failed to do
+    moves either number.
+
+    `total` is the frozen expectation of the ruleset version the decision names — not a count
+    of the signal rows this analysis carries, so a detector that was never invoked shows up as
+    missing coverage rather than disappearing from the denominator. `usable` counts the
+    decision-eligible detectors that produced a reading the decision could actually use: the
+    calibrated deployment answered successfully *and* its figures were readable against that
+    version's operating point. A `SUCCESS` row from an uncalibrated deployment, with a score
+    that is not a probability, or with a mean taken over zero units is not a usable reading.
+
+    It is a count of readings and never of findings. `usable: 2` says both detectors were read;
+    it says nothing whatever about what they found, and `2/2` sits under a verdict of
+    `MANIPULATION_DETECTED` and one of `NO_CALIBRATED_MANIPULATION_SIGNAL` alike.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    usable: int
+    total: int
 
 
 class RiskTrace(BaseModel):
@@ -562,6 +590,23 @@ class RiskTrace(BaseModel):
     # False when the ruleset version or its calibration identity could not be resolved, so a
     # reader can tell "no detector contributed" from "this trace could not be interpreted".
     interpreted: bool
+    # `D_usable / D_total` under the persisted ruleset version, and null whenever that version
+    # states no coverage — every ruleset before `r9-v5.0.0`, whose decisions were taken without
+    # a denominator, and any trace this build could not interpret. Null is "this decision makes
+    # no coverage claim" and must never be rendered as "coverage was zero": a consumer that
+    # cannot show the distinction should show nothing.
+    decision_coverage: DecisionCoverage | None = None
+    # `contributions` split by what the *persisted* version's rules could decide from. The two
+    # lists partition `contributions` exactly — every entry is in one of them, none in both —
+    # and the split is the ruleset's own: the mouth-dynamics detector is decision-eligible in a
+    # `r5-v3.0.0` trace and supplementary in a `r7-v4.0.0` or `r9-v5.0.0` one.
+    #
+    # They exist so that no consumer — report, PDF, dashboard or third party — has to
+    # reconstruct which detectors could decide in order to render a verdict honestly (R9-T4).
+    # Reconstructing it downstream means a second copy of the decision model, and a second copy
+    # is a copy that can disagree with the record.
+    decision_eligible_detectors: list[RiskContribution] = []
+    supplementary_evidence: list[RiskContribution] = []
 
 
 class AnalysisSummary(BaseModel):
