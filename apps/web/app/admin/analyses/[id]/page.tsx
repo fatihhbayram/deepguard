@@ -35,11 +35,10 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
 import {
-  RISK_LABELS,
-  UNSUPPORTED,
+  RiskTrace,
+  classificationLabel,
   fetchAnalysis,
   fetchSession,
-  isSupportedRiskLevel,
 } from "../../../analysis";
 import { LOGIN_PATH, adminAnalysisPath } from "../../../session";
 import { AdminAlert } from "../../components/AdminAlert";
@@ -108,6 +107,18 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
  * A level the page does not recognize is printed as `Unsupported` rather than dropped. The
  * risk vocabulary can grow, and a screen that silently rendered an unknown classification as
  * blank would be a screen that hides exactly the case a reader needs to see.
+ *
+ * **Which level is recognized is not decided here.** `classificationLabel` resolves it through
+ * the ruleset version the decision names, and the newsroom report calls the same function — so
+ * one analysis cannot read as `Manipulation detected` on the report and `Unsupported` here. That
+ * split is exactly what this card had while it knew only the pre-v5 levels, and two screens
+ * contradicting each other about the same row is a worse failure than either alone: an operator
+ * comparing them has no way to tell which one is lying.
+ *
+ * The coverage fact below is the API's `decision_coverage`, printed as it arrived. This card
+ * makes no comparison — not `usable` against `total`, not a score against a threshold — and a
+ * decision that states no coverage (every pre-v5 ruleset) simply has no coverage row rather than
+ * a fabricated `0/0`.
  */
 function ForensicResult({
   analysis,
@@ -120,9 +131,13 @@ function ForensicResult({
     risk_rules_version: string | null;
     risk_rule_id: string | null;
     risk_calibration_id: string | null;
+    // Read for one value only: the coverage the decision stated. The verdict itself is still the
+    // `risk_level` column above — the trace explains a decision and never replaces it.
+    risk_trace: RiskTrace | null;
   };
 }) {
   const level = analysis.risk_level;
+  const coverage = analysis.risk_trace?.decision_coverage ?? null;
 
   return (
     <AdminSection
@@ -133,9 +148,7 @@ function ForensicResult({
         <Fact label="Risk classification">
           {level === null
             ? NO_DECISION
-            : isSupportedRiskLevel(level)
-              ? RISK_LABELS[level]
-              : UNSUPPORTED}
+            : classificationLabel(level, analysis.risk_rules_version)}
         </Fact>
         <Fact label="Analysis status">{analysis.status}</Fact>
         <Fact label="Ruleset">
@@ -144,6 +157,16 @@ function ForensicResult({
         <Fact label="Rule fired">
           <AdminValue className="break-all">{analysis.risk_rule_id}</AdminValue>
         </Fact>
+        {coverage !== null && (
+          <Fact label="Decision coverage">
+            {/* Three API fields interpolated, including the word. `complete` is never reached
+                here by comparing `usable` against `total`: that comparison is the coverage model
+                and it lives in one place, on the other side of the API (R9-T4). */}
+            <AdminValue>
+              {`${coverage.usable}/${coverage.total} ${coverage.status}`}
+            </AdminValue>
+          </Fact>
+        )}
         <Fact label="Calibration">
           <AdminValue className="break-all">{analysis.risk_calibration_id}</AdminValue>
         </Fact>

@@ -109,6 +109,15 @@ USABLE_READING_CONDITIONS = frozenset(
     {CONDITION_THRESHOLD_REACHED, CONDITION_THRESHOLD_NOT_REACHED}
 )
 
+# How a coverage fraction is described in one word. Stated here, once, so that the comparison
+# `usable == total` is made in exactly one place in the system and every consumer — report, PDF,
+# dashboard, third party — reads the answer rather than recomputing it. These are the only two
+# values `DecisionCoverage.status` can take; a trace that states no coverage at all carries no
+# `decision_coverage` object and therefore neither of them, which is a third case and not a
+# third word.
+COVERAGE_COMPLETE = "complete"
+COVERAGE_PARTIAL = "partial"
+
 
 @dataclass(frozen=True)
 class CalibratedSignal:
@@ -607,6 +616,36 @@ class DecisionCoverage:
 
     usable: int
     total: int
+
+    @property
+    def is_complete(self) -> bool:
+        """Whether every decision-eligible detector this version expected produced a reading.
+
+        Presentation metadata, and only that. It re-states `usable == total` so that no
+        consumer has to make the comparison itself — the same reason `decision_eligible_detectors`
+        exists (R9-T4). A report, a PDF renderer or a third party that derived completeness from
+        the two numbers would be keeping a second copy of the coverage model, and a second copy
+        is one that can disagree with the record the day the model moves.
+
+        It re-derives nothing about the decision: the verdict was taken and persisted long
+        before this is read, and a complete coverage sits under `MANIPULATION_DETECTED` and
+        `NO_CALIBRATED_MANIPULATION_SIGNAL` alike. Completeness says how much was read, never
+        what was found.
+        """
+        return self.usable == self.total
+
+    @property
+    def status(self) -> str:
+        """The one word a reader sees beside the fraction, chosen here rather than downstream.
+
+        `complete` or `partial`. It exists for the same reason `is_complete` does, carried one
+        step further: a consumer that mapped the boolean to a word would be choosing the wording
+        of a coverage claim in the browser, and the wording of this claim is exactly the thing
+        R9 fixes in one place. Both are published because they answer different questions — one
+        is the fact, the other is how this system says it — and they can never disagree, being
+        the same comparison.
+        """
+        return COVERAGE_COMPLETE if self.is_complete else COVERAGE_PARTIAL
 
 
 @dataclass(frozen=True)

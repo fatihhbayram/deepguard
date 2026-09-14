@@ -564,6 +564,19 @@ class DecisionCoverage(BaseModel):
 
     usable: int
     total: int
+    # `usable == total`, stated by the API so that nothing downstream has to make the comparison.
+    # This is the coverage half of what R9-T4 exists for: a report or a PDF that derived
+    # completeness from the two numbers would hold a second copy of the coverage model, and a
+    # second copy can disagree with the record. Presentation metadata only — it re-derives no
+    # part of the verdict, and `true` sits under `MANIPULATION_DETECTED` and
+    # `NO_CALIBRATED_MANIPULATION_SIGNAL` alike, because it says how much was read and never
+    # what was found.
+    is_complete: bool
+    # The single word a reader is shown beside the fraction: `complete` or `partial`. Published
+    # alongside the boolean so that even the wording of the coverage claim is chosen in one
+    # place rather than in each consumer's own conditional. The two are the same comparison and
+    # cannot disagree.
+    status: str
 
 
 class RiskTrace(BaseModel):

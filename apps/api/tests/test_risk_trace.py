@@ -989,6 +989,312 @@ def test_the_report_treats_the_two_deciding_detectors_as_deciding_under_v4():
     assert "RULES_VERSION_V2" not in lip_decides
 
 
+# --- R9-T5: the operational summary the report opens with ------------------------------------
+#
+# The same source-assertion approach as the block above, for the same reason: what is being
+# checked is a mapping and a refusal, and both are visible in the text. Rendering the component
+# would check React; reading it checks the property the component exists to guarantee.
+
+# The three sentences, exactly as R9-T5 locked them. Transcribed here so that the test owns an
+# independent copy: a test that read the wording out of the file it is checking would pass on any
+# wording at all, including a reassuring rewrite of it.
+LOCKED_WORDING = {
+    MANIPULATION_DETECTED: (
+        "Manipulation detected",
+        "One or more calibrated decision detectors reached their operating point.",
+        "This identifies calibrated manipulation evidence. It does not establish the original "
+        "source or provenance of the media.",
+    ),
+    NO_SIGNAL: (
+        "No calibrated manipulation signal detected",
+        "The completed decision detectors produced no threshold-reaching manipulation signal.",
+        "This does not prove that the media is authentic, genuine, or source-verified.",
+    ),
+    INCONCLUSIVE: (
+        "Inconclusive",
+        "InspectRoot could not complete the calibrated automated assessment because one or more "
+        "required decision detectors did not produce a usable reading.",
+        "This result is neither evidence of manipulation nor evidence of authenticity.",
+    ),
+}
+
+
+def _operational_summary(source: str) -> str:
+    """The body of the `OperationalSummary` component, from its signature to the next one."""
+    body = source.split("function OperationalSummary(", 1)[1]
+    return body.split("\nfunction ", 1)[0]
+
+
+@requires_web
+def test_the_report_says_each_v5_verdict_in_the_words_r9_t5_locked():
+    """All three sentences of all three verdicts, verbatim.
+
+    The wording is the deliverable of this task. `NO_CALIBRATED_MANIPULATION_SIGNAL` is the one
+    that carries the weight: it is the verdict a reader most wants to hear as "the media is
+    fine", and its clarification is the sentence that refuses to let it be read that way.
+    """
+    source = WEB_ANALYSIS.read_text(encoding="utf-8")
+
+    assert f'export const RULES_VERSION_V5 = "{risk_engine.RULES_VERSION_V5}";' in source
+
+    for verdict, (title, meaning, clarification) in LOCKED_WORDING.items():
+        block = source.split(f"  {verdict}: {{", 1)[1].split("\n  },", 1)[0]
+
+        assert f'title: "{title}"' in block, verdict
+        for sentence in (meaning, clarification):
+            # Prettier may wrap a long string onto its own line; the sentence is what matters.
+            assert f'"{sentence}"' in block, (verdict, sentence)
+
+
+@requires_web
+def test_the_reports_verdict_table_covers_exactly_the_v5_vocabulary():
+    """No verdict left without wording, and no wording for a verdict the engine cannot reach.
+
+    A missing entry is a v5 decision rendered with no operational summary at all. An extra one is
+    a sentence waiting to be shown for a verdict nobody took — and the extras that would be
+    reached for here are precisely the reassuring ones.
+    """
+    source = WEB_ANALYSIS.read_text(encoding="utf-8")
+    listed = set(re.findall(r'^  "([A-Z_]+)",$', source.split(
+        "export const V5_VERDICTS = [", 1
+    )[1].split("] as const;", 1)[0], flags=re.MULTILINE))
+
+    assert listed == {
+        risk_engine.VERDICT_MANIPULATION_DETECTED,
+        risk_engine.VERDICT_NO_SIGNAL,
+        risk_engine.VERDICT_INCONCLUSIVE,
+    }
+
+    table = source.split("V5_VERDICT_WORDING: Record<V5Verdict, VerdictWording> = {", 1)[1]
+    table = table.split("\n};", 1)[0]
+    assert set(re.findall(r"^  ([A-Z_]+): \{", table, flags=re.MULTILINE)) == listed
+
+
+@requires_web
+def test_the_operational_summary_reads_coverage_and_never_computes_it():
+    """The `complete`/`partial` word is printed from the API, not worked out in the browser.
+
+    This is the R9-T4 property applied to the one place a reader actually sees coverage. A
+    component that derived completeness from the fraction would hold a second copy of the
+    coverage model, and the day that model moves the report and the record disagree — with the
+    report looking authoritative while being wrong.
+    """
+    body = _operational_summary(WEB_REPORT.read_text(encoding="utf-8"))
+
+    assert "coverage.usable" in body
+    assert "coverage.total" in body
+    assert "coverage.status" in body
+
+    # The comparison itself, in the spellings it could plausibly be written in.
+    for computed in (
+        "usable ===",
+        "usable ==",
+        "usable !==",
+        "usable <",
+        "usable >",
+        "? \"complete\"",
+        "? \"partial\"",
+    ):
+        assert computed not in body, computed
+
+
+@requires_web
+def test_the_operational_summary_compares_no_score_against_any_threshold():
+    """No figure and no operating point reaches this block, so no comparison can be made in it.
+
+    The summary answers what was detected, not how narrowly. A score printed here would invite
+    exactly the arithmetic the whole decision model exists to have already done.
+    """
+    body = _operational_summary(WEB_REPORT.read_text(encoding="utf-8"))
+
+    for figure in ("score", "threshold", "T_HIGH", "toFixed", "Number("):
+        assert figure not in body, figure
+
+
+@requires_web
+def test_the_operational_summary_is_withheld_from_every_pre_v5_report():
+    """A v1-v4 decision renders as it always did: no v5 sentence, no coverage line.
+
+    Those versions answered in `HIGH`/`MEDIUM`/`UNKNOWN` and took their decisions without a
+    denominator. v5 wording over a stored `MEDIUM` would describe a decision nobody took, and the
+    guard that prevents it is an equality against v5's own version string — not a "not legacy"
+    test, which a sixth ruleset would silently pass.
+    """
+    body = _operational_summary(WEB_REPORT.read_text(encoding="utf-8"))
+
+    assert "trace.rules_version !== RULES_VERSION_V5" in body
+    assert "return null;" in body
+    # And an unknown verdict under v5 is withheld too, rather than shown under a borrowed entry.
+    assert "isV5Verdict(trace.risk_level)" in body
+
+    for legacy in ("RULES_VERSION_V4", "RULES_VERSION_V3", "RULES_VERSION_V2", "HIGH", "MEDIUM"):
+        assert legacy not in body, legacy
+
+
+@requires_web
+def test_the_operational_wording_never_reassures():
+    """The words this summary may not contain, checked over the locked table itself.
+
+    "No calibrated manipulation signal detected" is the product's whole discipline in one line:
+    the system reports what its detectors did, and never upgrades their silence into a finding
+    that the media is genuine.
+    """
+    source = WEB_ANALYSIS.read_text(encoding="utf-8")
+    table = source.split("V5_VERDICT_WORDING: Record<V5Verdict, VerdictWording> = {", 1)[1]
+    table = table.split("\n};", 1)[0].lower()
+
+    # Each of these appears in the table only inside a sentence that denies it.
+    assert table.count("authentic") == 2
+    assert "does not prove that the media is authentic" in table
+    assert "neither evidence of manipulation nor evidence of authenticity" in table
+
+    for reassurance in ("is real", "is genuine", " fake", "verified authentic", "clean"):
+        assert reassurance not in table, reassurance
+
+
+@requires_web
+def test_the_report_never_reads_one_vocabulary_through_the_others_table():
+    """`riskLabel` picks its table by ruleset version, so neither vocabulary borrows the other.
+
+    A stored `MEDIUM` read through the v5 table, or a `MANIPULATION_DETECTED` read through
+    `RISK_LABELS`, would put a name on a decision nobody took. Both fall through to `Unsupported`
+    instead, which is the only thing actually known about a level a version cannot express.
+    """
+    resolver = WEB_ANALYSIS.read_text(encoding="utf-8").split(
+        "export function classificationLabel(", 1
+    )[1].split("\n}", 1)[0]
+
+    assert "rulesVersion === RULES_VERSION_V5" in resolver
+    assert "isV5Verdict(level) ? V5_VERDICT_WORDING[level].title : UNSUPPORTED" in resolver
+    assert "isSupportedRiskLevel(level) ? RISK_LABELS[level] : UNSUPPORTED" in resolver
+
+    # The report states its own "no decision" sentence and then delegates the vocabulary.
+    source = WEB_REPORT.read_text(encoding="utf-8")
+    label = source.split("function riskLabel(", 1)[1].split("\n}", 1)[0]
+
+    assert "return classificationLabel(level, rulesVersion);" in label
+    assert "RISK_LABELS" not in label
+    assert "V5_VERDICT_WORDING" not in label
+
+    # Both call sites pass the version the decision was taken under — the analysis row's on the
+    # classification card, the trace's on the breakdown — rather than defaulting to either table.
+    assert source.count("riskLabel(level, rulesVersion)") == 1
+    assert source.count("riskLabel(trace.risk_level, trace.rules_version)") == 1
+    assert "riskLabel(level)" not in source
+
+
+@requires_web
+def test_the_v5_report_does_not_explain_its_verdict_twice():
+    """The legacy notes under the classification card are withheld from a v5 decision.
+
+    Those three sentences are written about `UNKNOWN`, about a null level and about a level
+    outside the allowlist. None is true of a v5 verdict, and printing one directly beneath the
+    operational summary would have the report contradict itself on the same screen.
+    """
+    section = WEB_REPORT.read_text(encoding="utf-8").split(
+        "function RiskSection(", 1
+    )[1].split("\nfunction ", 1)[0]
+
+    assert "const legacyVocabulary = rulesVersion !== RULES_VERSION_V5;" in section
+    assert "{!legacyVocabulary ? null : level === null ? (" in section
+
+    # The record fields are not withheld: rule, ruleset and calibration are shown for every
+    # decision, v5 included, because they are what the row actually holds.
+    assert 'label="Rule fired"' in section
+    assert 'label="Ruleset version"' in section
+    assert 'label="Calibration ID"' in section
+
+
+WEB_ADMIN_ANALYSIS = (
+    WEB_ROOT / "app" / "admin" / "analyses" / "[id]" / "page.tsx"
+)
+
+
+@requires_web
+def test_the_admin_card_titles_a_v5_verdict_through_the_same_resolver_as_the_report():
+    """Neither screen owns a copy of the vocabulary, so the two cannot disagree about a row.
+
+    This is the R9-T5 fix. The card knew `HIGH`, `MEDIUM` and `UNKNOWN` and nothing else, so
+    every v5 verdict reached it as `Unsupported` — while the report for the same analysis said
+    `Manipulation detected`. An operator comparing the two screens had no way to tell which was
+    wrong, which is a worse failure than either screen being wrong on its own.
+    """
+    source = WEB_ADMIN_ANALYSIS.read_text(encoding="utf-8")
+
+    assert "classificationLabel(level, analysis.risk_rules_version)" in source
+
+    # The private lookup this card used to make is gone, not merely bypassed.
+    assert "RISK_LABELS[level]" not in source
+    assert "isSupportedRiskLevel" not in source
+    # And the card still says its own sentence for a row that was never decided.
+    assert "level === null" in source
+    assert "NO_DECISION" in source
+
+
+@requires_web
+def test_the_admin_card_prints_coverage_without_computing_it():
+    """The same three API fields the report prints, and the same refusal to derive the word."""
+    source = WEB_ADMIN_ANALYSIS.read_text(encoding="utf-8")
+
+    assert "analysis.risk_trace?.decision_coverage ?? null" in source
+    assert "${coverage.usable}/${coverage.total} ${coverage.status}" in source
+    # Omitted entirely on a decision that states no coverage — never rendered as `0/0`.
+    assert "{coverage !== null && (" in source
+
+    for computed in ("usable ===", "usable ==", "? \"complete\"", "? \"partial\""):
+        assert computed not in source, computed
+
+
+@requires_web
+def test_the_admin_card_compares_no_score_against_any_threshold():
+    """The card gained a trace field and no arithmetic with it."""
+    card = WEB_ADMIN_ANALYSIS.read_text(encoding="utf-8").split(
+        "function ForensicResult(", 1
+    )[1].split("\nfunction ", 1)[0]
+
+    for figure in ("score", "threshold", "toFixed", "Number("):
+        assert figure not in card, figure
+
+
+@requires_web
+def test_the_admin_card_keeps_the_human_review_on_the_other_side_of_the_page():
+    """The forensic half and the review half stay separate cards, as R8-T7 drew them.
+
+    The fix added a fact to the evidence card. It must not have moved the boundary this page is
+    built around: what a detector committed and what a colleague said are different kinds of
+    statement, and an operator has to be able to tell them apart at a glance.
+    """
+    source = WEB_ADMIN_ANALYSIS.read_text(encoding="utf-8")
+
+    assert source.count("function ForensicResult(") == 1
+    assert source.count("function HumanReview(") == 1
+    assert source.count("<ForensicResult analysis={analysisResult.analysis} />") == 1
+    assert source.count("<HumanReview review={reviewResult.review} />") == 1
+
+    # The review half reads the review and never the forensic decision.
+    review = source.split("function HumanReview(", 1)[1].split("\nfunction ", 1)[0]
+    for forensic in ("risk_level", "risk_trace", "classificationLabel", "coverage"):
+        assert forensic not in review, forensic
+
+
+@requires_web
+def test_the_printed_report_uses_the_same_summary_component():
+    """One component, rendered once. There is no second decision path for the PDF.
+
+    The report prints by being printed — the browser renders this markup to paper — so the only
+    way the document could say something different from the screen is a second component or a
+    `print:hidden` on this one. Neither exists, and this is what says so.
+    """
+    source = WEB_REPORT.read_text(encoding="utf-8")
+
+    assert source.count("function OperationalSummary(") == 1
+    assert source.count("<OperationalSummary trace={analysis.risk_trace} />") == 1
+
+    body = _operational_summary(source)
+    assert "print:hidden" not in body
+    assert "hidden print:" not in body
+
+
 @requires_web
 def test_a_v4_report_never_falls_back_to_the_p7_wording():
     """The two places the report describes the ruleset's scope in prose.
@@ -1652,6 +1958,49 @@ def test_the_api_trace_carries_the_r9_fields():
     # at all, which is `unavailable` and still not part of any coverage count.
     assert [c.signal for c in rendered.supplementary_evidence] == ["lip_forensics"]
     assert rendered.supplementary_evidence[0].condition == "unavailable"
+
+
+def test_the_api_trace_states_coverage_completeness_so_no_consumer_computes_it():
+    """`is_complete` and `status` ride with the fraction, for both of its outcomes.
+
+    R9-T5 renders `Decision coverage: X/Y complete` in a browser and again in a PDF. Neither
+    may reach that last word by comparing `usable` against `total`: that comparison is the
+    coverage model, and a copy of it downstream is a copy that can disagree with the record.
+    So the API states the answer and the wording of the answer, and the report prints them.
+    """
+    complete = RiskTraceResponse.model_validate(
+        v5(NO_SIGNAL, "R9-200", svd=svd(score=0.5), face=face(score=0.5)),
+        from_attributes=True,
+    )
+
+    assert (complete.decision_coverage.usable, complete.decision_coverage.total) == (2, 2)
+    assert complete.decision_coverage.is_complete is True
+    assert complete.decision_coverage.status == "complete"
+
+    partial = RiskTraceResponse.model_validate(
+        v5(INCONCLUSIVE, "R9-300", svd=svd(status="FAILED"), face=face(score=0.5)),
+        from_attributes=True,
+    )
+
+    assert (partial.decision_coverage.usable, partial.decision_coverage.total) == (1, 2)
+    assert partial.decision_coverage.is_complete is False
+    assert partial.decision_coverage.status == "partial"
+
+
+def test_coverage_completeness_says_nothing_about_what_was_found():
+    """Complete coverage sits under a detection exactly as readily as under no signal.
+
+    The word beside the fraction describes how much of the expected reading was obtained. A
+    reader who took `complete` as reassurance would be reading the coverage line as a verdict,
+    and the one place that could have encouraged it is this pairing.
+    """
+    detected = RiskTraceResponse.model_validate(
+        v5(MANIPULATION_DETECTED, "R9-100", svd=svd(score=0.99), face=face(score=0.5)),
+        from_attributes=True,
+    )
+
+    assert detected.risk_level == MANIPULATION_DETECTED
+    assert detected.decision_coverage.status == "complete"
 
 
 def test_the_api_trace_states_no_coverage_for_a_legacy_decision():

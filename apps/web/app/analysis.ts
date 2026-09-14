@@ -545,6 +545,116 @@ export const RULES_VERSION_V1 = "p7-v1.0.0";
 export const RULES_VERSION_V2 = "r4-v2.0.0";
 export const RULES_VERSION_V3 = "r5-v3.0.0";
 export const RULES_VERSION_V4 = "r7-v4.0.0";
+// v5 is the first version that answers in a vocabulary of its own rather than in levels, and
+// the first that states how much of the expected reading it obtained. Its verdicts are a
+// separate vocabulary from `SUPPORTED_RISK_LEVELS` above, never a relabelling of it: a stored
+// `MEDIUM` is not an `INCONCLUSIVE` and is never shown as one (R9-T1 invariant 4). Which of the
+// two vocabularies a decision speaks is resolved by `rules_version` and by nothing else.
+export const RULES_VERSION_V5 = "r9-v5.0.0";
+
+// --------------------------------------------------------------------------------------
+// The v5 operational verdicts, in the exact words the report says them in (R9-T5)
+// --------------------------------------------------------------------------------------
+
+// The complete vocabulary a `r9-v5.0.0` decision can be stored in. An allowlist for the same
+// reason `SUPPORTED_RISK_LEVELS` is one: a verdict is presented in operational wording because
+// it appears here, never because the string arrived from the API. A v5 row carrying anything
+// else is shown through the existing unsupported path rather than through a sentence chosen for
+// a verdict nobody took.
+export const V5_VERDICTS = [
+  "MANIPULATION_DETECTED",
+  "NO_CALIBRATED_MANIPULATION_SIGNAL",
+  "INCONCLUSIVE",
+] as const;
+
+export type V5Verdict = (typeof V5_VERDICTS)[number];
+
+export function isV5Verdict(level: string): level is V5Verdict {
+  return (V5_VERDICTS as readonly string[]).includes(level);
+}
+
+/**
+ * What the report tells a newsroom reader, in three sentences and in this order.
+ *
+ * `title` is what was detected. `meaning` is what the system actually did to arrive at it, in
+ * terms of detectors and operating points rather than of the media. `clarification` is what the
+ * result does not establish, and it is not a disclaimer appended out of caution — it is the
+ * half of the finding a reader is most likely to supply wrongly on their own, so it is stated
+ * beside the verdict rather than in a footnote under it.
+ *
+ * These strings are locked. None of them contains "real", "fake", "authentic", "genuine" or a
+ * probability, in any of the three cases — including the one where no detector reached its
+ * operating point, which is exactly where a reader wants to be told the media is clean and
+ * exactly where this system will not say it.
+ */
+export type VerdictWording = {
+  title: string;
+  meaning: string;
+  clarification: string;
+};
+
+// Keyed by the union, so this table and the allowlist cannot drift: adding a verdict to one
+// without the other fails `tsc --noEmit`, and a lookup on an arbitrary API string does not
+// type-check at all.
+export const V5_VERDICT_WORDING: Record<V5Verdict, VerdictWording> = {
+  MANIPULATION_DETECTED: {
+    title: "Manipulation detected",
+    meaning: "One or more calibrated decision detectors reached their operating point.",
+    clarification:
+      "This identifies calibrated manipulation evidence. It does not establish the original source or provenance of the media.",
+  },
+  NO_CALIBRATED_MANIPULATION_SIGNAL: {
+    title: "No calibrated manipulation signal detected",
+    meaning:
+      "The completed decision detectors produced no threshold-reaching manipulation signal.",
+    clarification:
+      "This does not prove that the media is authentic, genuine, or source-verified.",
+  },
+  INCONCLUSIVE: {
+    title: "Inconclusive",
+    meaning:
+      "InspectRoot could not complete the calibrated automated assessment because one or more required decision detectors did not produce a usable reading.",
+    clarification:
+      "This result is neither evidence of manipulation nor evidence of authenticity.",
+  },
+};
+
+/**
+ * The title a stored classification is shown under, resolved through the version that took it.
+ *
+ * The one place in this application that maps a persisted level to a name. Both surfaces that
+ * show a classification — the newsroom report and the admin record card — call it, so the same
+ * analysis cannot read as `Manipulation detected` on one screen and `Unsupported` on the other.
+ * A second copy of this mapping is a copy that can disagree, and two screens disagreeing about
+ * the same row is worse than either of them being wrong alone.
+ *
+ * Two vocabularies arrive here and neither is read through the other's table. `rules_version` is
+ * what picks between them and nothing else — not the shape of the string, not a "looks like a
+ * verdict" test. A `MEDIUM` titled from the v5 table, or a `MANIPULATION_DETECTED` titled from
+ * `RISK_LABELS`, would name a decision nobody took (R9-T1 invariant 4), and both fall through to
+ * `UNSUPPORTED` instead — which is the only thing actually known about a level its own version
+ * cannot express.
+ *
+ * Nothing is decided here. The level was committed by the engine when the analysis ran; this
+ * chooses a word for it and compares no score against any threshold.
+ *
+ * The null level is deliberately not handled: "no decision was ever taken" is a statement about
+ * the record, and the report and the admin card word it differently on purpose. Each says its
+ * own sentence and calls this only for a level that exists.
+ */
+export function classificationLabel(level: string, rulesVersion: string | null): string {
+  if (rulesVersion === RULES_VERSION_V5) {
+    return isV5Verdict(level) ? V5_VERDICT_WORDING[level].title : UNSUPPORTED;
+  }
+
+  return isSupportedRiskLevel(level) ? RISK_LABELS[level] : UNSUPPORTED;
+}
+
+// Compile-time proof that the operational vocabulary excludes the words this summary must never
+// reach for, checked by the frontend's existing `tsc --noEmit`. Widening the union to `string`,
+// or adding a reassuring verdict, breaks the build here rather than shipping quietly.
+export type ExcludedVerdict<V extends string> = V extends V5Verdict ? never : V;
+export type ExcludedVerdictStates = ExcludedVerdict<"REAL" | "FAKE" | "AUTHENTIC" | "CLEAN">;
 
 // The operating points R4-T1 and R5-T3 selected, shown to four decimal places wherever the
 // rationale quotes a boundary. Display values only: nothing on the client compares anything
@@ -1135,6 +1245,35 @@ export type RiskTrace = {
   // False when the API could not resolve the ruleset version or its calibration identity. The
   // decision is still shown; what is withheld is the detailed reading of it.
   interpreted: boolean;
+  // `D_usable / D_total` for the decision-eligible detectors, with the API's own word for what
+  // the fraction amounts to. Null on every decision that states no coverage — a legacy ruleset,
+  // which took its decision without a denominator, and a trace the API could not interpret.
+  //
+  // Null is "this decision makes no coverage claim" and is a different fact from "coverage was
+  // zero". A consumer that cannot show the difference shows neither, which is what the report
+  // does: the coverage line is omitted entirely rather than printed as `0/0`.
+  decision_coverage: DecisionCoverage | null;
+};
+
+/**
+ * How much of the reading the persisted ruleset expected was actually obtained.
+ *
+ * Every field is the API's, `status` and `is_complete` included. Nothing here compares `usable`
+ * against `total` and nothing may: that comparison *is* the coverage model, and a copy of it in
+ * the browser is a copy that can disagree with the record the day the model moves. The API
+ * states the fraction, whether it is complete, and the word for it; this file carries all three
+ * through unchanged (R9-T4, R9-T5).
+ *
+ * It is a count of readings and never of findings. `complete` says every detector this ruleset
+ * decides from was read — never that the media is genuine, and it sits under a verdict of
+ * `MANIPULATION_DETECTED` exactly as readily as under one of no signal.
+ */
+export type DecisionCoverage = {
+  usable: number;
+  total: number;
+  is_complete: boolean;
+  // `complete` or `partial`, as the API worded it. Rendered as supplied; never mapped here.
+  status: string;
 };
 
 // The four conditions this build knows how to word. An allowlist, for the same reason
@@ -1281,6 +1420,48 @@ export function parseRiskContribution(payload: unknown): RiskContribution | unde
 }
 
 /**
+ * The coverage statement on one trace, with the same three-way result as the parsers above: a
+ * real statement, a legitimate `null`, or `undefined` for a payload that is not one.
+ *
+ * A missing key is `null` rather than a rejection, for the reason `parseRiskTrace` treats a
+ * missing `risk_trace` as one: a response produced before R9-T4 carries no `decision_coverage`
+ * at all, and every legacy decision produced after it carries an explicit null. Refusing those
+ * payloads would take the whole report down over a field that is additive.
+ *
+ * `is_complete` and `status` are required on a coverage object that is present, and a payload
+ * missing either is rejected rather than repaired. The repair available here would be to
+ * compare `usable` against `total` — which is precisely the computation this field exists to
+ * keep out of the browser, so an absent answer is an unparseable trace and not an occasion to
+ * work one out.
+ */
+export function parseDecisionCoverage(
+  payload: unknown,
+): DecisionCoverage | null | undefined {
+  if (payload === null || payload === undefined) {
+    return null;
+  }
+
+  if (typeof payload !== "object") {
+    return undefined;
+  }
+
+  const { usable, total, is_complete, status } = payload as Record<string, unknown>;
+
+  if (
+    typeof usable !== "number" ||
+    typeof total !== "number" ||
+    !Number.isInteger(usable) ||
+    !Number.isInteger(total) ||
+    typeof is_complete !== "boolean" ||
+    typeof status !== "string"
+  ) {
+    return undefined;
+  }
+
+  return { usable, total, is_complete, status };
+}
+
+/**
  * The trace on one analysis, with the same three-way result as the signal parsers: a real
  * trace, a legitimate `null`, or `undefined` for a payload that is not one.
  *
@@ -1305,7 +1486,10 @@ export function parseRiskTrace(payload: unknown): RiskTrace | null | undefined {
     rule_summary,
     contributions,
     interpreted,
+    decision_coverage,
   } = payload as Record<string, unknown>;
+
+  const parsedCoverage = parseDecisionCoverage(decision_coverage);
 
   const parsedRuleId = parseOptionalString(rule_id);
   const parsedRulesVersion = parseOptionalString(rules_version);
@@ -1319,7 +1503,8 @@ export function parseRiskTrace(payload: unknown): RiskTrace | null | undefined {
     parsedRuleId === undefined ||
     parsedRulesVersion === undefined ||
     parsedCalibrationId === undefined ||
-    parsedSummary === undefined
+    parsedSummary === undefined ||
+    parsedCoverage === undefined
   ) {
     return undefined;
   }
@@ -1342,6 +1527,7 @@ export function parseRiskTrace(payload: unknown): RiskTrace | null | undefined {
     rule_summary: parsedSummary,
     contributions: parsedContributions,
     interpreted,
+    decision_coverage: parsedCoverage,
   };
 }
 

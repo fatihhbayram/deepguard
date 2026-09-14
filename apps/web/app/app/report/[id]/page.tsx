@@ -13,10 +13,11 @@ import {
   ProvenanceSignal,
   FACE_T_HIGH_DISPLAY,
   LIP_T_HIGH_DISPLAY,
-  RISK_LABELS,
   RULES_VERSION_V2,
   RULES_VERSION_V3,
   RULES_VERSION_V4,
+  RULES_VERSION_V5,
+  V5_VERDICT_WORDING,
   RISK_CONDITION_DETAILS,
   RISK_CONDITION_LABELS,
   RISK_CONDITION_UNINTERPRETABLE,
@@ -24,13 +25,14 @@ import {
   RiskRationale,
   RiskTrace,
   SyntheticVideoSignal,
-  UNSUPPORTED,
   acquisitionStatement,
   contributionRoleText,
   credentialsAbsentStatement,
   fetchAnalysis,
+  classificationLabel,
   isKnownRiskCondition,
   isSupportedRiskLevel,
+  isV5Verdict,
   riskRationale,
   unavailableReasonText,
 } from "../../../analysis";
@@ -63,13 +65,22 @@ const NO_DECISION = "No risk decision";
 // Shown where a value the report would otherwise print is simply not in the record.
 const ABSENT = "—";
 
-/** Nothing on this page renders a stored level it has no calibrated meaning for. */
-function riskLabel(level: string | null): string {
+/**
+ * Nothing on this page renders a stored level it has no calibrated meaning for.
+ *
+ * Two vocabularies reach this function and neither is mapped onto the other. A decision taken
+ * under `r9-v5.0.0` is stored as a verdict and titled from the locked v5 table; a decision taken
+ * under any earlier ruleset is stored as a level and labelled from `RISK_LABELS`. The version is
+ * what picks between them, never the shape of the string: reading a `MEDIUM` through the v5 table
+ * or a `MANIPULATION_DETECTED` through `RISK_LABELS` would name a decision nobody took, and both
+ * fall through to `UNSUPPORTED` instead (R9-T1 invariant 4).
+ */
+function riskLabel(level: string | null, rulesVersion: string | null): string {
   if (level === null) {
     return NO_DECISION;
   }
 
-  return isSupportedRiskLevel(level) ? RISK_LABELS[level] : UNSUPPORTED;
+  return classificationLabel(level, rulesVersion);
 }
 
 /**
@@ -328,12 +339,86 @@ function Contribution({
  * it, which is the honest rendering: a rule id only means something inside the version that
  * defined it, and borrowing another version's wording would describe a decision nobody took.
  */
+/**
+ * The three things a newsroom reader needs first, above every detector figure on the page.
+ *
+ * It answers, in this order and in one block: what InspectRoot detected, whether the decision
+ * coverage was complete, and what the result does not prove. A reader who stops here has the
+ * finding and its limits; everything below is the forensic detail that supports it, and none of
+ * it is removed or summarised away by this section existing.
+ *
+ * **Nothing is decided here.** There is not a comparison in this function. The verdict is the
+ * persisted `risk_level` read off the trace, the three sentences are looked up from a frozen
+ * table by that verdict, and the coverage line prints `usable`, `total` and the API's own word
+ * for the fraction. In particular `complete` is never reached by comparing `usable` against
+ * `total`: that comparison is the coverage model, and a copy of it in this component is a copy
+ * that can disagree with the record (R9-T4, R9-T5). No score, no threshold and no probability
+ * appears in this block at all.
+ *
+ * **It is v5-only, and silently so.** A decision taken under any earlier ruleset is returned as
+ * `null` and the report renders exactly as it did before this section existed. Those versions
+ * answered in levels, not in verdicts, and took their decisions without a denominator — putting
+ * v5 sentences over a stored `MEDIUM` would describe a decision nobody took, and printing a
+ * coverage line for it would invent a claim it never made (R9-T1 invariant 4). A v5 row whose
+ * verdict is outside the frozen vocabulary is returned as `null` for the same reason.
+ *
+ * The same component is the printed one. There is no PDF path on this page — printing is the
+ * browser printing this markup — so the document and the screen cannot diverge in what they
+ * say, only in how much toner it costs.
+ */
+function OperationalSummary({ trace }: { trace: RiskTrace | null }) {
+  if (trace === null || trace.rules_version !== RULES_VERSION_V5) {
+    return null;
+  }
+
+  if (!isV5Verdict(trace.risk_level)) {
+    return null;
+  }
+
+  const wording = V5_VERDICT_WORDING[trace.risk_level];
+  const coverage = trace.decision_coverage;
+
+  return (
+    <section className="mt-6 break-inside-avoid rounded-lg border-2 border-black/25 px-5 py-4 dark:border-white/30 print:border-black/50 print:px-4">
+      <h2 className="text-[11px] font-semibold tracking-[0.16em] uppercase opacity-70">
+        Assessment summary
+      </h2>
+
+      {/* What was detected. The largest type in the block, because it is the sentence a reader
+          takes away and the one most likely to be read alone. */}
+      <p className="mt-2 text-2xl font-semibold tracking-[-0.02em]">{wording.title}</p>
+
+      {/* What the system did to arrive at it — in detectors and operating points, never in a
+          statement about the media. */}
+      <p className="mt-2 max-w-[76ch] text-sm leading-relaxed">{wording.meaning}</p>
+
+      {/* Was coverage complete? Omitted entirely when the decision states no coverage, which is
+          a different fact from coverage of zero and must never be printed as one. */}
+      {coverage !== null && (
+        <p className="mt-3 font-mono text-xs">
+          Decision coverage: {coverage.usable}/{coverage.total} {coverage.status}
+        </p>
+      )}
+
+      {/* What it does not prove. Given the same weight as the finding rather than a footnote's:
+          this is the half a reader is most likely to supply wrongly on their own. */}
+      <p className="mt-3 max-w-[76ch] border-t border-black/12 pt-3 text-sm leading-relaxed dark:border-white/20 print:border-black/40">
+        {wording.clarification}
+      </p>
+    </section>
+  );
+}
+
 function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
   const level = analysis.risk_level;
-  const rationale = riskRationale(
-    analysis.risk_rules_version,
-    analysis.risk_rule_id,
-  );
+  const rulesVersion = analysis.risk_rules_version;
+  const rationale = riskRationale(rulesVersion, analysis.risk_rule_id);
+  // Under v5 the verdict, what it means and what it does not prove are stated in full by the
+  // operational summary at the top of the report. This card keeps its record fields — the rule,
+  // the ruleset, the calibration — and says nothing about the verdict a second time: the three
+  // notes below are written about `UNKNOWN` and the legacy levels, and none of them is true of a
+  // v5 decision. A summary that contradicts the block above it is worse than a shorter card.
+  const legacyVocabulary = rulesVersion !== RULES_VERSION_V5;
 
   return (
     <section
@@ -341,9 +426,9 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
     >
       <h2 className="text-base font-semibold">InspectRoot risk classification</h2>
 
-      <p className="mt-2 text-2xl font-semibold">{riskLabel(level)}</p>
+      <p className="mt-2 text-2xl font-semibold">{riskLabel(level, rulesVersion)}</p>
 
-      {level === null ? (
+      {!legacyVocabulary ? null : level === null ? (
         <p className="mt-1 text-xs opacity-70">
           No risk decision is stored for this analysis. That is not the same as{" "}
           <span className="font-mono">Unknown</span>: nothing classified this analysis, so
@@ -541,7 +626,9 @@ function RiskTraceSection({ trace }: { trace: RiskTrace }) {
     >
       <p className="text-xs uppercase tracking-wide opacity-60">Final risk</p>
       <p className="mt-0.5 text-lg font-semibold break-words">
-        {riskLabel(trace.risk_level)}
+        {/* Read through the trace's own version, which is the version the decision was taken
+            under — the same resolution the summary at the top of the report makes. */}
+        {riskLabel(trace.risk_level, trace.rules_version)}
       </p>
 
       <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -1361,6 +1448,10 @@ export default async function Report({ params }: { params: Promise<{ id: string 
           value={analysis.size_bytes === null ? ABSENT : `${analysis.size_bytes} bytes`}
         />
       </dl>
+
+        {/* The operational finding first, above the detector evidence that supports it. Null on
+            every pre-v5 decision, which leaves the report below exactly as it was. */}
+        <OperationalSummary trace={analysis.risk_trace} />
 
         <ScopeDisclosure analysis={analysis} />
 
