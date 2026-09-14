@@ -1,13 +1,20 @@
 /**
  * The human review of one analysis, shown beside the forensic result it is about (R8-T7).
  *
- * **The whole design of this page is the boundary down the middle of it.** The top half is the
- * detector result — the risk classification, the ruleset that produced it, the calibration its
- * thresholds were measured under and the rule that fired — and it has no control of any kind
- * on it. The bottom half is what a person said, and it is the only part of this screen with a
- * form. The two are drawn as separate cards with separate headings and separate explanatory
- * prose, because an operator reading a case has to be able to say which of the two statements
- * in front of them came from evidence and which came from a colleague.
+ * **The whole design of this page is the boundaries between its cards.** The automated
+ * assessment — the verdict, the coverage it was taken from, the ruleset, the calibration and the
+ * rule that fired — has no control of any kind on it. Authenticity and provenance is a second
+ * card because it is a second question, answered from the file rather than from the detectors.
+ * What a person said is the third, and it is the only part of this screen with a form. They are
+ * drawn as separate cards with separate headings and separate explanatory prose, because an
+ * operator reading a case has to be able to say which of the three statements in front of them
+ * came from a detector, which from the file itself, and which from a colleague.
+ *
+ * **The order is the report's order (R9-T8).** Assessment, then coverage beside it, then
+ * provenance, then human review. The two surfaces differ in density and in how much of the
+ * record they print, and they must not differ in what they say: an operator comparing this
+ * screen with the report a reader was sent has to find the same verdict, the same coverage and
+ * the same provenance state on both.
  *
  * That separation is structural and not a styling decision. The forensic values come from
  * `fetchAnalysis` in `../../../analysis`; the review comes from `fetchReview` in `../../reviews`;
@@ -43,10 +50,15 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
 import {
+  ProvenanceSignal,
+  RULES_VERSION_V5,
   RiskTrace,
+  V5_VERDICT_WORDING,
   classificationLabel,
   fetchAnalysis,
   fetchSession,
+  isV5Verdict,
+  provenanceWording,
 } from "../../../analysis";
 import { LOGIN_PATH, adminAnalysisPath } from "../../../session";
 import { AdminAlert } from "../../components/AdminAlert";
@@ -151,24 +163,31 @@ function ForensicResult({
 }) {
   const level = analysis.risk_level;
   const coverage = analysis.risk_trace?.decision_coverage ?? null;
+  // The limit the verdict carries, for the one vocabulary that states one. Looked up from the
+  // same frozen table the report reads (R9-T5), keyed by the ruleset the decision names and by
+  // nothing else — so the two screens cannot word the same verdict differently, and a pre-v5
+  // level gets no v5 sentence attached to it (R9-T1 invariant 4).
+  const wording =
+    analysis.risk_rules_version === RULES_VERSION_V5 &&
+    level !== null &&
+    isV5Verdict(level)
+      ? V5_VERDICT_WORDING[level]
+      : null;
 
   return (
     <AdminSection
-      title="Forensic result"
+      title="Automated assessment"
       description="Committed by the detection pipeline under the ruleset named below, and immutable. There is no control on this card and no route in this application that can alter any value on it — the review beneath is a separate record and does not change what the detectors concluded."
     >
+      {/* The assessment first and the coverage beside it, in the order the report states them
+          (R9-T8). The record fields follow, under their own rule: an operator opening this case
+          needs the finding and how much of the reading it was taken from before they need the
+          identity of the ruleset that took it. */}
       <dl className="mt-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
-        <Fact label="Risk classification">
+        <Fact label="Assessment">
           {level === null
             ? NO_DECISION
             : classificationLabel(level, analysis.risk_rules_version)}
-        </Fact>
-        <Fact label="Analysis status">{analysis.status}</Fact>
-        <Fact label="Ruleset">
-          <AdminValue className="break-all">{analysis.risk_rules_version}</AdminValue>
-        </Fact>
-        <Fact label="Rule fired">
-          <AdminValue className="break-all">{analysis.risk_rule_id}</AdminValue>
         </Fact>
         {coverage !== null && (
           <Fact label="Decision coverage">
@@ -180,6 +199,26 @@ function ForensicResult({
             </AdminValue>
           </Fact>
         )}
+      </dl>
+
+      {/* What the assessment does not establish, in the verdict's own locked words. The report
+          prints this sentence under the same verdict; an operator comparing the two screens has
+          to find the same limits on both, or the denser screen becomes the one that reads as
+          more certain. */}
+      {wording !== null && (
+        <p className="mt-4 max-w-[74ch] text-[13px] leading-relaxed text-muted">
+          {wording.clarification}
+        </p>
+      )}
+
+      <dl className="mt-5 grid grid-cols-1 gap-5 border-t border-hair pt-5 sm:grid-cols-2">
+        <Fact label="Analysis status">{analysis.status}</Fact>
+        <Fact label="Ruleset">
+          <AdminValue className="break-all">{analysis.risk_rules_version}</AdminValue>
+        </Fact>
+        <Fact label="Rule fired">
+          <AdminValue className="break-all">{analysis.risk_rule_id}</AdminValue>
+        </Fact>
         <Fact label="Calibration">
           <AdminValue className="break-all">{analysis.risk_calibration_id}</AdminValue>
         </Fact>
@@ -190,6 +229,98 @@ function ForensicResult({
           <AdminValue className="break-all">{analysis.created_at}</AdminValue>
         </Fact>
       </dl>
+    </AdminSection>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * The provenance half — a separate question, from separate evidence
+ * ------------------------------------------------------------------ */
+
+/**
+ * What the file itself claims about its origin, on the two axes the API states it on (R9-T6).
+ *
+ * Its own card and never a row on the one above, which is the whole point of the section. An
+ * operator who met the provenance state as a field beside the verdict would read it as an input
+ * to that verdict; it is not one in either direction — no assessment moved this state and this
+ * state moved no assessment — and a card of its own is how this screen says so, the same way the
+ * report says it with a heading of its own.
+ *
+ * **Both axes, always together.** `UNVERIFIED` alone cannot say whether anybody looked: a file
+ * that was read and carries nothing and a file whose reading failed both answer it, and only
+ * `provenance_availability` tells them apart. `provenanceWording` resolves the pair into the one
+ * thing to say and this card prints it; it makes no reading of its own, and in particular it
+ * never derives authenticity from the presence of a manifest.
+ *
+ * A state outside the vocabulary this build knows — an older API that states no axes, a newer one
+ * that states something unfamiliar — gets the raw evidence with no caption rather than a sentence
+ * written for a different state. The facts below the state are the record either way.
+ */
+function ProvenanceRecord({ signal }: { signal: ProvenanceSignal | null }) {
+  const wording =
+    signal === null
+      ? null
+      : provenanceWording(signal.provenance_status, signal.provenance_availability);
+
+  return (
+    <AdminSection
+      title="Authenticity and provenance"
+      description="A separate question from the assessment above, answered from separate evidence and recorded separately. Nothing here reports the media as authentic or manipulated: the absence of credentials is not evidence of manipulation, and their presence is not proof of authenticity."
+    >
+      {signal === null ? (
+        <p className="mt-4 max-w-[74ch] text-[13px] leading-relaxed text-muted">
+          No provenance reading is stored for this analysis. That is not a failed reading —
+          nothing recorded one, so there is no evidence from this source either way.
+        </p>
+      ) : (
+        <>
+          {wording !== null && (
+            <div className="mt-4">
+              {/* The pair, as the pair it is. Neither axis is ever printed without the other. */}
+              <p className="font-mono text-[11px] tracking-[0.08em] text-muted uppercase">
+                {signal.provenance_status} · {signal.provenance_availability}
+              </p>
+              <p className="mt-1.5 text-[15px] font-semibold text-bone">{wording.title}</p>
+              <p className="mt-1.5 max-w-[74ch] text-[13px] leading-relaxed text-muted">
+                {wording.meaning}
+              </p>
+              <p className="mt-2 max-w-[74ch] text-[13px] leading-relaxed text-muted">
+                {wording.clarification}
+              </p>
+            </div>
+          )}
+
+          <dl
+            className={`grid grid-cols-1 gap-5 sm:grid-cols-2 ${
+              wording === null ? "mt-4" : "mt-5 border-t border-hair pt-5"
+            }`}
+          >
+            <Fact label="Reading status">
+              <AdminValue className="break-all">{signal.status}</AdminValue>
+            </Fact>
+            <Fact label="Manifest present in the file">
+              {signal.manifest_exists === null
+                ? "unknown — the reading failed"
+                : signal.manifest_exists
+                  ? "yes"
+                  : "no"}
+            </Fact>
+            <Fact label="Validation state">
+              <AdminValue className="break-all">{signal.validation_state}</AdminValue>
+            </Fact>
+            <Fact label="Claim generator">
+              <AdminValue className="break-all">{signal.claim_generator}</AdminValue>
+            </Fact>
+            <Fact label="Signature issuer">
+              <AdminValue className="break-all">{signal.signature_issuer}</AdminValue>
+            </Fact>
+            <Fact label="Remote manifest URL">
+              {/* Recorded and never fetched — the same limit the report states. */}
+              <AdminValue className="break-all">{signal.remote_manifest_url}</AdminValue>
+            </Fact>
+          </dl>
+        </>
+      )}
     </AdminSection>
   );
 }
@@ -557,10 +688,11 @@ export default async function AdminAnalysisReview({
         description={
           <>
             <p>
-              One analysis, and what has been said about it. The forensic result and the human
-              review are two separate records kept in two separate tables: the first is what the
-              detectors concluded and cannot be edited from anywhere in this application, and the
-              second is what a reviewer noted and can be revised at any time.
+              One analysis, and what has been said about it. The automated assessment and the
+              provenance reading below it are the forensic record — what the detectors concluded
+              and what the file itself carries — and neither can be edited from anywhere in this
+              application. The human review is a separate record in a separate table: what a
+              reviewer noted, revisable at any time, and never a second answer about the media.
             </p>
             <p>
               <AdminValue className="break-all">{id}</AdminValue>
@@ -597,11 +729,19 @@ export default async function AdminAnalysisReview({
         </div>
       )}
 
+      {/* The hierarchy the report is built on, at this surface's density (R9-T8): the automated
+          assessment with its coverage, then authenticity and provenance as a separate question,
+          then what a person made of the case. The three are three cards and are never merged —
+          an operator has to be able to say which of the statements in front of them came from a
+          detector, which from the file itself, and which from a colleague. */}
       <div className="mt-5 space-y-5">
         {!analysisResult.ok ? (
           <AdminAlert tone="error">{analysisResult.error}</AdminAlert>
         ) : (
-          <ForensicResult analysis={analysisResult.analysis} />
+          <>
+            <ForensicResult analysis={analysisResult.analysis} />
+            <ProvenanceRecord signal={analysisResult.analysis.provenance} />
+          </>
         )}
 
         {!reviewResult.ok ? (

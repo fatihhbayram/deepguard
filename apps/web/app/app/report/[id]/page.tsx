@@ -17,6 +17,7 @@ import {
   RULES_VERSION_V3,
   RULES_VERSION_V4,
   RULES_VERSION_V5,
+  V5Verdict,
   V5_VERDICT_WORDING,
   RISK_CONDITION_DETAILS,
   RISK_CONDITION_LABELS,
@@ -48,6 +49,14 @@ import { PrintButton } from "./print-button";
  * — those words are absent from this file deliberately, because a document that looks
  * official is read as one. Nothing here is cryptographically signed: the SHA-256 shown is the
  * hash of the *analysed media*, never of this report, and the page says so where it is shown.
+ *
+ * **The order of the page is the argument it makes (R9-T8).** The assessment and what it does
+ * not prove come first, then the scope that assessment was validated over, then authenticity and
+ * provenance as a separate question from separate evidence, then the whole technical forensic
+ * record under one heading. A newsroom reader who stops after the first screen has the finding
+ * and its limits; a forensic reader crosses one boundary and has every figure. Nothing is removed
+ * to achieve that — the sections were reordered and the wording that said the same thing three
+ * times was reduced to saying it once.
  *
  * Nothing is recomputed. The risk classification is displayed exactly as the worker committed
  * it under a named ruleset; no detector score is compared against a threshold here, and no
@@ -341,6 +350,28 @@ function Contribution({
  * defined it, and borrowing another version's wording would describe a decision nobody took.
  */
 /**
+ * The verdict this decision is stated in, or `null` for a decision that states none.
+ *
+ * The one place on this page that decides whether a row speaks the v5 vocabulary, and it is
+ * asked twice: once by the assessment summary, which is the block that states the verdict, and
+ * once by the page body, which drops the legacy classification card when that block has already
+ * said everything the card would repeat. Two copies of this condition could disagree, and a
+ * report that both summarised a decision and restated it — or did neither — is a report whose
+ * hierarchy depends on which copy was edited last.
+ *
+ * `rules_version` is what picks the vocabulary and nothing else, never the shape of the string
+ * (R9-T1 invariant 4). A pre-v5 decision and a v5 row carrying a verdict outside the frozen
+ * table both answer `null`, and the report falls back to the legacy presentation for both.
+ */
+function v5Verdict(trace: RiskTrace | null): V5Verdict | null {
+  if (trace === null || trace.rules_version !== RULES_VERSION_V5) {
+    return null;
+  }
+
+  return isV5Verdict(trace.risk_level) ? trace.risk_level : null;
+}
+
+/**
  * The three things a newsroom reader needs first, above every detector figure on the page.
  *
  * It answers, in this order and in one block: what InspectRoot detected, whether the decision
@@ -368,15 +399,13 @@ function Contribution({
  * say, only in how much toner it costs.
  */
 function OperationalSummary({ trace }: { trace: RiskTrace | null }) {
-  if (trace === null || trace.rules_version !== RULES_VERSION_V5) {
+  const verdict = v5Verdict(trace);
+
+  if (verdict === null || trace === null) {
     return null;
   }
 
-  if (!isV5Verdict(trace.risk_level)) {
-    return null;
-  }
-
-  const wording = V5_VERDICT_WORDING[trace.risk_level];
+  const wording = V5_VERDICT_WORDING[verdict];
   const coverage = trace.decision_coverage;
 
   return (
@@ -499,16 +528,33 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
         </p>
       )}
 
-      <p className="mt-4 text-xs opacity-80">
-        Risk is a deterministic InspectRoot classification based on calibrated forensic
-        evidence. It is not a Fake/Real determination. Each detector was compared only against
-        the threshold measured for it, and those thresholds are points on unrelated scales
-        that cannot be compared with each other; the scores were never averaged, weighted,
-        voted on or combined into a single number. This classification was recorded
-        when the analysis ran and is reproduced here unchanged; it is not recalculated by this
-        report.
-      </p>
     </section>
+  );
+}
+
+/**
+ * The guarantee the whole evidence group is read under, printed once beneath it.
+ *
+ * It was the closing paragraph of the classification card until R9-T8, which is where it stopped
+ * working: a v5 report states its decision in the assessment summary and its record in the
+ * decision breakdown, and that card is not drawn at all. Moving the paragraph out of it keeps
+ * the guarantee on every report — legacy, v5, and a v5 row whose trace the API could not supply
+ * — and keeps it printed exactly once, whichever of the cards above it were drawn.
+ *
+ * Every sentence is about how a decision was taken and none is about this media. It says what
+ * the classification is not (a Fake/Real determination), what was never done to the figures
+ * (averaged, weighted, voted, combined), and that this page reproduces rather than recomputes.
+ */
+function ClassificationGuarantee() {
+  return (
+    <p className="mt-4 max-w-[76ch] break-inside-avoid text-xs leading-relaxed opacity-80">
+      The assessment above is a deterministic InspectRoot classification based on calibrated
+      forensic evidence. It is not a Fake/Real determination. Each detector was compared only
+      against the threshold measured for it, and those thresholds are points on unrelated scales
+      that cannot be compared with each other; the scores were never averaged, weighted, voted on
+      or combined into a single number. This classification was recorded when the analysis ran
+      and is reproduced here unchanged; it is not recalculated by this report.
+    </p>
   );
 }
 
@@ -625,7 +671,12 @@ function RiskTraceSection({ trace }: { trace: RiskTrace }) {
       title="Decision breakdown"
       subtitle="The stored decision read back under the ruleset it was taken under. Every statement below is the API's; this report compares no score against any threshold and re-derives no part of the classification."
     >
-      <p className="text-xs uppercase tracking-wide opacity-60">Final risk</p>
+      {/* The decision as the record holds it, labelled as the record rather than as a second
+          finding. Under v5 the same words stand in the assessment summary at the top of the
+          report; this is where they are shown to have been read back from the trace, beside the
+          rule and the calibration that produced them, and dropping them here would leave the
+          decision breakdown explaining a decision it does not state. */}
+      <p className="text-xs uppercase tracking-wide opacity-60">Decision as stored</p>
       <p className="mt-0.5 text-lg font-semibold break-words">
         {/* Read through the trace's own version, which is the version the decision was taken
             under — the same resolution the summary at the top of the report makes. */}
@@ -703,10 +754,45 @@ function ScopeDisclosure({ analysis }: { analysis: AnalysisSummary }) {
 
   return (
     <section className="mt-4 break-inside-avoid rounded border-2 border-amber-500/60 p-4">
+      {/* Titled in the vocabulary of the decision it qualifies. A v5 report says "assessment"
+          from the summary down and a legacy one says "risk model", because that is the word
+          each of those rulesets answered in — one heading for both would put the newer word on
+          an older decision. */}
       <h2 className="text-sm font-semibold uppercase tracking-wide">
-        Scope of this risk model
+        {ruleset === RULES_VERSION_V5
+          ? "Scope of this assessment"
+          : "Scope of this risk model"}
       </h2>
-      {ruleset === RULES_VERSION_V4 ? (
+      {ruleset === RULES_VERSION_V5 ? (
+        <>
+          <p className="mt-2 text-sm font-medium">
+            This assessment is validated for generated video and for face swaps, by the two
+            decision detectors it is taken from, each read against a threshold measured for it
+            alone.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            Both thresholds were set to almost never flag legitimate footage: neither detector
+            flagged any of the 54 genuine clips in the calibration corpus. That choice is paid
+            for in detection rate. At these operating points the synthetic-video detector
+            flagged 54.6% of generated video and the face classifier flagged 44% of face swaps,
+            so a great deal of manipulated media is correctly not flagged.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            The mouth-dynamics model still runs and its score is reported below, but under this
+            ruleset it is evidence only: it cannot reach the assessment above, and a reading it
+            failed to produce does not reduce the decision coverage stated there. R7-T5 replayed
+            the rules that once let it decide over 307 independent genuine recordings and found
+            it responsible for 21 of 22 false HIGH results, so it was withdrawn rather than
+            re-tuned — no study has measured an operating point that would be safe here.
+          </p>
+          <p className="mt-2 text-xs opacity-80">
+            The two deciding detectors cover different things and are read independently.
+            Neither staying below its threshold is evidence about the other: in the R4-T1 study
+            they never agreed on a single clip, and each was blind to the manipulation family
+            the other was calibrated for.
+          </p>
+        </>
+      ) : ruleset === RULES_VERSION_V4 ? (
         <>
           <p className="mt-2 text-sm font-medium">
             This risk model is validated for generated video and for face swaps, by two
@@ -795,10 +881,6 @@ function ScopeDisclosure({ analysis }: { analysis: AnalysisSummary }) {
           does not rule out face manipulation.
         </p>
       )}
-      <p className="mt-2 text-xs opacity-80">
-        Risk is a deterministic InspectRoot classification based on calibrated forensic
-        evidence. It is not a Fake/Real determination.
-      </p>
     </section>
   );
 }
@@ -1198,13 +1280,16 @@ function FaceManipulationSection({
 }) {
   // Whether this detector was eligible to decide is a property of the ruleset the decision
   // was taken under. R4-T2 promoted it from independent evidence to a calibrated decider and
-  // every ruleset since has kept it one — r7-v4.0.0 included, which withdrew the
-  // mouth-dynamics model and left this one exactly as it was. A report on a `p7-v1.0.0`
-  // decision must keep saying what was true of that decision.
+  // every ruleset since has kept it one — r7-v4.0.0, which withdrew the mouth-dynamics model
+  // and left this one exactly as it was, and r9-v5.0.0, which changed how the verdict is
+  // worded and how coverage is stated but not which detectors decide or at what operating
+  // point (R9-T2). A report on a `p7-v1.0.0` decision must keep saying what was true of that
+  // decision.
   const decides =
     analysis.risk_rules_version === RULES_VERSION_V2 ||
     analysis.risk_rules_version === RULES_VERSION_V3 ||
-    analysis.risk_rules_version === RULES_VERSION_V4;
+    analysis.risk_rules_version === RULES_VERSION_V4 ||
+    analysis.risk_rules_version === RULES_VERSION_V5;
 
   return (
     <Section
@@ -1303,6 +1388,14 @@ function LipForensicsSection({
   // below was read, recorded and shown, and it took no part in the level — including when it
   // is above the threshold measured for it.
   const decides = analysis.risk_rules_version === RULES_VERSION_V3;
+  // The two rulesets that had an operating point for this model and chose not to apply it.
+  // "Evidence only" and "not calibrated under this ruleset" are different facts about a score
+  // — one was measured and withheld, the other was never measured — and they are worded apart
+  // so the panel cannot contradict the scope block, which has said since R7-T6 that this model
+  // is calibrated and still cannot decide.
+  const evidenceOnly =
+    analysis.risk_rules_version === RULES_VERSION_V4 ||
+    analysis.risk_rules_version === RULES_VERSION_V5;
 
   return (
     <Section
@@ -1377,6 +1470,15 @@ function LipForensicsSection({
               numbers are points on three unrelated scales and comparing them to each other is
               not a comparison of anything. It was measured over 40 clips of a single dataset,
               which is a smaller study than the one behind the two detectors above.
+            </p>
+          ) : evidenceOnly ? (
+            <p className="mt-2 text-xs opacity-80">
+              An operating point was measured for this model in R5-T3 and under this ruleset it
+              is <strong>not applied</strong>: the model is read as{" "}
+              <strong>evidence only</strong>, and its score cannot reach the assessment above or
+              change it — including when it stands above that threshold. R7-T6 withdrew it from
+              the rules after R7-T5 measured what that operating point did to genuine media.
+              This signal is recorded as an independent forensic fact.
             </p>
           ) : (
             <p className="mt-2 text-xs opacity-80">
@@ -1503,60 +1605,95 @@ export default async function Report({ params }: { params: Promise<{ id: string 
         />
       </dl>
 
-        {/* The operational finding first, above the detector evidence that supports it. Null on
-            every pre-v5 decision, which leaves the report below exactly as it was. */}
+        {/* 1 — The assessment. The operational finding first, above every figure that supports
+            it. Null on every pre-v5 decision, which leaves the classification card below as the
+            report's first statement exactly as it was. Decision coverage is stated inside it,
+            beside the verdict it qualifies, rather than as a section of its own: a coverage
+            fraction read apart from the verdict it belongs to is a number with nothing to be
+            about. */}
         <OperationalSummary trace={analysis.risk_trace} />
 
+        {/* What that assessment was and was not validated to find. Kept immediately under it
+            because it qualifies the finding rather than supporting it — a reader who stops at
+            the assessment has still read the scope. */}
         <ScopeDisclosure analysis={analysis} />
 
-        <RiskSection analysis={analysis} />
+        {/* 2 — Authenticity and provenance, on its own and above the technical evidence (R9-T6,
+            R9-T8). It was the last section on the page until now, after every detector panel,
+            and position on a page is an argument: a provenance state printed at the foot of a
+            run of manipulation evidence reads as the last of it. It is not one, in either
+            direction — no assessment above moved this state and this state moved no assessment
+            — and the surest way to say so is to answer it here, as its own question, before the
+            evidence behind the assessment begins. */}
+        <h2 className="mt-10 border-b border-black/15 pb-2 text-[13px] font-semibold tracking-[0.1em] uppercase print:border-black/40">
+          Authenticity and provenance
+        </h2>
+        <p className="mt-3 max-w-[76ch] text-xs leading-relaxed opacity-70">
+          A separate question from the assessment above, answered from separate evidence.
+          Provenance is what the file itself carries about where it came from and who signed for
+          it; the detector evidence further down is what was measured about the picture and the
+          sound. Neither reaches the other: no assessment on this page was moved by the
+          provenance state below, and the provenance state below was not moved by any assessment
+          on this page. Nothing here reports the media as authentic or manipulated, and no
+          provenance state on this page can.
+        </p>
+
+        <ProvenanceSection signal={analysis.provenance} analysis={analysis} />
+
+        {/* 3 — The technical forensic record, under one heading and in one place. Everything
+            below this rule is the evidence the assessment was taken from and the facts about the
+            artifact it was taken on; nothing below it is removed, shortened or summarised away
+            by the two sections above existing, and a reader who needs the figures has one
+            boundary to cross to reach all of them. */}
+        <h2 className="mt-10 border-b border-black/15 pb-2 text-[13px] font-semibold tracking-[0.1em] uppercase print:border-black/40">
+          Technical forensic evidence
+        </h2>
+        <p className="mt-3 max-w-[76ch] text-xs leading-relaxed opacity-70">
+          The record behind the assessment: the decision as it was stored, the artifact it was
+          taken on, and every detector reading kept for it. None of it is recomputed here.
+        </p>
+
+        {/* The classification card, on the decisions the assessment summary does not state.
+            Under v5 the verdict, its meaning and its limits are stated up there and the rule,
+            the ruleset and the calibration are stated in the decision breakdown below, so
+            drawing it would print the same verdict a third time and the same three fields a
+            second — which is the repetition R9-T8 exists to remove, not evidence it removes.
+            Nothing it holds is lost: its rationale table is written for the legacy rulesets and
+            resolves to nothing under v5, and its three notes are written about `UNKNOWN` and the
+            legacy levels. A v5 row the API supplied no trace for is not summarised, so it keeps
+            this card and everything on it. */}
+        {v5Verdict(analysis.risk_trace) === null && <RiskSection analysis={analysis} />}
 
         {/* Only when the API supplied one. A report without a trace keeps exactly the
             presentation it had, and nothing here rebuilds one from the scores below. */}
         {analysis.risk_trace !== null && <RiskTraceSection trace={analysis.risk_trace} />}
 
+        {/* Printed once, under whichever of the two cards above were drawn. */}
+        <ClassificationGuarantee />
+
         <MediaSection analysis={analysis} media={analysis.media} />
 
-        <h2 className="mt-10 border-b border-black/15 pb-2 text-[13px] font-semibold tracking-[0.1em] uppercase print:border-black/40">
-          Independent forensic evidence
-        </h2>
-        <p className="mt-3 max-w-[76ch] text-xs leading-relaxed opacity-70">
+        <h3 className="mt-8 text-[11px] font-semibold tracking-[0.14em] uppercase opacity-70">
+          Independent detector evidence
+        </h3>
+        <p className="mt-2 max-w-[76ch] text-xs leading-relaxed opacity-70">
           Each source is recorded separately and none of them is combined into the other.
-          {analysis.risk_rules_version === RULES_VERSION_V4
-            ? " Two of them can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. The mouth-dynamics model is calibrated and is recorded here as independent evidence, but under this ruleset it cannot change that classification. Neither can provenance, speaking evidence or audio evidence, which have no calibrated threshold at all."
+          {analysis.risk_rules_version === RULES_VERSION_V5
+            ? " Two of them can reach the assessment above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. The mouth-dynamics model is calibrated and is recorded here as independent evidence; under this ruleset it cannot reach that assessment, and a reading it failed to produce does not reduce the decision coverage stated there. Speaking evidence and audio evidence have no calibrated threshold at all."
+            : analysis.risk_rules_version === RULES_VERSION_V4
+            ? " Two of them can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. The mouth-dynamics model is calibrated and is recorded here as independent evidence, but under this ruleset it cannot change that classification. Neither can speaking evidence or audio evidence, which have no calibrated threshold at all."
             : analysis.risk_rules_version === RULES_VERSION_V3
-            ? " Three of them are calibrated and can reach the risk classification above — the synthetic-video detector, the face-manipulation classifier and the mouth-dynamics model — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence and audio evidence have no calibrated threshold and cannot change that classification."
+            ? " Three of them are calibrated and can reach the risk classification above — the synthetic-video detector, the face-manipulation classifier and the mouth-dynamics model — each against a threshold measured for it alone, and never by pooling their scores. Speaking evidence and audio evidence have no calibrated threshold and cannot change that classification."
             : analysis.risk_rules_version === RULES_VERSION_V2
-              ? " Two of them are calibrated and can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. Provenance, speaking evidence, mouth-dynamics evidence and audio evidence have no calibrated threshold and cannot change that classification."
-              : " Only the synthetic-video detector contributes to the risk classification above; provenance, speaking evidence, face-manipulation evidence, mouth-dynamics evidence and audio evidence are recorded as independent forensic facts and cannot change that classification."}
+              ? " Two of them are calibrated and can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. Speaking evidence, mouth-dynamics evidence and audio evidence have no calibrated threshold and cannot change that classification."
+              : " Only the synthetic-video detector contributes to the risk classification above; speaking evidence, face-manipulation evidence, mouth-dynamics evidence and audio evidence are recorded as independent forensic facts and cannot change that classification."}
         </p>
 
         <SyntheticVideoSection signal={analysis.synthetic_video} />
-        <ActiveSpeakerSection signal={analysis.active_speaker} />
         <FaceManipulationSection signal={analysis.face_manipulation} analysis={analysis} />
         <LipForensicsSection signal={analysis.lip_forensics} analysis={analysis} />
+        <ActiveSpeakerSection signal={analysis.active_speaker} />
         <AudioSection signal={analysis.audio_authenticity} />
-
-        {/* Provenance under its own heading, outside the group above (R9-T6). It was inside
-            it until now, between two detectors, and position on a page is an argument: a
-            reader arriving at a provenance state after a run of manipulation evidence — and
-            after a paragraph explaining which sources may reach the classification — reads
-            it as one more input to that classification. It is not one, in either direction,
-            and the surest way to say so is to stop printing it among them. */}
-        <h2 className="mt-10 border-b border-black/15 pb-2 text-[13px] font-semibold tracking-[0.1em] uppercase print:border-black/40">
-          Authenticity and provenance
-        </h2>
-        <p className="mt-3 max-w-[76ch] text-xs leading-relaxed opacity-70">
-          A separate question from everything above, answered from separate evidence.
-          Provenance is what the file itself carries about where it came from and who signed
-          for it; the sections above are what detectors measured about the picture and the
-          sound. Neither reaches the other: no assessment on this page was moved by the
-          provenance state below, and the provenance state below was not moved by any
-          assessment on this page. Nothing here reports the media as authentic or
-          manipulated, and no provenance state on this page can.
-        </p>
-
-        <ProvenanceSection signal={analysis.provenance} analysis={analysis} />
 
         <footer className="mt-10 break-inside-avoid border-t border-black/15 pt-4 text-xs leading-relaxed opacity-70 dark:border-white/20 print:border-black/40">
           <p className="max-w-[76ch]">
