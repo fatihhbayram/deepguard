@@ -167,13 +167,24 @@ class Analysis(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    # What the risk engine concluded: `HIGH`, `MEDIUM` or `UNKNOWN`. `LOW` is measured but
-    # not activated in ruleset v1 and is never written here (see `app.risk_engine`).
+    # What the risk engine concluded, in the vocabulary of the ruleset named beside it.
+    # Under `p7-v1.0.0` and its successors through `r7-v4.0.0`: `HIGH`, `MEDIUM` or
+    # `UNKNOWN` — `LOW` is measured but never activated, so it is never written here (see
+    # `app.risk_engine`). Under `r9-v5.0.0`: `MANIPULATION_DETECTED`,
+    # `NO_CALIBRATED_MANIPULATION_SIGNAL` or `INCONCLUSIVE`.
     #
     # Null means no decision has been taken yet — an analysis still queued or being worked
-    # on — and never "we looked and found nothing": that answer is `UNKNOWN`, which is a
-    # real classification with a rule behind it.
-    risk_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # on — and never "we looked and found nothing": that answer is `UNKNOWN` under v4 and
+    # `NO_CALIBRATED_MANIPULATION_SIGNAL` under v5, both of which are real classifications
+    # with a rule behind them.
+    #
+    # 64 since R9-T8A. 16 was enough for every v4 verdict and for none of the long two in
+    # the R9 vocabulary — `MANIPULATION_DETECTED` is 21 characters and
+    # `NO_CALIBRATED_MANIPULATION_SIGNAL` is 33 — and the names are long on purpose, so the
+    # column is widened rather than the vocabulary abbreviated to fit it. Nothing writes a
+    # v5 verdict yet; this is the persistence layer being made ready ahead of the worker,
+    # not the worker being switched over.
+    risk_level: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Which immutable ruleset produced the level above, which measurement its thresholds
     # came from, and which single rule fired. All three are what make an old decision
@@ -499,7 +510,12 @@ class AnalysisSignal(Base):
     # level here as well would put a classification beside every provider's number — the
     # provenance reading, the speaker timeline, the audio windows — and invite exactly the
     # per-signal verdicts the risk engine exists to refuse (rule 11).
-    risk_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #
+    # Widened to 64 with `analyses.risk_level` in R9-T8A, and for the same reason rather
+    # than a new one: this column declares the risk-level type, and one of the two holding a
+    # width no R9 verdict fits would be a trap for whoever eventually decides this column
+    # should be written. It stays null on every row either way.
+    risk_level: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Which deployment of the detector produced this, so an old signal stays
     # interpretable after the provider ships a new model.
