@@ -352,8 +352,12 @@ SIGNAL_STATUS_SUCCESS = "SUCCESS"
 # invariant 4 forbids a backfill, a re-labelling, and any mapping of legacy levels onto the
 # verdicts below, so the two vocabularies live side by side here and are never merged.
 #
-# Nothing calls `evaluate_v5` yet. R9-T2 builds the engine; R9-T3 replays it over historical
-# evidence and is what earns it the right to be wired into ingestion.
+# R9-T2 built the engine; R9-T3 replayed it over historical evidence and earned it the right to
+# be wired into ingestion; R9-T8A widened the column that stores its verdicts; R9-T8B is the
+# cutover — `app.worker.conclude_job` calls `evaluate_v5` for every analysis it concludes from
+# that deployment onward. The cutover is a boundary in time and not a migration: an analysis
+# decided before it keeps its verdict, its rule id and its ruleset version exactly, and nothing
+# re-reads them under these rules.
 
 # The R9 ruleset, as one immutable string, by the same rule as `RULES_VERSION`: it names *these*
 # rules and changes when one of them does. A decision stamped with it is re-derivable only
@@ -716,7 +720,13 @@ def evaluate(
     face: FaceEvidence | None = None,
     lip: LipEvidence | None = None,
 ) -> RiskDecision:
-    """Classify one analysis from its three persisted calibrated signals.
+    """Classify one analysis from its three persisted calibrated signals, under `r7-v4.0.0`.
+
+    **No longer the production path.** R9-T8B moved ingestion to `evaluate_v5`; this function is
+    kept, unchanged and still tested in full, because every analysis decided before that cutover
+    was decided by it and a stored decision is only explainable while the rules that produced it
+    still exist to be read. It is not deprecated in the sense of being on its way out: it is the
+    definition of what `r7-v4.0.0` means, and that is permanent.
 
     All three are read. Two of them decide — the synthetic-video score and the
     face-manipulation score — and the mouth-dynamics score does not, having been withdrawn from
@@ -907,11 +917,12 @@ def evaluate_v5(
 ) -> RiskDecision:
     """Classify one analysis under `r9-v5.0.0`, in the R9 verdict vocabulary.
 
-    Added beside `evaluate`, never over it. v4 still decides every analysis the pipeline runs
-    today and every analysis already persisted keeps the verdict it was given; nothing here
-    recalculates, re-labels or maps a stored `HIGH`, `MEDIUM` or `UNKNOWN` onto the three
-    verdicts below (R9-T1 invariant 4). This function has no caller in the production path yet —
-    R9-T3 replays it over historical evidence before anything is wired to it.
+    Added beside `evaluate`, never over it. Since R9-T8B this is what the pipeline calls for
+    every analysis it concludes, and `evaluate` is left standing unchanged for the decisions
+    already taken under it: every analysis already persisted keeps the verdict it was given, and
+    nothing here recalculates, re-labels or maps a stored `HIGH`, `MEDIUM` or `UNKNOWN` onto the
+    three verdicts below (R9-T1 invariant 4). The one caller is `app.worker.conclude_job`, which
+    passes the evidence the database holds and persists what comes back without inspecting it.
 
     **What changed from v4, and it is not the thresholds.** The same two detectors decide on the
     same two measured operating points by the same comparators. What v5 adds is a coverage

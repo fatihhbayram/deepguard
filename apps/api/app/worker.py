@@ -134,7 +134,7 @@ from app.risk_engine import (
     LipEvidence,
     RiskDecision,
     SvdEvidence,
-    evaluate,
+    evaluate_v5,
 )
 from app.storage import fetch_object, store_derivative
 
@@ -1122,29 +1122,41 @@ def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision | None:
     above names one provider and one signal type, so the queries cannot see them even by
     accident.
 
-    The mouth-dynamics row is the one that has moved twice. Under r4-v2.0.0 it was fetched by
-    nothing; r5-v3.0.0 read it against R5-T3's operating point and could take a HIGH from it
-    alone; r7-v4.0.0 fetches it still, and reads it still, but takes no HIGH from it — R7-T5
-    measured a 7.17% false HIGH rate on independent genuine media, 21 of the 22 from that rule,
-    and it was withdrawn (`app.risk_engine`). It is fetched here regardless, because the engine
-    reads it for how much of the evidence could be read and because a decision has to be taken
-    on the evidence the database holds; which of the three may conclude anything is the engine's
-    business and not this function's.
+    **The ruleset this path decides under is `r9-v5.0.0` as of R9-T8B**, and the cutover is
+    exactly here: an analysis is decided once, when it reaches this function, under whichever
+    ruleset this deployment calls. Every analysis already holding a verdict was decided under
+    the ruleset that was live when *it* passed through, and nothing in this deployment goes
+    back for it — there is no backfill, no re-evaluation and no mapping of a stored `HIGH`,
+    `MEDIUM` or `UNKNOWN` onto the R9 vocabulary (R9-T1 invariant 4). A reader resolves a
+    stored decision through its own `risk_rules_version`, which is why an old report still
+    reads under the rules that produced it (`app.risk_trace`).
+
+    The mouth-dynamics row is the one that has moved three times. Under r4-v2.0.0 it was
+    fetched by nothing; r5-v3.0.0 read it against R5-T3's operating point and could take a
+    HIGH from it alone; r7-v4.0.0 fetched it still, and read it still, but took no HIGH from
+    it — R7-T5 measured a 7.17% false HIGH rate on independent genuine media, 21 of the 22
+    from that rule, and it was withdrawn; r9-v5.0.0 makes it `evidence_only` outright and
+    does not read it at all — outside the coverage arithmetic rather than a zero inside it
+    (`app.risk_engine`). It is fetched and handed over here regardless, on the same terms as
+    the other two and for the same reason: which of the three may conclude anything, and
+    which may be read at all, is the engine's business and not this function's. A worker that
+    started skipping it because the current ruleset ignores it would be holding a rule of its
+    own.
 
     The three are fetched separately and handed over separately. Nothing here compares, combines
     or reconciles them: the engine holds the rules, and this function's whole responsibility is
     that the evidence it passes is the evidence the database holds.
 
     Nothing here catches anything. The engine is total over the evidence it is given: a
-    missing signal, a failed one, an uncalibrated deployment and unusable figures are each
-    classified `UNKNOWN` by an explicit rule rather than raised, so there is no ambiguous
-    failure left over to represent. What could still go wrong — a database that has gone
+    missing signal, a failed one, an uncalibrated deployment and unusable figures each land on
+    an explicit rule rather than being raised — `INCONCLUSIVE` under v5, `UNKNOWN` under the
+    versions before it — so there is no ambiguous failure left over to represent. What could still go wrong — a database that has gone
     away, a duplicate signal row, a defect in the rules — is exactly that, a defect, and it
     propagates to `process_one`, which logs it with its traceback and fails the job.
     Swallowing it as `UNKNOWN` would publish a classification nobody made and hide the
     defect behind it; the evidence is already committed and survives the failure either way.
     """
-    decision = evaluate(
+    decision = evaluate_v5(
         persisted_svd_evidence(session, claimed.analysis_id),
         persisted_face_evidence(session, claimed.analysis_id),
         persisted_lip_evidence(session, claimed.analysis_id),

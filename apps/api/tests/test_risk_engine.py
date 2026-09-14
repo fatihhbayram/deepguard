@@ -9,13 +9,18 @@ centrepiece is `DECISION_MATRIX`: the complete cross-product of what the three d
 each say — all 125 of them — written out one row at a time rather than derived, so a test can
 never agree with a defect by recomputing it the same wrong way the engine did.
 
-The second half runs `conclude_job` against real PostgreSQL, because what is being checked
-there is not arithmetic but a property of the stored row: that the decision, the ruleset,
-the calibration and the rule that fired all survive the write, and that no amount of
-changing, removing or failing the *uncalibrated* evidence moves the classification by a
-band. Those tests write the signal rows themselves rather than driving the detectors, so the
-evidence under test is exact and everything around it can be varied freely — which is the
-whole point of the isolation check.
+The second half runs the orchestration against real PostgreSQL, because what is being
+checked there is not arithmetic but a property of the stored row: that the engine is handed
+the evidence the database holds and nothing else, that the decision lands on the analysis and
+on no signal row, that duplicate evidence raises rather than being classified, and that a
+failed job records no classification at all. Those tests write the signal rows themselves
+rather than driving the detectors, so the evidence under test is exact.
+
+**The live path is no longer v4 and this file no longer claims it is.** R9-T8B moved
+`conclude_job` to `evaluate_v5`, so the verdicts the production path persists are the R9 ones
+and are asserted in `tests/test_worker_v5_decision.py`. `evaluate` is unchanged, still the
+definition of `r7-v4.0.0`, and still proved here in full — every analysis decided under it
+keeps that decision, and these rules are what make it readable a year from now.
 
 **No threshold is mocked anywhere in this module.** All three are calibrated constants with a
 measurement behind them — two from the 159-clip R4-T1 study, one from the 40-clip R5-T3 study —
@@ -2023,206 +2028,20 @@ def test_a_missing_signal_reads_back_as_absent(analysed):
         assert worker.persisted_svd_evidence(session, other.analysis_id) is not None
 
 
-@pytest.mark.integration
-@pytest.mark.parametrize(
-    ("svd_kwargs", "face_kwargs", "lip_kwargs", "risk_level", "rule_id"),
-    [
-        # All three above their thresholds.
-        ({"score": 0.9931}, {"score": 0.9931}, {"score": 0.9931}, "HIGH", "R102"),
-        # Both deciding detectors, with the third quiet. The finding is not attributed to one
-        # of them, and the trace does not pretend to say which two.
-        ({"score": 0.9931}, {"score": 0.9931}, {"score": 0.0154}, "HIGH", "R102"),
-        # One deciding detector with the mouth-dynamics score at the top of its scale. `R102`
-        # under v3, and the single detector's own rule here: a reading that may not decide may
-        # not corroborate either, and the stored rule id is where that would show.
-        ({"score": 0.9931}, {"score": 0.4646}, {"score": 0.9931}, "HIGH", "R100"),
-        ({"score": 0.4646}, {"score": 0.9931}, {"score": 0.9931}, "HIGH", "R101"),
-        # Synthetic video alone, with the other two quiet — `sonic_en_03`.
-        (
-            {"score": CORPUS_SYNTHETIC_SVD},
-            {"score": CORPUS_SYNTHETIC_FACE},
-            {"score": CORPUS_LIP_GENUINE_MAX},
-            "HIGH",
-            "R100",
-        ),
-        # Face alone, with NVIDIA quiet — `ffpp_dev_Deepfakes_106_198`.
-        (
-            {"score": CORPUS_FACESWAP_SVD},
-            {"score": CORPUS_FACESWAP_FACE},
-            {"score": None, "status": "FAILED"},
-            "HIGH",
-            "R101",
-        ),
-        # Mouth dynamics alone, at the lowest score any face swap in R5-T3's corpus reached.
-        # A HIGH by `R103` under v3 and a full-coverage MEDIUM here, through the database.
-        (
-            {"score": CORPUS_FACESWAP_SVD},
-            {"score": 0.4646},
-            {"score": CORPUS_LIP_FACESWAP_MIN},
-            "MEDIUM",
-            "R200",
-        ),
-        # All three readable, none flagged.
-        ({"score": 0.9541}, {"score": 0.9865}, {"score": 0.0168}, "MEDIUM", "R200"),
-        ({"score": 0.0}, {"score": 0.0}, {"score": 0.0}, "MEDIUM", "R200"),
-        # Some readable, the rest failed or uncalibrated.
-        (
-            {"score": 0.4646},
-            {"score": None, "status": "FAILED"},
-            {"score": 0.0154},
-            "MEDIUM",
-            "R201",
-        ),
-        (
-            {"score": 0.999, "status": "FAILED"},
-            {"score": 0.4646},
-            {"score": None, "status": "FAILED"},
-            "MEDIUM",
-            "R201",
-        ),
-        # None readable.
-        (
-            {"score": 0.999, "status": "FAILED"},
-            {"score": None, "status": "FAILED"},
-            {"score": None, "status": "FAILED"},
-            "UNKNOWN",
-            "R010",
-        ),
-        (
-            {"score": 0.999, "provider_version": "other-function"},
-            {"score": 0.999, "provider_version": "other-checkpoint"},
-            {"score": 0.999, "provider_version": "other-model"},
-            "UNKNOWN",
-            "R010",
-        ),
-        ({"score": None}, {"score": None}, {"score": None}, "UNKNOWN", "R012"),
-        (
-            {"score": 0.999, "total_clips": 0},
-            {"score": 0.999, "frames_scored": 0},
-            {"score": 0.999, "windows_scored": 0},
-            "UNKNOWN",
-            "R012",
-        ),
-    ],
-)
-def test_the_decision_and_its_whole_trace_are_persisted(
-    analysed, svd_kwargs, face_kwargs, lip_kwargs, risk_level, rule_id
-):
-    """Level, ruleset, calibration and the rule that fired — all four, exactly.
-
-    The trace is what makes a decision explainable after the thresholds move on, so each
-    branch is checked at the stored row rather than at the return value. In particular the
-    rule id is what tells a later reader *which detector* concluded this, which is the whole
-    reason a multi-source ruleset needs one.
-    """
-    claimed = analysed(
-        face_signal=True,
-        lip_signal=True,
-        svd_kwargs=svd_kwargs,
-        face_kwargs=face_kwargs,
-        lip_kwargs=lip_kwargs,
-    )
-
-    with SessionLocal() as session:
-        worker.conclude_job(session, claimed)
-
-    analysis = read_analysis(claimed.analysis_id)
-
-    assert analysis.risk_level == risk_level
-    assert analysis.risk_rule_id == rule_id
-    assert analysis.risk_rules_version == EXPECTED_RULES_VERSION
-    assert analysis.risk_calibration_id == EXPECTED_CALIBRATION_ID
-
-
-@pytest.mark.integration
-def test_a_stored_face_finding_alone_completes_high(analysed):
-    """The capability v1 did not have, end to end through the database.
-
-    No synthetic-video row at all, a face score above its calibrated threshold, and the
-    analysis classifies HIGH by `R101` with the trace to prove which detector said so.
-    """
-    claimed = analysed(
-        svd_signal=False,
-        face_signal=True,
-        face_kwargs={"score": CORPUS_FACESWAP_FACE},
-        context=context_signals(),
-    )
-
-    with SessionLocal() as session:
-        worker.conclude_job(session, claimed)
-
-    analysis = read_analysis(claimed.analysis_id)
-
-    assert analysis.risk_level == "HIGH"
-    assert analysis.risk_rule_id == "R101"
-    assert analysis.risk_rules_version == EXPECTED_RULES_VERSION
-    assert analysis.risk_calibration_id == EXPECTED_CALIBRATION_ID
-
-
-@pytest.mark.integration
-def test_an_analysis_with_no_calibrated_evidence_at_all_is_unknown(analysed):
-    claimed = analysed(
-        svd_signal=False, face_signal=False, lip_signal=False, context=context_signals()
-    )
-
-    with SessionLocal() as session:
-        worker.conclude_job(session, claimed)
-
-    analysis = read_analysis(claimed.analysis_id)
-
-    assert analysis.risk_level == "UNKNOWN"
-    assert analysis.risk_rule_id == "R010"
-
-
-@pytest.mark.integration
-def test_a_stored_mouth_dynamics_finding_alone_does_not_complete_high(analysed):
-    """The capability r7-v4.0.0 withdrew, end to end through the database.
-
-    No synthetic-video row and no face row at all, a mouth-dynamics score above its calibrated
-    threshold. Under `r5-v3.0.0` the stored decision was HIGH by `R103`; here it is MEDIUM by
-    `R201`, and the row says so in all four columns.
-
-    The signal is written either way, and the assertion below is on the *decision*, not on the
-    evidence: what R7-T6 removed is a rule, and a build that removed the detector instead would
-    pass a level check and fail this analysis's readers.
-    """
-    claimed = analysed(
-        svd_signal=False,
-        lip_signal=True,
-        lip_kwargs={"score": CORPUS_LIP_FACESWAP_MIN},
-        context=context_signals(),
-    )
-
-    with SessionLocal() as session:
-        worker.conclude_job(session, claimed)
-
-    analysis = read_analysis(claimed.analysis_id)
-
-    assert analysis.risk_level == "MEDIUM"
-    assert analysis.risk_rule_id == "R201"
-    assert analysis.risk_rules_version == EXPECTED_RULES_VERSION
-    assert analysis.risk_calibration_id == EXPECTED_CALIBRATION_ID
-
-
-@pytest.mark.integration
-def test_risk_evaluation_is_the_last_step_before_the_job_completes(analysed):
-    """Nothing is classified while the job is still in progress, and nothing completes
-    without a classification."""
-    claimed = analysed(svd_kwargs={"score": 0.5})
-
-    before = read_analysis(claimed.analysis_id)
-    assert before.status == "queued"
-    assert before.risk_level is None
-    assert before.risk_rules_version is None
-    assert before.risk_calibration_id is None
-    assert before.risk_rule_id is None
-
-    with SessionLocal() as session:
-        worker.conclude_job(session, claimed)
-
-    assert read_job(claimed.job_id).status == "completed"
-    assert read_analysis(claimed.analysis_id).status == "completed"
-    assert read_analysis(claimed.analysis_id).risk_level == "MEDIUM"
+# The tests that used to sit here drove `conclude_job` and asserted `HIGH`, `MEDIUM` and
+# `UNKNOWN` coming back out of the analyses row. They were assertions about the *production*
+# path, and since R9-T8B that path decides under `r9-v5.0.0`: the worker calls `evaluate_v5`,
+# so no arrangement of stored evidence makes it persist a v4 word any more. They live on in
+# `tests/test_worker_v5_decision.py`, rewritten in the vocabulary the live path now produces.
+#
+# What v4 itself does is untouched by that move and is still proved in full above, from
+# `DECISION_MATRIX` — all 125 combinations, as pure functions, with no database in the way.
+# That is what keeps `r7-v4.0.0` explainable for the analyses decided under it, which is the
+# whole reason `evaluate` is still here.
+#
+# What stays below is the part of the orchestration that is about storage rather than about a
+# vocabulary: that the decision lands on the analysis and on no signal row, that duplicate
+# evidence raises instead of being classified, and that a failed job records nothing.
 
 
 @pytest.mark.integration
@@ -2256,119 +2075,11 @@ def test_the_forensic_signals_are_untouched_by_the_classification(analysed):
     assert all(row.risk_level is None for row in read_signals(claimed.analysis_id).values())
 
 
-# --------------------------------------------------------------------------------------
-# Isolation, against stored evidence
-# --------------------------------------------------------------------------------------
-
-# Identical calibrated evidence, each entry a different arrangement of everything else.
-# Removed, present, failed, and every combination in between.
-CONTEXT_ARRANGEMENTS = {
-    "all present and successful": context_signals(),
-    "all present and failed": context_signals(failed=True),
-    "none at all": [],
-    "no provenance": context_signals(provenance=False),
-    "no active speaker": context_signals(active_speaker=False),
-    "no audio authenticity": context_signals(audio=False),
-    "provenance only": context_signals(active_speaker=False, audio=False),
-    "provenance failed": context_signals(active_speaker=False, audio=False, failed=True),
-    "active speaker only": context_signals(provenance=False, audio=False),
-    "active speaker failed": context_signals(provenance=False, audio=False, failed=True),
-    "audio only": context_signals(provenance=False, active_speaker=False),
-    "audio failed": context_signals(provenance=False, active_speaker=False, failed=True),
-}
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize(
-    ("svd_score", "face_score", "lip_score", "risk_level", "rule_id"),
-    [
-        (0.9931, 0.4646, 0.0154, "HIGH", "R100"),
-        (0.4646, 0.9931, 0.0154, "HIGH", "R101"),
-        (0.4646, 0.4646, 0.9931, "MEDIUM", "R200"),
-        (0.4646, 0.4646, 0.0154, "MEDIUM", "R200"),
-    ],
-)
-def test_no_arrangement_of_the_uncalibrated_signals_changes_the_classification(
-    analysed, svd_score, face_score, lip_score, risk_level, rule_id
-):
-    """The isolation requirement, checked exhaustively against stored evidence.
-
-    Every arrangement of C2PA, active speaker and AASIST — present, absent, successful,
-    failed — over one unchanged set of calibrated scores. All of them must land on the same
-    band by the same rule. Nothing here is averaged, voted on, weighted or combined, and this
-    test is what would fail the moment something started to be.
-
-    The three signals here have no calibration of any kind, which is the whole reason they
-    are excluded. The face-manipulation and mouth-dynamics signals used to be in this table and
-    are not any more: R4-T1 and R5-T3 measured operating points for them, so they are deciders
-    now and are varied above rather than held inert here.
-    """
-    decisions = {}
-
-    for name, context in CONTEXT_ARRANGEMENTS.items():
-        claimed = analysed(
-            svd_kwargs={"score": svd_score},
-            face_signal=True,
-            face_kwargs={"score": face_score},
-            lip_signal=True,
-            lip_kwargs={"score": lip_score},
-            # Rebuilt per arrangement: an ORM instance cannot be attached twice.
-            context=[
-                AnalysisSignal(
-                    provider=signal.provider,
-                    signal_type=signal.signal_type,
-                    status=signal.status,
-                    score=signal.score,
-                    provider_version=signal.provider_version,
-                    signal_metadata=signal.signal_metadata,
-                )
-                for signal in context
-            ],
-        )
-
-        with SessionLocal() as session:
-            worker.conclude_job(session, claimed)
-
-        analysis = read_analysis(claimed.analysis_id)
-        decisions[name] = (
-            analysis.risk_level,
-            analysis.risk_rule_id,
-            analysis.risk_rules_version,
-            analysis.risk_calibration_id,
-        )
-
-    expected = (risk_level, rule_id, EXPECTED_RULES_VERSION, EXPECTED_CALIBRATION_ID)
-
-    assert decisions == {name: expected for name in CONTEXT_ARRANGEMENTS}
-
-
-@pytest.mark.integration
-def test_context_signals_cannot_rescue_three_uncalibrated_detectors(analysed):
-    """UNKNOWN is not a gap for other evidence to fill in.
-
-    An analysis with a perfect provenance chain, a full speaker timeline and clean audio
-    windows still classifies UNKNOWN when every scoring detector came from a deployment the
-    thresholds were never measured against.
-    """
-    claimed = analysed(
-        svd_kwargs={"score": 0.9999, "provider_version": f"{VALIDATED_FUNCTION_ID}-v2"},
-        face_signal=True,
-        face_kwargs={
-            "score": 0.9999,
-            "provider_version": f"{VALIDATED_FACE_CHECKPOINT}-v2",
-        },
-        lip_signal=True,
-        lip_kwargs={"score": 0.9999, "provider_version": f"{VALIDATED_LIP_MODEL}-v2"},
-        context=context_signals(),
-    )
-
-    with SessionLocal() as session:
-        worker.conclude_job(session, claimed)
-
-    analysis = read_analysis(claimed.analysis_id)
-
-    assert analysis.risk_level == "UNKNOWN"
-    assert analysis.risk_rule_id == "R010"
+# The isolation section moved with them, and for the same reason: it asserted one v4 band
+# under every arrangement of the uncalibrated signals. `tests/test_worker_v5_decision.py`
+# makes the same claim against the live path — C2PA, the speaker timeline, AASIST and the
+# mouth-dynamics reading all varied over unchanged calibrated evidence, with the persisted
+# verdict, rule id, ruleset and calibration identical every time.
 
 
 # --------------------------------------------------------------------------------------
