@@ -139,6 +139,20 @@ landed on the same value as its `T_HIGH` — the two classes were separated by a
 both selection rules landed inside it — which says that corpus supports no ambiguous band at
 all, not that the detector has none. All three are recorded below because the calibration
 identity has to match the artifacts, not because anything branches on them.
+
+**Two rulesets live here, and they are not versions of each other.** Everything above describes
+`r7-v4.0.0`, which `evaluate` implements and which decides every analysis this pipeline runs.
+R9-T2 added a second decision path beside it — `evaluate_v5`, under `r9-v5.0.0` — in the R9
+verdict vocabulary: `MANIPULATION_DETECTED`, `NO_CALIBRATED_MANIPULATION_SIGNAL`, `INCONCLUSIVE`.
+It reads the same two detectors against the same two measured operating points by the same
+comparators, and what it adds is a coverage statement v4's vocabulary could not make: v4's
+`MEDIUM` covers both "every detector was read and none flagged" and "almost nothing could be
+read", separated only by a rule id that a renderer may drop.
+
+The two are kept strictly apart. `evaluate` is untouched, the rule tables share no id, and no
+stored `HIGH`, `MEDIUM` or `UNKNOWN` is recalculated, re-labelled or mapped onto a v5 verdict —
+each row is read under the ruleset version it names. `evaluate_v5` has no caller in the
+production path; R9-T3 replays it over historical evidence before anything is wired to it.
 """
 
 import math
@@ -328,6 +342,80 @@ RULE_INDETERMINATE_PARTIAL_SOURCES = "R201"
 # no manipulation, and R4-T1 kept the two distinct for the same reason (8 of its clips were
 # abstentions, every one of them on generated video).
 SIGNAL_STATUS_SUCCESS = "SUCCESS"
+
+# --- Ruleset v5: the R9 verdict vocabulary -------------------------------------------------
+#
+# Everything from here to the end of the module is `r9-v5.0.0`. It is *added* beside v4, never
+# in place of it: `evaluate` above is untouched, still returns `HIGH`/`MEDIUM`/`UNKNOWN` under
+# `RULES_VERSION`, and every analysis already persisted under `r7-v4.0.0` — or `r5-v3.0.0`, or
+# `p7-v1.0.0` — keeps the verdict, rule id and calibration identity it was decided under. R9-T1
+# invariant 4 forbids a backfill, a re-labelling, and any mapping of legacy levels onto the
+# verdicts below, so the two vocabularies live side by side here and are never merged.
+#
+# Nothing calls `evaluate_v5` yet. R9-T2 builds the engine; R9-T3 replays it over historical
+# evidence and is what earns it the right to be wired into ingestion.
+
+# The R9 ruleset, as one immutable string, by the same rule as `RULES_VERSION`: it names *these*
+# rules and changes when one of them does. A decision stamped with it is re-derivable only
+# because the string pins the logic exactly.
+RULES_VERSION_V5 = "r9-v5.0.0"
+
+# v5 is decided under `CALIBRATION_ID`, unchanged — deliberately, and checked rather than
+# assumed. That column names the *measurements* a decision was taken under; `RULES_VERSION_V5`
+# names the rules that read them. v5 rewrites the vocabulary and the coverage arithmetic and
+# touches no threshold: `SVD_T_HIGH` and `FACE_T_HIGH` are the same R4-T1 operating points, no
+# artifact is adopted and none is dropped, and `LIP_T_HIGH` is still the point `app.risk_trace`
+# bands a stored mouth-dynamics score against for a reader. Minting a new id here would assert a
+# measurement nobody took and would leave every v5 decision unresolvable against the artifacts it
+# actually rests on.
+
+# What v5 may conclude, in the R9 vocabulary. Three verdicts, no fourth, no default branch.
+#
+# The names are long on purpose. `NO_CALIBRATED_MANIPULATION_SIGNAL` says the calibrated
+# detectors were read and none reached its operating point — and nothing else. It is never
+# "Real", "Genuine", "Authentic", "Verified", "Clean" or "Safe", in this module or in anything
+# downstream of it (R9-T1 invariant 3): a detector that found no manipulation has not found
+# authenticity, and on the manipulation family it is blind to it reports exactly this anyway.
+VERDICT_MANIPULATION_DETECTED = "MANIPULATION_DETECTED"
+VERDICT_NO_SIGNAL = "NO_CALIBRATED_MANIPULATION_SIGNAL"
+VERDICT_INCONCLUSIVE = "INCONCLUSIVE"
+
+# The v5 rules, in the order they are tried. Separate constants from the v4 ids above, and
+# deliberately *not* the same strings: an `R100` stored against `r7-v4.0.0` is explained through
+# v4's sentence, and a v5 rule wearing that id would silently rewrite what those rows said. The
+# same reasoning that keeps `R103` retired keeps this whole table disjoint from that one.
+#
+# What earns an id is the same as in v4 — a genuinely different decision condition:
+#
+#   * which decision-eligible detector's evidence produced the hit, because that is what fixes
+#     the coverage claim behind it — generated video, or face appearance;
+#   * that both reached their own thresholds independently, so a corroborated finding is not
+#     attributed to one source;
+#   * and, for the two INCONCLUSIVE ids, whether some of the expected coverage was obtained or
+#     none of it was. Both are the same verdict with materially different forensic meaning, and
+#     `D_usable/D_total` is reported beside it rather than folded into it.
+RULE_V5_HIGH_MULTIPLE = "R9-100"
+RULE_V5_HIGH_SVD = "R9-101"
+RULE_V5_HIGH_FACE = "R9-102"
+RULE_V5_NO_SIGNAL = "R9-200"
+RULE_V5_INCONCLUSIVE_PARTIAL = "R9-300"
+RULE_V5_INCONCLUSIVE_ALL = "R9-301"
+
+# How many decision-eligible detectors this ruleset version expects, frozen here as a literal
+# and never derived (R9-T1 section 2.4). It is not `len()` of a registry, not a count of the rows
+# that happen to exist, and not a function of which providers are configured: if the denominator
+# came from the rows present, a detector that failed to be invoked would *improve* coverage by
+# being absent, which is the single most dangerous defect available to a coverage model.
+#
+# Two, because two detectors are decision-eligible under v5 — NVIDIA's synthetic-video score and
+# EfficientNet-B7's face-manipulation score, the same pair v4 decides from. LipForensics is
+# `evidence_only` here as it is in v4, and evidence-only detectors are outside this arithmetic
+# rather than a zero inside it: it contributes to no `D_total`, no `D_usable`, no `D_hits`.
+#
+# Frozen above zero, so the contract's `D_total == 0` row cannot arise under this ruleset. A
+# future ruleset that declares no decision-eligible detector for some media type owes that row
+# an INCONCLUSIVE and a version of its own.
+D_TOTAL_V5 = 2
 
 
 class RiskEngineError(Exception):
@@ -755,4 +843,209 @@ def evaluate(
     raise RiskEngineError(
         f"No rule in {RULES_VERSION} classified the evidence; the rules are supposed to be "
         "exhaustive over all three detectors' states."
+    )
+
+
+def _decision_v5(verdict: str, rule_id: str) -> RiskDecision:
+    """Stamp a v5 conclusion with the identity of the rules and calibration behind it.
+
+    The same carrier as `_decision`, and deliberately the same `RiskDecision` type: the fields a
+    stored decision needs to stay readable — what was concluded, under which rules, against which
+    measurement, by which sentence — do not change because the vocabulary did. What separates the
+    two is `rules_version`, which is exactly the field every consumer must resolve the vocabulary
+    through (R9-T1 section 7). A reader that assumes one vocabulary will mislabel the other.
+    """
+    return RiskDecision(
+        risk_level=verdict,
+        rules_version=RULES_VERSION_V5,
+        calibration_id=CALIBRATION_ID,
+        rule_id=rule_id,
+    )
+
+
+def svd_threshold_reached(evidence: SvdEvidence) -> bool:
+    """This detector's own native comparator against its own operating point.
+
+    There is no universal threshold rule in this codebase and v5 does not invent one (R9-T1
+    section 3.2). This is NVIDIA's comparator and nothing else's: the score is on NVIDIA's scale,
+    `SVD_T_HIGH` is the point R4-T1 measured on that scale, and neither may be compared against
+    anything belonging to another detector.
+
+    The comparator is `>=`, restating — not re-deriving — what `evaluate` has compared under v4
+    and v3 before it. **A score exactly at the operating point is reached.** That boundary is part
+    of the comparator's frozen definition rather than a detail of how the expression happens to be
+    written: `SVD_T_HIGH` is the midpoint of a gap between the highest genuine score observed and
+    the lowest score above it, so the threshold itself is a value no clip in the corpus produced,
+    and which side of it equality falls on is decided here once and never re-derived at read time.
+
+    Takes evidence whose figures are already known readable. It compares; it does not validate.
+    """
+    return evidence.score >= SVD_T_HIGH  # type: ignore[operator]
+
+
+def face_threshold_reached(evidence: FaceEvidence) -> bool:
+    """This detector's own native comparator against its own operating point.
+
+    A separate function from the one above rather than a shared helper taking a threshold, for
+    the reason the two evidence types are separate: the comparator, the scale and the boundary are
+    properties of *this* detector's calibration. A shared `_reached(score, threshold)` would read
+    as though there were one rule for both, which is the assumption R9-T1 section 3.2 forbids and
+    the confusion this module exists to prevent. The two happen to agree today; that is a fact
+    about two measurements, not a rule, and a recalibration ships as a new ruleset version.
+
+    `>=` against `FACE_T_HIGH`, equality reaching the threshold, on the same terms and for the
+    same reason as above — this operating point is the midpoint of its own gap, measured over the
+    same 54 genuine clips.
+    """
+    return evidence.score >= FACE_T_HIGH  # type: ignore[operator]
+
+
+def evaluate_v5(
+    svd: SvdEvidence | None = None,
+    face: FaceEvidence | None = None,
+    lip: LipEvidence | None = None,
+) -> RiskDecision:
+    """Classify one analysis under `r9-v5.0.0`, in the R9 verdict vocabulary.
+
+    Added beside `evaluate`, never over it. v4 still decides every analysis the pipeline runs
+    today and every analysis already persisted keeps the verdict it was given; nothing here
+    recalculates, re-labels or maps a stored `HIGH`, `MEDIUM` or `UNKNOWN` onto the three
+    verdicts below (R9-T1 invariant 4). This function has no caller in the production path yet —
+    R9-T3 replays it over historical evidence before anything is wired to it.
+
+    **What changed from v4, and it is not the thresholds.** The same two detectors decide on the
+    same two measured operating points by the same comparators. What v5 adds is a coverage
+    statement the v4 vocabulary could not make: v4's `MEDIUM` covered both "every detector was
+    read and none flagged" and "we could barely read anything", separated only by an `R200` or an
+    `R201` in the trace, and a band named MEDIUM invites reading the first as a mild finding and
+    the second as a weak one. v5 splits them by verdict — `NO_CALIBRATED_MANIPULATION_SIGNAL` for
+    the first, `INCONCLUSIVE` for the second — so the difference cannot be lost by a renderer
+    that shows the level and drops the rule id.
+
+    **Coverage, and the three counts it is made of** (R9-T1 section 2.3), over the
+    decision-eligible detectors only:
+
+    - `D_total` — `D_TOTAL_V5`, frozen at 2 by this ruleset version. Never derived from the rows
+      present, so a detector that was never invoked stays in the denominator and shows up as
+      missing coverage instead of vanishing from it;
+    - `D_usable` — how many of those produced a `usable_reading`: the calibrated deployment
+      answered successfully and its figures are readable. Reaching and not reaching a threshold
+      are both readings; failing to produce one is not, and a clean run on an uncalibrated
+      deployment is a number this ruleset is not entitled to compare;
+    - `D_hits` — how many produced a usable reading *and* reached their own threshold by their
+      own comparator.
+
+    **LipForensics is outside all three, and `lip` is not read at all.** It is `evidence_only`
+    under v5, and here that is total: its score is compared against nothing, its readability is
+    counted nowhere, its failure, absence or abstention removes no coverage, and — unlike the two
+    deciding detectors — it is not even checked for being the calibrated deployment. Presence,
+    absence, `FAILED`, `TIMEOUT`, unreadable figures, an uncalibrated deployment and an outright
+    foreign object all leave the verdict, the coverage, the rule that fired and the fact that a
+    verdict was produced at all identical. An evidence-only detector is outside the arithmetic,
+    not a zero inside it (R9-T1 invariant 1), and a guard that could raise on it would have been
+    an outcome it controlled: whether this analysis gets a verdict would have depended on that
+    detector's metadata.
+
+    That is stricter than v4 in two ways, both deliberate. v4 counts a readable mouth-dynamics
+    signal toward the `R200`/`R201` distinction and v5 counts it nowhere, because a detector that
+    may not decide may not complete coverage either; and v4 refuses uncalibrated evidence in all
+    three slots where v5 refuses it in the two that decide. The `UncalibratedEvidence` guard is
+    untouched for `svd` and `face`, which are decision-eligible and where a shadow-mode
+    observation reaching an operating point is the whole risk R6-T1 named.
+
+    **Abstention is unresolved coverage, and that is the default.** A detector that declined to
+    score — no face in any sampled frame, no run of trackable frames — has made a statement about
+    the media, not a finding about it, and it is recorded today as a `FAILED` row carrying an
+    abstention marker with a null score. Under v5 that is simply not a usable reading: it never
+    reaches a threshold, it never completes coverage, and an analysis whose face detector abstained
+    lands on `INCONCLUSIVE` unless the other detector hit. No detector's abstention is declared
+    resolved here. R9-T1 section 3.3 permits such a declaration only against replay evidence on
+    the abstaining population, and the risk it guards is concrete: a detector that abstains on
+    difficult media would otherwise *buy* complete coverage by declining to look. R9-T3 is where
+    that evidence could come from; until it does, this stays at the default.
+
+    **A hit is never softened.** `MANIPULATION_DETECTED` takes absolute precedence: it is not
+    vetoed, downgraded or hedged by the other detector failing, timing out, abstaining, being
+    absent or reading below its own threshold. Incomplete coverage beside a hit is reported as
+    incomplete coverage and the verdict stands. R4-T1 measured why — the two detectors are
+    complementary to the point of negative rank correlation, and at their operating points they
+    never once agreed on 159 clips — so a quiet detector carries no information about the family
+    the flagging one is calibrated for, and a rule that let it object would have missed every real
+    manipulation in that corpus.
+
+    `INCONCLUSIVE` is not a hedge and not a weak anything. It is the honest statement that the
+    assessment could not be completed and nothing that did complete reached a threshold, and it is
+    deliberately reachable from more conditions than the other two verdicts.
+
+    Nothing uncalibrated is admitted, checked before a single rule is read, exactly as in v4
+    (R6-T1). A shadow-mode observation reaches no verdict in either vocabulary.
+    """
+    # Before any rule is consulted, for the two detectors that decide (R6-T1). See
+    # `UncalibratedEvidence` for why the structural separation is not considered enough on its
+    # own — a shadow-mode observation may never be compared against an operating point that was
+    # never measured for it.
+    #
+    # `lip` is deliberately absent from this guard, which is the one place the isolation could
+    # have leaked. A guard that raises is an outcome: if `evaluate_v5` refused to return because
+    # of what arrived in the evidence-only slot, that detector's deployment metadata would be
+    # deciding whether this analysis gets a verdict at all — which is exactly the influence
+    # R9-T1 invariant 1 denies it. Under v5 the parameter is never read: it is accepted so the
+    # signature matches `evaluate` and the callers R9-T3 will write, and that is all.
+    _reject_uncalibrated("svd", svd, SvdEvidence)
+    _reject_uncalibrated("face", face, FaceEvidence)
+
+    # `usable_reading`, per R9-T1 section 2.2: a persisted row from the calibrated deployment
+    # that terminated in a state the ruleset admits, with figures it can read. Success is
+    # necessary and not sufficient — `is_eligible_*` checks the deployment identity exactly, and
+    # `is_usable_*` checks that the score is a calibrated probability aggregated over something.
+    svd_usable = is_eligible_svd(svd) and is_usable_svd(svd)  # type: ignore[arg-type]
+    face_usable = is_eligible_face(face) and is_usable_face(face)  # type: ignore[arg-type]
+
+    # Each detector's own comparator against its own operating point, evaluated only on a reading
+    # already known usable. Never crossed, never renormalised, never compared with each other.
+    svd_hit = svd_usable and svd_threshold_reached(svd)  # type: ignore[arg-type]
+    face_hit = face_usable and face_threshold_reached(face)  # type: ignore[arg-type]
+
+    # Counts of separate decisions over the decision-eligible pair, not a pooled number. The
+    # mouth-dynamics signal appears in neither, whatever it said and whether or not it answered.
+    d_usable = sum((svd_usable, face_usable))
+    d_hits = sum((svd_hit, face_hit))
+
+    # The impossible is a defect, not a default (R9-T1 invariant 9). Unreachable while `D_TOTAL_V5`
+    # is 2 and two booleans are summed, which is the point: if a later change makes the
+    # denominator and the counted detectors disagree, coverage stops being meaningful and nothing
+    # should be persisted about someone's media until it is meaningful again.
+    if d_usable > D_TOTAL_V5:
+        raise RiskEngineError(
+            f"{RULES_VERSION_V5} counted {d_usable} usable readings against a frozen "
+            f"D_total of {D_TOTAL_V5}; the denominator and the decision-eligible detectors "
+            "have gone out of step."
+        )
+
+    if d_hits >= 2:
+        return _decision_v5(VERDICT_MANIPULATION_DETECTED, RULE_V5_HIGH_MULTIPLE)
+
+    if svd_hit:
+        return _decision_v5(VERDICT_MANIPULATION_DETECTED, RULE_V5_HIGH_SVD)
+
+    if face_hit:
+        return _decision_v5(VERDICT_MANIPULATION_DETECTED, RULE_V5_HIGH_FACE)
+
+    # Complete coverage with no hit. `D_TOTAL_V5` is frozen above zero, so this cannot be the
+    # vacuous completeness of an empty denominator — the contract's `D_total == 0` row is
+    # INCONCLUSIVE and is unreachable under this ruleset rather than handled by a branch here.
+    if d_usable == D_TOTAL_V5:
+        return _decision_v5(VERDICT_NO_SIGNAL, RULE_V5_NO_SIGNAL)
+
+    # Incomplete coverage, no hit. The two ids say how much of the expected evidence was obtained;
+    # neither is a stronger or weaker INCONCLUSIVE than the other.
+    if d_usable > 0:
+        return _decision_v5(VERDICT_INCONCLUSIVE, RULE_V5_INCONCLUSIVE_PARTIAL)
+
+    if d_usable == 0:
+        return _decision_v5(VERDICT_INCONCLUSIVE, RULE_V5_INCONCLUSIVE_ALL)
+
+    raise RiskEngineError(
+        f"No rule in {RULES_VERSION_V5} classified the evidence; the rules are supposed to be "
+        "exhaustive over both decision-eligible detectors' states."
     )

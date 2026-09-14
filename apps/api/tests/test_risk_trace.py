@@ -548,13 +548,21 @@ def test_the_current_ruleset_entry_matches_the_engine_that_writes_it():
     }
     assert rule_ids <= set(current.rules)
 
-    # Every rule the engine can fire is explained by this version's table, and nothing else is.
-    # The equality is the half that matters after R7-T6: `R103` is not among the engine's rule
-    # constants any more, and an entry for it here would be a sentence no decision can name.
+    # Every rule the engine can fire *under this ruleset version* is explained by this version's
+    # table, and nothing else is. The equality is the half that matters after R7-T6: `R103` is
+    # not among the engine's rule constants any more, and an entry for it here would be a
+    # sentence no decision can name.
+    #
+    # Scoped to the v4 table by the same prefix the engine separates the two tables with. The
+    # `r9-v5.0.0` constants R9-T2 added belong to `evaluate_v5`, which has no caller and writes
+    # no row yet; the trace entry that will explain them is R9-T4's, and comparing them against
+    # `RULESETS[r7-v4.0.0]` would assert that one ruleset's rules are the other's.
     declared = {
         value
         for name, value in vars(risk_engine).items()
-        if name.startswith("RULE_") and isinstance(value, str)
+        if name.startswith("RULE_")
+        and not name.startswith("RULE_V5_")
+        and isinstance(value, str)
     }
     assert declared == set(current.rules)
 

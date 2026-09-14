@@ -1329,11 +1329,20 @@ def test_only_the_eight_documented_rules_can_fire():
 
 
 def test_every_rule_id_the_module_names_is_reachable():
-    """No rule constant is declared and left unfirable, and none fires that is not declared."""
+    """No v4 rule constant is declared and left unfirable, and none fires that is not declared.
+
+    Scoped to the ids this ruleset can emit. `app.risk_engine` also declares the `r9-v5.0.0`
+    table added by R9-T2, which lives beside v4 and is deliberately disjoint from it — those
+    constants are unfirable *here* by design, and their own reachability is checked against
+    `evaluate_v5` in `test_risk_engine_v5.py`. The prefix is what separates the two tables, and
+    the assertion below still fails if a v4 id is declared and never fires.
+    """
     declared = {
         value
         for name, value in vars(risk_engine).items()
-        if name.startswith("RULE_") and isinstance(value, str)
+        if name.startswith("RULE_")
+        and not name.startswith("RULE_V5_")
+        and isinstance(value, str)
     }
     fired = {
         evaluate(
