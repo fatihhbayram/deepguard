@@ -74,6 +74,48 @@ export const REVIEW_STATUS_NEEDS_FOLLOW_UP = "NEEDS_FOLLOW_UP";
  */
 export const REVIEW_STATUS_UNREVIEWED = "UNREVIEWED";
 
+/**
+ * What the reviewer made of the automated assessment, as the API spells it (R9-T7).
+ *
+ * A second axis, not a second status. The status says whether anybody looked; these say what
+ * they made of what they saw, and they are separate because a case can be closed by somebody
+ * who disagreed with it. They must match `ANALYST_ASSESSMENTS` in
+ * `apps/api/app/db/models.py`, which is where the value is validated and where the database's
+ * check constraint enforces it.
+ *
+ * **None of these is a verdict, a correction, or a correctness label.** Disagreement does not
+ * overturn the automated result and agreement does not confirm it — the verdict is rendered
+ * from the analysis, by the engine that wrote it, and nothing on this screen or in this module
+ * feeds into it. The spellings are long on purpose: they say "about the automated assessment"
+ * in the value itself, so no reader can shorten one into an answer about the media. Nothing
+ * here counts as ground truth and nothing built on it may be presented as accuracy.
+ */
+export const ANALYST_ASSESSMENT_AGREES = "AGREES_WITH_AUTOMATED_ASSESSMENT";
+export const ANALYST_ASSESSMENT_DISAGREES = "DISAGREES_WITH_AUTOMATED_ASSESSMENT";
+export const ANALYST_ASSESSMENT_UNDETERMINED = "UNDETERMINED";
+
+/**
+ * The fourth state, which is not a value: the reviewer recorded no assessment.
+ *
+ * Null on the wire, and that is what every review written before this field existed carries.
+ * It is deliberately not `UNDETERMINED` — one is "nobody was asked", the other is "somebody was
+ * asked and could not say" — and the form below offers it as an explicit choice so that
+ * clearing an assessment is possible and so that a legacy review can be saved without one
+ * being invented for its author.
+ *
+ * The empty string, because the value travels through an HTML `<select>` and a form field
+ * cannot hold a null. The route handler turns it back into one.
+ */
+export const ANALYST_ASSESSMENT_NONE = "";
+
+/** Every assessment the API may report, including the one that is the absence of an answer. */
+export const ANALYST_ASSESSMENT_LABELS: Record<string, string> = {
+  [ANALYST_ASSESSMENT_NONE]: "Not recorded",
+  [ANALYST_ASSESSMENT_AGREES]: "Agrees with automated assessment",
+  [ANALYST_ASSESSMENT_DISAGREES]: "Disagrees with automated assessment",
+  [ANALYST_ASSESSMENT_UNDETERMINED]: "Undetermined",
+};
+
 // The longest note the API will accept, matching `MAX_REVIEW_NOTE_LENGTH` in the models
 // module. Restated here so the textarea can carry a `maxLength` that agrees with the validator
 // — a control that let somebody type 1,400 characters and then lost the last 400 to a 422 is a
@@ -107,6 +149,12 @@ export const REVIEW_STATUS_LABELS: Record<string, string> = {
 export type AnalysisReview = {
   analysis_id: string;
   status: string;
+
+  // What the reviewer made of the automated assessment, or null where none was recorded. Null
+  // for every review written before the field existed, which is why the parser below accepts
+  // the key being absent as well as being null — a payload from an older API must still read.
+  analyst_assessment: string | null;
+
   note: string;
   reviewer_id: string | null;
   reviewer_email_snapshot: string | null;
@@ -130,6 +178,22 @@ export type ReviewResult =
   | { ok: true; review: AnalysisReview }
   | { ok: false; missing: boolean; unauthenticated: boolean; error: string };
 
+/**
+ * A field that may legitimately be missing entirely, as null.
+ *
+ * Distinct from `nullableString` below, which treats an absent key as a malformed payload. This
+ * one is for fields added after the fact: a review read from an API that predates them has no
+ * such key, and refusing to parse it would hide the entire review behind an error rather than
+ * render the part of it that exists. Anything present but not a string is still a refusal.
+ */
+function optionalString(value: unknown): string | null | undefined {
+  if (value === undefined) {
+    return null;
+  }
+
+  return nullableString(value);
+}
+
 /** A field that is either a string or absent, or `undefined` for anything that is neither. */
 function nullableString(value: unknown): string | null | undefined {
   if (value === null || typeof value === "string") {
@@ -148,6 +212,7 @@ export function parseReview(payload: unknown): AnalysisReview | null {
   const {
     analysis_id,
     status,
+    analyst_assessment,
     note,
     reviewer_id,
     reviewer_email_snapshot,
@@ -158,6 +223,7 @@ export function parseReview(payload: unknown): AnalysisReview | null {
   // The four nullable fields go through one helper rather than four repetitions of the same
   // two-branch test, because a `typeof x !== "string" && x !== null` written four times is four
   // places for the null half to be forgotten.
+  const assessment = optionalString(analyst_assessment);
   const reviewerId = nullableString(reviewer_id);
   const reviewerEmail = nullableString(reviewer_email_snapshot);
   const createdAt = nullableString(created_at);
@@ -167,6 +233,7 @@ export function parseReview(payload: unknown): AnalysisReview | null {
     typeof analysis_id !== "string" ||
     typeof status !== "string" ||
     typeof note !== "string" ||
+    assessment === undefined ||
     reviewerId === undefined ||
     reviewerEmail === undefined ||
     createdAt === undefined ||
@@ -178,6 +245,7 @@ export function parseReview(payload: unknown): AnalysisReview | null {
   return {
     analysis_id,
     status,
+    analyst_assessment: assessment,
     note,
     reviewer_id: reviewerId,
     reviewer_email_snapshot: reviewerEmail,

@@ -16,6 +16,20 @@ That is why this is a separate table and not two more fields on `analyses`. With
 the row, this endpoint would be issuing an UPDATE against the record it exists not to touch,
 and the guarantee would rest on the `SET` clause listing the right two columns forever.
 
+**The review has two axes and neither is forensic.** The status is workflow — has anybody
+looked. The analyst assessment, added in R9-T7, is what they made of the automated assessment:
+`AGREES_WITH_AUTOMATED_ASSESSMENT`, `DISAGREES_WITH_AUTOMATED_ASSESSMENT` or `UNDETERMINED`.
+They are separate columns and separate diffs in the audit log because they answer separate
+questions — a case can be closed by somebody who disagreed with it.
+
+**An assessment is an opinion about the automated assessment, and cannot become a verdict.**
+Disagreeing writes one nullable column on the review row. It does not replace `risk_level`, does
+not produce a second classification, does not mark the analysis as correctly or incorrectly
+decided, and is not a ground truth label — the system holds no ground truth, and an operator
+pressing a button in a form does not create any. Nothing in the verdict, coverage or provenance
+path reads this column. The spellings are long for exactly this reason: they cannot be read as
+an answer about the media, only as a statement about an answer.
+
 **The status vocabulary is operational and never forensic.** `REVIEWED` means somebody looked;
 `NEEDS_FOLLOW_UP` means somebody looked and wants it looked at again. There is no `FAKE`, no
 `GENUINE`, no `CONFIRMED` — those are answers about the media, the risk engine gives them under
@@ -51,6 +65,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import (
+    ANALYST_ASSESSMENTS,
     AUDIT_ACTION_REVIEW_CREATED,
     AUDIT_ACTION_REVIEW_UPDATED,
     AUDIT_TARGET_ANALYSIS,
@@ -125,6 +140,13 @@ class AnalysisReviewState(BaseModel):
     # third is the only value here that is never stored anywhere — see `AnalysisReview`.
     status: str
 
+    # What the reviewer made of the automated assessment, or null where they recorded nothing.
+    # Null is the honest answer for every review written before R9-T7 and for any review since
+    # whose author did not answer the question — it is not `UNDETERMINED`, which is a position
+    # somebody took. Readers must render the two differently and must never treat either as a
+    # statement about the media.
+    analyst_assessment: str | None
+
     # The reviewer's own words, as text. Empty when there is no review and when the reviewer
     # wrote none; the two are told apart by `status`, not by this field.
     note: str
@@ -158,6 +180,11 @@ class ReviewChange(BaseModel):
 
     status: str
 
+    # Optional, and `None` is a value a caller may send rather than only an omission: clearing
+    # an assessment somebody recorded by mistake is a legitimate revision, and the form above
+    # offers it. It is not a fourth vocabulary word — see the validator.
+    analyst_assessment: str | None = None
+
     # Defaulted, so "reviewed, nothing to add" is a body with one field rather than one that
     # has to spell out an empty string. The default is `""` and not `None` because the column
     # is not nullable and because two spellings of "no note" would make the no-op comparison
@@ -179,6 +206,36 @@ class ReviewChange(BaseModel):
         """
         if value not in REVIEW_STATUSES:
             raise ValueError(f"status must be one of {', '.join(REVIEW_STATUSES)}")
+
+        return value
+
+    @field_validator("analyst_assessment")
+    @classmethod
+    def opinion_about_the_automated_assessment(cls, value: str | None) -> str | None:
+        """One of the three assessments, or nothing at all.
+
+        Checked against `ANALYST_ASSESSMENTS` for the reason the status validator gives: the
+        model, the database's check constraint and the test that proves they agree name one
+        source rather than three lists.
+
+        `None` passes through untouched and is not coerced to `UNDETERMINED`. The two mean
+        different things — nobody recorded an opinion, against somebody recorded that they
+        could not form one — and the coercion would have quietly attributed the second to every
+        reviewer who did the first.
+
+        This is the validator that keeps the new axis from becoming a verdict. `TRUE`, `FALSE`,
+        `CONFIRMED`, `TP` and `FP` are refused here not as misspellings but because they are
+        answers about the media or claims about correctness, and neither is a thing a review may
+        assert: the first belongs to the risk engine under a named ruleset, and the second to
+        ground truth this system does not hold.
+        """
+        if value is None:
+            return None
+
+        if value not in ANALYST_ASSESSMENTS:
+            raise ValueError(
+                f"analyst_assessment must be one of {', '.join(ANALYST_ASSESSMENTS)}"
+            )
 
         return value
 
@@ -223,6 +280,7 @@ def unreviewed(analysis_id: uuid.UUID) -> AnalysisReviewState:
     return AnalysisReviewState(
         analysis_id=analysis_id,
         status=REVIEW_STATUS_UNREVIEWED,
+        analyst_assessment=None,
         note="",
         reviewer_id=None,
         reviewer_email_snapshot=None,
@@ -241,6 +299,7 @@ def visible_review(review: AnalysisReview) -> AnalysisReviewState:
     return AnalysisReviewState(
         analysis_id=review.analysis_id,
         status=review.status,
+        analyst_assessment=review.analyst_assessment,
         note=review.note,
         reviewer_id=review.reviewer_id,
         reviewer_email_snapshot=review.reviewer_email_snapshot,
@@ -289,7 +348,13 @@ def stored_review(session: Session, analysis_id: uuid.UUID) -> AnalysisReview | 
     ).scalar_one_or_none()
 
 
-def review_changes(previous_status: str, new_status: str, note_moved: bool) -> dict:
+def review_changes(
+    previous_status: str,
+    new_status: str,
+    previous_assessment: str | None,
+    new_assessment: str | None,
+    note_moved: bool,
+) -> dict:
     """What the audit row says moved, without ever saying what the note now says.
 
     Two deliberate departures from the payload `admin_users.py` writes, and they pull in
@@ -299,6 +364,17 @@ def review_changes(previous_status: str, new_status: str, note_moved: bool) -> d
     untouched field makes every row look like a change to everything. On a first review the
     old value is `UNREVIEWED`, the state the analysis was in by having no row at all, so the
     diff reads as a real transition rather than as a null.
+
+    `analyst_assessment` is a second, separate diff under the same rule, and separate is the
+    requirement rather than the tidy option: the two axes answer different questions, and a
+    combined entry would make "closed the case" and "disagreed with the detector" indistinguish-
+    able in the one record that is supposed to tell them apart. Its old value is a JSON null on
+    a review that carried none, which is distinct from `"UNDETERMINED"` appearing there.
+
+    Neither key is a forensic diff. This event describes a change to `analysis_reviews`, and
+    `target_id` names the analysis only because that is what the review is about — no row on
+    `analyses` moved, and reading this payload as a history of the verdict would be reading it
+    as the opposite of what it records.
 
     `note_changed` appears either way, which is not. It is there precisely *because* the note's
     text is withheld: with the wording absent from the event, a reader who saw no `note` key
@@ -314,6 +390,12 @@ def review_changes(previous_status: str, new_status: str, note_moved: bool) -> d
 
     if previous_status != new_status:
         changes["status"] = {"old": previous_status, "new": new_status}
+
+    if previous_assessment != new_assessment:
+        changes["analyst_assessment"] = {
+            "old": previous_assessment,
+            "new": new_assessment,
+        }
 
     return changes
 
@@ -373,15 +455,18 @@ def set_analysis_review(
 ) -> AnalysisReviewState:
     """Write or revise the human review of one analysis.
 
-    A PUT and not a PATCH, because the body is the whole review: both fields are always
-    present, and a request is a complete statement of where the reviewer now stands rather than
-    an edit to one half of it. That also makes it idempotent, which is what the no-op below
-    turns from a property of the verb into a property of the database.
+    A PUT and not a PATCH, because the body is the whole review: every field is a complete
+    statement of where the reviewer now stands rather than an edit to one part of it — which is
+    what makes an absent `analyst_assessment` mean "none recorded" rather than "leave whatever
+    is there". That also makes it idempotent, which is what the no-op below turns from a
+    property of the verb into a property of the database.
 
     **The analysis is untouched.** The only rows this function writes are the review and the
     audit event. `analysis_or_404` reads the analysis and locks it, and no statement here
     assigns to a forensic column — there is no attribute assignment against `analysis` anywhere
-    below, which is what makes the immutability structural rather than careful.
+    below, which is what makes the immutability structural rather than careful. That holds for
+    the assessment exactly as it does for the status: an analyst who disagrees writes one
+    nullable column on `analysis_reviews`, and `risk_level` still says what the engine decided.
 
     **A request that changes nothing writes nothing.** Not the review, and above all not an
     audit row. The screen submits both controls on every save, so "open the form and press
@@ -413,19 +498,21 @@ def set_analysis_review(
     # having no row: `UNREVIEWED`. Captured before anything is assigned, because after the
     # mutation there is nothing left to compare against.
     previous_status = REVIEW_STATUS_UNREVIEWED if review is None else review.status
+    previous_assessment = None if review is None else review.analyst_assessment
     previous_note = "" if review is None else review.note
 
     status_moved = previous_status != change.status
+    assessment_moved = previous_assessment != change.analyst_assessment
     note_moved = previous_note != change.note
 
-    if not status_moved and not note_moved:
+    if not status_moved and not assessment_moved and not note_moved:
         # Nothing to write. Returns before the mutation rather than assigning the same values
         # over themselves and relying on the diff coming out empty — the emptiness test would
         # work today and would put the guarantee in a comparison instead of in the control
         # flow, one edit away from somebody adding a field that always differs.
         #
         # `review` cannot be None here: an unreviewed analysis has status `UNREVIEWED`, which
-        # `ReviewChange` refuses, so no request can match both halves of the no-op against it.
+        # `ReviewChange` refuses, so no request can match every arm of the no-op against it.
         return visible_review(review) if review is not None else unreviewed(analysis_id)
 
     action = (
@@ -437,11 +524,22 @@ def set_analysis_review(
         session.add(review)
 
     review.status = change.status
+    # Assigned on every write, including when it is `None`. A PUT is a complete statement of
+    # where the reviewer now stands, so clearing an assessment is expressed by sending none —
+    # and skipping the assignment for `None` would have made the field the one part of this
+    # body that could only ever be set and never unset.
+    review.analyst_assessment = change.analyst_assessment
     review.note = change.note
     review.reviewer_id = administrator.id
     review.reviewer_email_snapshot = administrator.email
 
-    changes = review_changes(previous_status, change.status, note_moved)
+    changes = review_changes(
+        previous_status,
+        change.status,
+        previous_assessment,
+        change.analyst_assessment,
+        note_moved,
+    )
 
     # The record of the change, added to the session that holds the change itself.
     #
@@ -465,14 +563,15 @@ def set_analysis_review(
     session.commit()
     session.refresh(review)
 
-    # The administrator, the analysis, and the status — and deliberately not the note. The
-    # note is the one piece of this that is free prose written by a person, and a log line is
-    # read by more eyes and kept in more places than the screen it came from.
+    # The administrator, the analysis, the status and the assessment — and deliberately not the
+    # note. The note is the one piece of this that is free prose written by a person, and a log
+    # line is read by more eyes and kept in more places than the screen it came from.
     logger.info(
-        "Administrator %s set the review of analysis %s to %s.",
+        "Administrator %s set the review of analysis %s to %s (analyst assessment: %s).",
         administrator.id,
         analysis_id,
         review.status,
+        review.analyst_assessment,
     )
 
     return visible_review(review)

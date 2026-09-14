@@ -25,6 +25,18 @@ and requiring it to appear nowhere in the serialized event.
 leave the review standing and readable by its snapshot. `analysis_id` is one, with `CASCADE`,
 so deleting the analysis must take the review with it. Both are asserted by actually deleting.
 
+*The analyst assessment.* Added in R9-T7, and the fifth group because it is a second axis
+rather than more of the first. What a reviewer made of the automated assessment is recorded
+beside the workflow status and never merged into it: the two are separate columns, separate
+controls and separate diffs in the audit log. The claims about it are the claims about the
+review generally, made again against the new field — it is storable in exactly three spellings
+and in no fourth, null is a distinct state from `UNDETERMINED` and is never coerced into it,
+and writing one leaves the forensic record untouched including the two values that are derived
+from it rather than stored, the decision coverage and the provenance. `TRUE`, `FALSE`, `TP`,
+`FP` and `CONFIRMED` are refused by name for the reason `FAKE` and `GENUINE` are: an opinion
+that reads as a verdict, or as a claim about whether the detector was right, would be a second
+classification of the media or a ground truth label this system does not hold.
+
 Counting convention, inherited from `test_admin_audit.py`: the audit table is deployment-wide
 and other tests write to it, so nothing here asserts an absolute row count. Events are always
 counted for a specific analysis id that this file created, which is unique per test.
@@ -39,6 +51,9 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.models import (
     ANALYSIS_STATUS_COMPLETED,
+    ANALYST_ASSESSMENT_AGREES,
+    ANALYST_ASSESSMENT_DISAGREES,
+    ANALYST_ASSESSMENT_UNDETERMINED,
     AUDIT_ACTION_REVIEW_CREATED,
     AUDIT_ACTION_REVIEW_UPDATED,
     AUDIT_TARGET_ANALYSIS,
@@ -57,7 +72,15 @@ from app.db.models import (
     User,
 )
 from app.db.session import SessionLocal, engine
+from app.detection import PROVENANCE_SIGNAL, SYNTHETIC_VIDEO_SIGNAL
 from app.main import app
+from app.provenance_status import provenance_state
+from app.risk_engine import (
+    RULE_V5_INCONCLUSIVE_PARTIAL,
+    RULES_VERSION_V5,
+    VERDICT_INCONCLUSIVE,
+)
+from app.risk_trace import RULESET_V5, PersistedSignal, build_trace
 from app.web_auth import ENVIRONMENT_VARIABLE, SESSION_COOKIE_NAME, hash_password
 from tests.conftest import DASHBOARD_ORIGIN
 
@@ -86,6 +109,9 @@ RULE_ID = "R4"
 VISIBLE_FIELDS = {
     "analysis_id",
     "status",
+    # The analyst's opinion of the automated assessment (R9-T7), on its own axis from the
+    # workflow status above and never merged into it.
+    "analyst_assessment",
     "note",
     "reviewer_id",
     "reviewer_email_snapshot",
@@ -963,3 +989,815 @@ def test_one_analysis_cannot_hold_two_reviews(session):
         db.commit()
 
     db.rollback()
+
+
+# --- the analyst assessment (R9-T7) ---------------------------------------------------
+
+# The three storable assessments, and the fourth state that is the absence of one. Written out
+# rather than imported as a tuple from the model, so that widening the vocabulary has to be a
+# deliberate edit to this line — the same reason `VISIBLE_FIELDS` is spelled out above.
+#
+# `None` sits in the same list because it is a value a request may send and a value the payload
+# may carry, and every claim below has to hold for it too. It is not a fourth spelling: it means
+# no opinion was recorded, which is what every review written before this field existed says.
+ASSESSMENTS = (
+    ANALYST_ASSESSMENT_AGREES,
+    ANALYST_ASSESSMENT_DISAGREES,
+    ANALYST_ASSESSMENT_UNDETERMINED,
+    None,
+)
+
+# Words that must never be storable in the assessment column, asserted by name.
+#
+# Two different kinds of wrong, deliberately mixed. `TRUE`, `FALSE` and `CONFIRMED` are answers
+# about the media, and the only thing in this system entitled to give one is the risk engine
+# under a named ruleset. `TP` and `FP` are claims about whether the engine was *right*, which
+# is a question about ground truth — this deployment holds none, and an analyst pressing a
+# button in a form does not create any.
+#
+# `AGREES` is here for a third reason: it is the correct concept under a spelling short enough
+# to be read as a verdict once it is out of context and in a column heading. The vocabulary is
+# long on purpose and the abbreviation of it is not an alias for it.
+FORBIDDEN_ASSESSMENTS = ("TRUE", "FALSE", "TP", "FP", "TN", "FN", "CONFIRMED", "AGREES")
+
+
+# The calibrated identity the v5 ruleset requires before it will read a synthetic-video score
+# at all. Taken off the ruleset rather than retyped: a different deployment of the same model is
+# an uncalibrated one, so a fixture that invented a provider version would produce a reading the
+# coverage model declines to count and a coverage of 0/2 that proves less than it appears to.
+V5_SVD = RULESET_V5.signals[0]
+
+
+def make_decided_analysis(session) -> Analysis:
+    """An analysis carrying a v5 decision, a usable detector reading and a provenance reading.
+
+    Richer than `make_analysis` and for one reason: two of the things a review must not alter
+    are not columns. The decision coverage and the provenance status are *derived* from the
+    persisted signal rows every time they are read, so asserting that a review leaves them
+    alone requires rows they can actually be derived from — against an analysis with no
+    provenance signal, "the provenance did not change" is a statement about two nulls. The
+    coverage needs `r9-v5.0.0` specifically, because that is the only ruleset that freezes a
+    `decision_total`; every earlier version states no coverage at all.
+
+    The record is internally coherent rather than merely well-formed. The synthetic-video
+    reading is usable and below its measured threshold, the face detector produced nothing, and
+    one usable reading out of a frozen denominator of two is exactly the partial coverage that
+    `R9-300` concludes `INCONCLUSIVE` on. The provenance reading carries a manifest, so the
+    provenance axes are substantive too.
+
+    `INCONCLUSIVE` is also the only v5 verdict that fits the `risk_level` column as it stands —
+    see the note on `test_the_fixture_actually_has_something_to_leave_alone`.
+    """
+    db, _, analyses = session
+
+    analysis = Analysis(
+        status=ANALYSIS_STATUS_COMPLETED,
+        risk_level=VERDICT_INCONCLUSIVE,
+        risk_rules_version=RULES_VERSION_V5,
+        risk_calibration_id=RULESET_V5.calibration_id,
+        risk_rule_id=RULE_V5_INCONCLUSIVE_PARTIAL,
+    )
+    db.add(analysis)
+    db.flush()
+    analyses.append(analysis.id)
+
+    db.add(
+        AnalysisSignal(
+            analysis_id=analysis.id,
+            provider=V5_SVD.provider,
+            signal_type=SYNTHETIC_VIDEO_SIGNAL,
+            status=SIGNAL_STATUS_SUCCESS,
+            provider_version=V5_SVD.provider_version,
+            # Below the threshold, which is a reading and therefore usable. "Did not reach it"
+            # and "reached it" are both coverage; only the absence of a reading is not.
+            score=V5_SVD.threshold - 0.1,
+            signal_metadata={V5_SVD.count_key: 8},
+        )
+    )
+    db.add(
+        AnalysisSignal(
+            analysis_id=analysis.id,
+            provider="fixture",
+            signal_type=PROVENANCE_SIGNAL,
+            status=SIGNAL_STATUS_SUCCESS,
+            provider_version="fixture-c2pa-1",
+            score=None,
+            signal_metadata={"manifest_exists": True},
+        )
+    )
+    db.commit()
+
+    return analysis
+
+
+def derived_state(session, analysis: Analysis) -> tuple:
+    """The two forensic values that are computed rather than stored, as a reader would see them.
+
+    `forensic_state` above compares the columns and the signal rows. This compares what those
+    rows *mean* — the decision coverage and the two provenance axes — because a reader of a
+    report never sees the rows, and a change that left every column identical while moving a
+    derived value would be a change to the forensic answer that a column-by-column comparison
+    would pass.
+
+    Both are produced here the way the API produces them, by calling the same two functions on
+    the persisted rows. Nothing is recomputed by hand: a second implementation of the coverage
+    model written in a test would be the copy the whole R9 line exists to prevent, and it would
+    agree with itself rather than with the application.
+    """
+    db, _, _ = session
+    db.commit()
+    db.expire_all()
+
+    rows = db.execute(
+        select(AnalysisSignal).where(AnalysisSignal.analysis_id == analysis.id)
+    ).scalars()
+
+    signals = {
+        row.signal_type: PersistedSignal(
+            provider=row.provider,
+            signal_type=row.signal_type,
+            status=row.status,
+            provider_version=row.provider_version,
+            score=row.score,
+            metadata=row.signal_metadata,
+        )
+        for row in rows
+    }
+
+    decision = db.execute(
+        select(
+            Analysis.risk_level,
+            Analysis.risk_rule_id,
+            Analysis.risk_rules_version,
+            Analysis.risk_calibration_id,
+        ).where(Analysis.id == analysis.id)
+    ).one()
+
+    trace = build_trace(
+        risk_level=decision.risk_level,
+        rule_id=decision.risk_rule_id,
+        rules_version=decision.risk_rules_version,
+        calibration_id=decision.risk_calibration_id,
+        signals=signals,
+    )
+
+    provenance = signals.get(PROVENANCE_SIGNAL)
+    state = provenance_state(
+        provenance.status if provenance is not None else None,
+        (provenance.metadata or {}).get("manifest_exists")
+        if provenance is not None
+        else None,
+    )
+
+    coverage = None if trace is None else trace.decision_coverage
+
+    return (
+        None
+        if coverage is None
+        else (coverage.usable, coverage.total, coverage.status, coverage.is_complete),
+        state.status,
+        state.availability,
+    )
+
+
+def stored_assessment(session, analysis: Analysis) -> str | None:
+    """The assessment as the column holds it, read fresh rather than off a cached object."""
+    db, _, _ = session
+    db.commit()
+    db.expire_all()
+
+    return db.execute(
+        select(AnalysisReview.analyst_assessment).where(
+            AnalysisReview.analysis_id == analysis.id
+        )
+    ).scalar_one()
+
+
+@pytest.mark.parametrize("assessment", ASSESSMENTS)
+def test_an_assessment_round_trips_through_the_api_and_the_column(session, assessment):
+    """Every storable assessment, and the absence of one, survives a write and a read.
+
+    Three assertions rather than one, because they can fail apart: the response to the write,
+    the response to an independent read, and the column itself. A payload echoing back what it
+    was sent while storing something else is the failure this shape catches.
+
+    `None` is parametrized alongside the three words deliberately. It is not the untested
+    default — it is the state a legacy review is in and the state clearing one returns to, and
+    it has to round-trip as itself rather than arriving back as `UNDETERMINED`.
+    """
+    analysis = make_analysis(session)
+    client = administrator(session)
+
+    written = put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=assessment,
+        note="Checked.",
+    )
+
+    assert written.status_code == 200
+    assert written.json()["analyst_assessment"] == assessment
+    assert set(written.json()) == VISIBLE_FIELDS
+
+    read_back = client.get(review_url(analysis.id))
+
+    assert read_back.status_code == 200
+    assert read_back.json()["analyst_assessment"] == assessment
+    assert stored_assessment(session, analysis) == assessment
+
+
+def test_an_omitted_assessment_is_the_absence_of_one_and_not_a_default_opinion(session):
+    """A body that does not mention the field stores null, not a value chosen for the reviewer.
+
+    The dashboard always submits the control, so this is the shape an API caller sends. It is
+    asserted because the alternative — defaulting to `UNDETERMINED`, or to agreement — would
+    have the API record an opinion nobody expressed, which is the one thing this column must
+    never do.
+    """
+    analysis = make_analysis(session)
+    client = administrator(session)
+
+    response = put_review(
+        client, analysis.id, status=REVIEW_STATUS_REVIEWED, note="No opinion offered."
+    )
+
+    assert response.status_code == 200
+    assert response.json()["analyst_assessment"] is None
+    assert stored_assessment(session, analysis) is None
+
+
+def test_the_two_axes_are_independent(session):
+    """Either may move without the other, which is the whole reason they are two columns.
+
+    A case closed by somebody who disagreed with it and a case left open by somebody who agreed
+    are both ordinary, and a design that folded the opinion into the status could express
+    neither.
+    """
+    analysis = make_analysis(session)
+    client = administrator(session)
+
+    agreed_but_open = put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_NEEDS_FOLLOW_UP,
+        analyst_assessment=ANALYST_ASSESSMENT_AGREES,
+        note="",
+    ).json()
+
+    assert agreed_but_open["status"] == REVIEW_STATUS_NEEDS_FOLLOW_UP
+    assert agreed_but_open["analyst_assessment"] == ANALYST_ASSESSMENT_AGREES
+
+    disagreed_but_closed = put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=ANALYST_ASSESSMENT_DISAGREES,
+        note="",
+    ).json()
+
+    assert disagreed_but_closed["status"] == REVIEW_STATUS_REVIEWED
+    assert disagreed_but_closed["analyst_assessment"] == ANALYST_ASSESSMENT_DISAGREES
+
+
+# --- legacy reviews, which carry no assessment at all -----------------------------------
+
+
+def legacy_review(session, analysis: Analysis, reviewer: uuid.UUID) -> None:
+    """A review written the way one was written before this column existed.
+
+    Inserted through the ORM without naming `analyst_assessment`, which is exactly what a row
+    migrated from before R9-T7 looks like: nothing was backfilled, so the column is null.
+    """
+    db, _, _ = session
+    db.add(
+        AnalysisReview(
+            analysis_id=analysis.id,
+            status=REVIEW_STATUS_REVIEWED,
+            note="Looked at before the field existed.",
+            reviewer_id=reviewer,
+            reviewer_email_snapshot="departed@example.com",
+        )
+    )
+    db.commit()
+
+
+def test_a_legacy_review_reads_back_with_no_assessment_rather_than_an_error(session):
+    """The row every existing deployment is full of, read through the new payload.
+
+    A 200 carrying `REVIEWED` and a null, and the complete field set. The failure this guards
+    against is a reader that requires the new field and turns the entire history of the
+    deployment into an error, which would hide the reviews rather than the missing opinions.
+    """
+    analysis = make_analysis(session)
+    legacy_review(session, analysis, uuid.uuid4())
+    client = administrator(session)
+
+    response = client.get(review_url(analysis.id))
+
+    assert response.status_code == 200
+    assert set(response.json()) == VISIBLE_FIELDS
+    assert response.json()["status"] == REVIEW_STATUS_REVIEWED
+    assert response.json()["analyst_assessment"] is None
+
+
+def test_a_legacy_review_is_not_migrated_by_being_read(session):
+    """Reading one leaves it exactly as it was. A read that wrote would be a backfill."""
+    analysis = make_analysis(session)
+    legacy_review(session, analysis, uuid.uuid4())
+    client = administrator(session)
+
+    client.get(review_url(analysis.id))
+
+    assert stored_assessment(session, analysis) is None
+    assert count_for(session, analysis) == 0
+
+
+def test_a_legacy_review_can_be_resaved_without_acquiring_an_opinion(session):
+    """Saving one unchanged is a no-op, including on the field it does not have.
+
+    The screen preselects "Not recorded" for a null, so pressing save on a legacy review sends
+    the status it already had and no assessment. That must write nothing at all — a reviewer
+    who opened an old case and saved it must not have an opinion attributed to them, and the
+    audit log must not gain an entry saying something moved.
+    """
+    analysis = make_analysis(session)
+    legacy_review(session, analysis, uuid.uuid4())
+    client = administrator(session)
+
+    response = put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=None,
+        note="Looked at before the field existed.",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["analyst_assessment"] is None
+    assert stored_assessment(session, analysis) is None
+    assert count_for(session, analysis) == 0
+
+
+def test_a_legacy_review_keeps_its_status_when_an_assessment_is_added(session):
+    """Adding an opinion to an old review moves one axis and leaves the other alone."""
+    analysis = make_analysis(session)
+    legacy_review(session, analysis, uuid.uuid4())
+    client = administrator(session)
+
+    response = put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=ANALYST_ASSESSMENT_DISAGREES,
+        note="Looked at before the field existed.",
+    )
+
+    assert response.json()["status"] == REVIEW_STATUS_REVIEWED
+    assert response.json()["analyst_assessment"] == ANALYST_ASSESSMENT_DISAGREES
+
+    changes = events_for(session, analysis)[0].changes
+
+    assert "status" not in changes
+    assert changes["analyst_assessment"] == {
+        "old": None,
+        "new": ANALYST_ASSESSMENT_DISAGREES,
+    }
+
+
+# --- isolation, again, for the second axis ----------------------------------------------
+
+
+@pytest.mark.parametrize("assessment", ASSESSMENTS)
+def test_an_assessment_leaves_every_forensic_value_exactly_as_it_was(session, assessment):
+    """The claim that matters most about this field, asserted for every value it may take.
+
+    Both snapshots, because they catch different failures. `forensic_state` compares the risk
+    columns and the detector rows; `derived_state` compares the decision coverage and the two
+    provenance axes, which are computed from those rows and are what a report actually prints.
+
+    Disagreement is in the parameter list and is not a special case. An analyst saying the
+    automated assessment is wrong writes one nullable column on the review and changes nothing
+    about the verdict, the coverage, the provenance or the evidence — the record still says
+    exactly what the engine decided, and what a human thought of it is stored beside that.
+    """
+    analysis = make_decided_analysis(session)
+    before_columns = forensic_state(session, analysis)
+    before_derived = derived_state(session, analysis)
+
+    client = administrator(session)
+    response = put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=assessment,
+        note="Reviewed against the source.",
+    )
+
+    assert response.status_code == 200
+    assert forensic_state(session, analysis) == before_columns
+    assert derived_state(session, analysis) == before_derived
+
+
+def test_the_fixture_actually_has_something_to_leave_alone(session):
+    """The isolation assertions above are only meaningful against substantive values.
+
+    Without this, a change that made `derived_state` return three nulls would make every
+    comparison above pass by comparing nothing to nothing. This is the test that fails instead,
+    and it pins the exact coverage rather than merely requiring one: 1 usable reading out of the
+    version's frozen denominator of 2, reported partial.
+
+    A note for whoever wires `evaluate_v5` into the worker. The fixture above stores
+    `INCONCLUSIVE` because it is the only v5 verdict that fits `analyses.risk_level`, which is
+    `String(16)` — `MANIPULATION_DETECTED` is 21 characters and
+    `NO_CALIBRATED_MANIPULATION_SIGNAL` is 33, and neither can be persisted today. Nothing
+    writes a v5 verdict yet, so this is latent rather than broken, and widening the column is
+    that task's migration and not this one's.
+    """
+    analysis = make_decided_analysis(session)
+    coverage, status, availability = derived_state(session, analysis)
+
+    assert coverage == (1, 2, "partial", False)
+    assert status == "PROVENANCE_PRESENT"
+    assert availability == "AVAILABLE"
+
+
+@pytest.mark.parametrize("assessment", ASSESSMENTS)
+def test_revising_an_assessment_leaves_every_forensic_value_exactly_as_it_was(
+    session, assessment
+):
+    """The second write is the one that issues an UPDATE, so it is asserted separately."""
+    analysis = make_decided_analysis(session)
+    client = administrator(session)
+
+    put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=ANALYST_ASSESSMENT_AGREES,
+        note="First pass.",
+    )
+    before_columns = forensic_state(session, analysis)
+    before_derived = derived_state(session, analysis)
+
+    put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_NEEDS_FOLLOW_UP,
+        analyst_assessment=assessment,
+        note="Second pass.",
+    )
+
+    assert forensic_state(session, analysis) == before_columns
+    assert derived_state(session, analysis) == before_derived
+
+
+# --- the audit trail carries both axes, and still never the note ------------------------
+
+
+def test_the_two_axes_are_separate_diff_keys(session):
+    """One event, two named movements, told apart in the payload.
+
+    Separate keys rather than one compound entry, and that is the requirement rather than the
+    tidy option: "closed the case" and "disagreed with the detector" are different statements,
+    and the audit log is the one record that has to be able to distinguish them.
+    """
+    analysis = make_analysis(session)
+    client = administrator(session)
+
+    put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_NEEDS_FOLLOW_UP,
+        analyst_assessment=ANALYST_ASSESSMENT_DISAGREES,
+        note="Both moved.",
+    )
+
+    events = events_for(session, analysis)
+
+    assert len(events) == 1
+    assert events[0].action == AUDIT_ACTION_REVIEW_CREATED
+    assert events[0].target_type == AUDIT_TARGET_ANALYSIS
+    assert events[0].changes["status"] == {
+        "old": REVIEW_STATUS_UNREVIEWED,
+        "new": REVIEW_STATUS_NEEDS_FOLLOW_UP,
+    }
+    assert events[0].changes["analyst_assessment"] == {
+        "old": None,
+        "new": ANALYST_ASSESSMENT_DISAGREES,
+    }
+
+
+def test_an_event_omits_the_assessment_when_only_the_status_moved(session):
+    """The house convention, applied to the new field: an untouched axis is not restated.
+
+    An event that named both every time would make every row look like a change to everything,
+    which is the failure that makes an audit log unreadable rather than merely verbose.
+    """
+    analysis = make_analysis(session)
+    client = administrator(session)
+
+    put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=ANALYST_ASSESSMENT_AGREES,
+        note="Steady.",
+    )
+    put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_NEEDS_FOLLOW_UP,
+        analyst_assessment=ANALYST_ASSESSMENT_AGREES,
+        note="Steady.",
+    )
+
+    changes = events_for(session, analysis)[0].changes
+
+    assert changes["status"]["new"] == REVIEW_STATUS_NEEDS_FOLLOW_UP
+    assert "analyst_assessment" not in changes
+    assert changes["note_changed"] is False
+
+
+def test_an_event_omits_the_status_when_only_the_assessment_moved(session):
+    """The mirror of the test above, and the one that proves the two are genuinely separate."""
+    analysis = make_analysis(session)
+    client = administrator(session)
+
+    put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=ANALYST_ASSESSMENT_AGREES,
+        note="Steady.",
+    )
+    put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=ANALYST_ASSESSMENT_UNDETERMINED,
+        note="Steady.",
+    )
+
+    changes = events_for(session, analysis)[0].changes
+
+    assert "status" not in changes
+    assert changes["analyst_assessment"] == {
+        "old": ANALYST_ASSESSMENT_AGREES,
+        "new": ANALYST_ASSESSMENT_UNDETERMINED,
+    }
+    assert changes["note_changed"] is False
+
+
+def test_no_event_carries_the_text_of_a_note_when_an_assessment_moves(session):
+    """The existing claim, made again on the path that writes the new field.
+
+    A distinctive string goes into the note and must appear nowhere in any serialized event
+    for this analysis. Asserted against the whole payload rather than against the keys it is
+    known to have, so a field added later that happened to carry the wording would fail here.
+    """
+    secret = f"note-body-{uuid.uuid4().hex}"
+    analysis = make_analysis(session)
+    client = administrator(session)
+
+    put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=ANALYST_ASSESSMENT_DISAGREES,
+        note=secret,
+    )
+    put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_NEEDS_FOLLOW_UP,
+        analyst_assessment=ANALYST_ASSESSMENT_UNDETERMINED,
+        note=f"{secret}-revised",
+    )
+
+    events = events_for(session, analysis)
+
+    assert len(events) == 2
+    for event in events:
+        assert secret not in repr(event.changes)
+        assert set(event.changes) <= {"status", "analyst_assessment", "note_changed"}
+
+
+def test_an_exact_no_op_on_both_axes_writes_no_event(session):
+    """Nothing moved, so nothing is recorded — including the timestamp.
+
+    The screen submits every control on every save, so "open the form and press save" is the
+    ordinary case rather than a strange one. A log in which a dozen entries say a review was
+    updated to what it already said cannot answer when the review actually changed.
+    """
+    analysis = make_analysis(session)
+    client = administrator(session)
+
+    put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=ANALYST_ASSESSMENT_AGREES,
+        note="Settled.",
+    )
+    after_first = count_for(session, analysis)
+    stamped = client.get(review_url(analysis.id)).json()["updated_at"]
+
+    repeated = put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=ANALYST_ASSESSMENT_AGREES,
+        note="Settled.",
+    )
+
+    assert repeated.status_code == 200
+    assert repeated.json()["analyst_assessment"] == ANALYST_ASSESSMENT_AGREES
+    assert count_for(session, analysis) == after_first
+    assert client.get(review_url(analysis.id)).json()["updated_at"] == stamped
+
+
+# --- clearing an assessment back to nothing ---------------------------------------------
+
+
+def test_an_assessment_can_be_cleared_and_the_clearing_is_audited(session):
+    """Returning to "no opinion recorded" is a real revision and is logged as one.
+
+    A PUT is the whole review, so clearing is expressed by sending no assessment — which is
+    what makes the field the one part of this body that can be unset as well as set. An
+    operator who chose the wrong option must be able to take it back, and the record must say
+    that they did.
+    """
+    analysis = make_analysis(session)
+    client = administrator(session)
+
+    put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=ANALYST_ASSESSMENT_DISAGREES,
+        note="Steady.",
+    )
+
+    cleared = put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=None,
+        note="Steady.",
+    )
+
+    assert cleared.status_code == 200
+    assert cleared.json()["analyst_assessment"] is None
+    assert stored_assessment(session, analysis) is None
+
+    changes = events_for(session, analysis)[0].changes
+
+    assert changes["analyst_assessment"] == {
+        "old": ANALYST_ASSESSMENT_DISAGREES,
+        "new": None,
+    }
+    assert "status" not in changes
+    assert events_for(session, analysis)[0].action == AUDIT_ACTION_REVIEW_UPDATED
+
+
+def test_clearing_an_assessment_twice_writes_one_event(session):
+    """The second clear moves nothing, so it is a no-op like any other."""
+    analysis = make_analysis(session)
+    client = administrator(session)
+
+    put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=ANALYST_ASSESSMENT_AGREES,
+        note="",
+    )
+    put_review(
+        client, analysis.id, status=REVIEW_STATUS_REVIEWED, analyst_assessment=None, note=""
+    )
+    after_clearing = count_for(session, analysis)
+
+    put_review(
+        client, analysis.id, status=REVIEW_STATUS_REVIEWED, analyst_assessment=None, note=""
+    )
+
+    assert count_for(session, analysis) == after_clearing
+
+
+def test_clearing_an_assessment_leaves_the_forensic_record_alone(session):
+    """Clearing writes a null over a column. It reaches nothing else."""
+    analysis = make_decided_analysis(session)
+    client = administrator(session)
+
+    put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=ANALYST_ASSESSMENT_DISAGREES,
+        note="",
+    )
+    before_columns = forensic_state(session, analysis)
+    before_derived = derived_state(session, analysis)
+
+    put_review(
+        client, analysis.id, status=REVIEW_STATUS_REVIEWED, analyst_assessment=None, note=""
+    )
+
+    assert forensic_state(session, analysis) == before_columns
+    assert derived_state(session, analysis) == before_derived
+
+
+# --- the vocabulary, refused by name ----------------------------------------------------
+
+
+@pytest.mark.parametrize("forbidden", FORBIDDEN_ASSESSMENTS)
+def test_a_verdict_or_a_correctness_label_is_refused(session, forbidden):
+    """422, and nothing written — neither a review nor an audit row.
+
+    These are refused not because they are misspelled but because of what they would mean. A
+    verdict here would be a second, unversioned classification of the media sitting beside the
+    risk engine's, with nothing to say which the report meant. A correctness label would be a
+    ground truth claim, and this system holds no ground truth against which the detector could
+    be marked right or wrong.
+    """
+    analysis = make_analysis(session)
+    before = forensic_state(session, analysis)
+    client = administrator(session)
+
+    response = put_review(
+        client,
+        analysis.id,
+        status=REVIEW_STATUS_REVIEWED,
+        analyst_assessment=forbidden,
+        note="",
+    )
+
+    assert response.status_code == 422
+    assert forensic_state(session, analysis) == before
+    assert count_for(session, analysis) == 0
+    assert client.get(review_url(analysis.id)).json()["status"] == REVIEW_STATUS_UNREVIEWED
+
+
+def test_an_empty_assessment_is_refused_rather_than_read_as_no_opinion(session):
+    """The empty string is not a spelling of null, and the API does not accept it as one.
+
+    The form sends `""` for "not recorded" and the route handler in front of the API converts
+    it to a JSON null. That conversion is the browser's half of the contract and belongs there;
+    the API's vocabulary has three words and none of them is the empty string, so a caller that
+    sends one is told so rather than having it interpreted.
+    """
+    analysis = make_analysis(session)
+    client = administrator(session)
+
+    response = put_review(
+        client, analysis.id, status=REVIEW_STATUS_REVIEWED, analyst_assessment="", note=""
+    )
+
+    assert response.status_code == 422
+    assert count_for(session, analysis) == 0
+
+
+def test_the_database_refuses_an_assessment_outside_the_taxonomy(session):
+    """The check constraint, asserted by going around the API entirely.
+
+    The application would refuse the value; this proves the database refuses it too. A rule
+    that lives only in a Pydantic model is one route, one migration or one hand-written UPDATE
+    away from not running, and the column this protects is the one a forensic-sounding word
+    must never reach.
+    """
+    analysis = make_analysis(session)
+    db, _, _ = session
+
+    db.add(
+        AnalysisReview(
+            analysis_id=analysis.id,
+            status=REVIEW_STATUS_REVIEWED,
+            analyst_assessment="CONFIRMED",
+            note="",
+            reviewer_id=uuid.uuid4(),
+        )
+    )
+
+    with pytest.raises(SQLAlchemyError):
+        db.commit()
+
+    db.rollback()
+
+
+def test_the_database_accepts_a_null_assessment(session):
+    """The other half of the constraint, which must permit the state every legacy row is in."""
+    analysis = make_analysis(session)
+    db, _, _ = session
+
+    db.add(
+        AnalysisReview(
+            analysis_id=analysis.id,
+            status=REVIEW_STATUS_REVIEWED,
+            note="",
+            reviewer_id=uuid.uuid4(),
+        )
+    )
+    db.commit()
+
+    assert stored_assessment(session, analysis) is None

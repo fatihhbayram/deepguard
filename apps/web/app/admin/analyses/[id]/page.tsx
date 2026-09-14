@@ -21,10 +21,18 @@
  * containing `<script>`, and it prints as those characters. This is the one paragraph of this
  * file that must survive every future edit to it.
  *
+ * **The analyst assessment is a third statement and is labelled as one (R9-T7).** The card
+ * below prints the automated assessment, the workflow status and the analyst's opinion of the
+ * automated assessment as three separate lines with three separate words, because they are
+ * three separate things and an operator has to be able to say which is which. Disagreement is
+ * rendered as what a person thought; it does not restate the verdict, does not annotate it, and
+ * does not appear anywhere near the card above.
+ *
  * **Nothing is recomputed.** The risk classification is displayed exactly as the worker
  * committed it, with no detector score compared against a threshold here, and the review is
  * displayed exactly as the API returned it. A screen that re-derived either could contradict
- * the record it exists to show.
+ * the record it exists to show. Nor is anything scored: an assessment is not tallied, not
+ * compared with the verdict to produce a judgement about it, and never presented as accuracy.
  *
  * A Server Component with no client-side code at all. The controls are plain HTML forms, the
  * same as the account controls, so the page works with JavaScript disabled and the outcome of
@@ -47,6 +55,11 @@ import { AdminSection } from "../../components/AdminSection";
 import { AdminStatusBadge } from "../../components/AdminStatusBadge";
 import { AdminValue } from "../../components/AdminValue";
 import {
+  ANALYST_ASSESSMENT_AGREES,
+  ANALYST_ASSESSMENT_DISAGREES,
+  ANALYST_ASSESSMENT_LABELS,
+  ANALYST_ASSESSMENT_NONE,
+  ANALYST_ASSESSMENT_UNDETERMINED,
   AnalysisReview,
   MAX_REVIEW_NOTE_LENGTH,
   REVIEW_STATUS_LABELS,
@@ -204,6 +217,25 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 /**
+ * What the reviewer made of the automated assessment, as a chip.
+ *
+ * Drawn in the muted tone for all four states, and that is the deliberate part. A green chip
+ * for agreement and a red one for disagreement would read as a scorecard on the detector —
+ * right and wrong — and this screen is not entitled to say either: nothing here knows what the
+ * media actually was. The colour on this card belongs to the workflow status, which is
+ * operational; an opinion gets a neutral chip and a label that says whose opinion it is.
+ */
+function AssessmentBadge({ assessment }: { assessment: string | null }) {
+  return (
+    <AdminStatusBadge tone="muted" mono>
+      {/* Unknown assessments print as the API spelled them rather than as a blank chip, the
+          same way the status badge above handles a taxonomy that has grown. */}
+      {ANALYST_ASSESSMENT_LABELS[assessment ?? ANALYST_ASSESSMENT_NONE] ?? assessment}
+    </AdminStatusBadge>
+  );
+}
+
+/**
  * The reviewer's own words, printed as text.
  *
  * `whitespace-pre-wrap` so the line breaks somebody typed survive, and nothing else. There is
@@ -243,7 +275,38 @@ function ReviewRecord({ review }: { review: AnalysisReview }) {
 
   return (
     <div className="mt-4">
-      <StatusBadge status={review.status} />
+      {/* Two chips and two words, not one compound state. The first says where the case is in
+          the workflow; the second says what the reviewer made of the automated assessment.
+          Reading either as the other is the mistake this layout exists to prevent, so they are
+          labelled rather than left to be inferred from the colour. */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+        <span className="flex flex-wrap items-center gap-2">
+          <span className="text-[13px] text-muted">Human review</span>
+          <StatusBadge status={review.status} />
+        </span>
+        <span className="flex flex-wrap items-center gap-2">
+          <span className="text-[13px] text-muted">Analyst assessment</span>
+          <AssessmentBadge assessment={review.analyst_assessment} />
+        </span>
+      </div>
+
+      {review.analyst_assessment === ANALYST_ASSESSMENT_DISAGREES && (
+        <p className="mt-3 max-w-[74ch] text-[13px] leading-relaxed text-muted">
+          This reviewer did not agree with the automated assessment. That is recorded here as
+          their opinion and nothing else: the forensic result above is unchanged, no second
+          classification has been stored, and nothing in this record says which of the two was
+          correct.
+        </p>
+      )}
+
+      {review.analyst_assessment === null && (
+        <p className="mt-3 max-w-[74ch] text-[13px] leading-relaxed text-muted">
+          No assessment was recorded with this review. Reviews written before this field existed
+          carry none, and none has been assumed for them — that is not the same as{" "}
+          {ANALYST_ASSESSMENT_LABELS[ANALYST_ASSESSMENT_UNDETERMINED].toLowerCase()}, which is a
+          position somebody took.
+        </p>
+      )}
 
       <dl className="mt-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
         <Fact label="Reviewer">
@@ -285,15 +348,31 @@ function ReviewRecord({ review }: { review: AnalysisReview }) {
  * server-rendered form, and a `value` with no `onChange` is a field React will not let the
  * reader alter.
  *
- * The select offers the two operational statuses and nothing else. `UNREVIEWED` is absent
- * because it is not a value — it is the absence of a review row, and there is no route that
- * un-reviews an analysis. Nothing that reads as a verdict is here either: whether the media is
- * genuine is the card above, decided under a named ruleset, and this control does not get a
+ * The status select offers the two operational statuses and nothing else. `UNREVIEWED` is
+ * absent because it is not a value — it is the absence of a review row, and there is no route
+ * that un-reviews an analysis. Nothing that reads as a verdict is here either: whether the media
+ * is genuine is the card above, decided under a named ruleset, and this control does not get a
  * second opinion on it.
+ *
+ * The assessment select offers the three assessments plus "Not recorded", and that fourth
+ * option is load-bearing in two directions. It is what lets a review written before the field
+ * existed be saved again without an opinion being invented for its author, and it is the only
+ * way to clear an assessment somebody chose by mistake. It is the preselected option whenever
+ * the stored value is null, so opening the form and pressing save records nothing new.
+ *
+ * **What this control cannot do is overrule the card above.** Choosing "Disagrees with
+ * automated assessment" writes one nullable column on the review row; the verdict, the ruleset,
+ * the calibration, the rule that fired and the decision coverage are all exactly as they were,
+ * and there is no field on this form and no route behind it that reaches any of them. It is
+ * also not a correctness label — this screen holds no ground truth against which the detector
+ * could be marked right or wrong, and the value stored here must never be counted as though it
+ * were.
  *
  * An unreviewed analysis opens with `REVIEWED` preselected, which is the ordinary first answer
  * — but the button says "Save review" rather than anything that implies agreement, and nothing
- * is written until somebody presses it.
+ * is written until somebody presses it. The assessment opens on "Not recorded" for the same
+ * reason, one step further: a default of agreement would be the form answering the question on
+ * the reviewer's behalf.
  *
  * `maxLength` on the textarea matches the API's own bound, so a reviewer is stopped at the
  * limit rather than losing the tail of what they wrote to a 422. It is a convenience and not
@@ -310,6 +389,11 @@ function ReviewForm({ review }: { review: AnalysisReview }) {
     review.status === REVIEW_STATUS_NEEDS_FOLLOW_UP
       ? REVIEW_STATUS_NEEDS_FOLLOW_UP
       : REVIEW_STATUS_REVIEWED;
+
+  // Null becomes the empty option rather than a missing selection. A `<select>` with a
+  // `defaultValue` matching none of its options falls back to the first one, which here would
+  // silently preselect an opinion on behalf of a review that carried none.
+  const selectedAssessment = review.analyst_assessment ?? ANALYST_ASSESSMENT_NONE;
 
   return (
     <form
@@ -337,6 +421,39 @@ function ReviewForm({ review }: { review: AnalysisReview }) {
           </option>
         </select>
       </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <label className="text-[13px] text-muted" htmlFor="review-analyst-assessment">
+          Analyst assessment
+        </label>
+        <select
+          id="review-analyst-assessment"
+          name="analyst_assessment"
+          defaultValue={selectedAssessment}
+          className="rounded-md border border-line bg-ink px-2.5 py-1.5 text-[12px] text-bone transition-colors duration-150 hover:border-rule"
+        >
+          {/* First, so that "no opinion" is what the control reads as before anybody touches
+              it, and so a legacy review round-trips unchanged. */}
+          <option value={ANALYST_ASSESSMENT_NONE}>
+            {ANALYST_ASSESSMENT_LABELS[ANALYST_ASSESSMENT_NONE]}
+          </option>
+          <option value={ANALYST_ASSESSMENT_AGREES}>
+            {ANALYST_ASSESSMENT_LABELS[ANALYST_ASSESSMENT_AGREES]}
+          </option>
+          <option value={ANALYST_ASSESSMENT_DISAGREES}>
+            {ANALYST_ASSESSMENT_LABELS[ANALYST_ASSESSMENT_DISAGREES]}
+          </option>
+          <option value={ANALYST_ASSESSMENT_UNDETERMINED}>
+            {ANALYST_ASSESSMENT_LABELS[ANALYST_ASSESSMENT_UNDETERMINED]}
+          </option>
+        </select>
+      </div>
+
+      <p className="mt-2 max-w-[74ch] text-[12px] leading-relaxed text-muted">
+        An opinion about the automated assessment, recorded alongside it and never in place of
+        it. Disagreeing does not change the forensic result above, does not store a second
+        classification, and is not a record of whether the detector was right.
+      </p>
 
       <div className="mt-4">
         <label className="text-[13px] text-muted" htmlFor="review-note">
@@ -375,7 +492,7 @@ function HumanReview({ review }: { review: AnalysisReview }) {
     <AdminSection
       tone="accent"
       title="Human review"
-      description="An operational record of whether somebody has looked at this case — not a second opinion on the media. Saving a review leaves the forensic result above exactly as it was, and every change is recorded in the audit log with who made it and when."
+      description="An operational record of whether somebody has looked at this case, and of what they made of the automated assessment — not a second answer about the media. Saving a review leaves the forensic result above exactly as it was, and every change is recorded in the audit log with who made it and when."
     >
       <ReviewRecord review={review} />
       <ReviewForm review={review} />

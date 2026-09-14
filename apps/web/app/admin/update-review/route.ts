@@ -1,5 +1,6 @@
 /**
- * The review form's half of the review API: carrying a status and a note to the API's PUT.
+ * The review form's half of the review API: carrying a status, an analyst assessment and a note
+ * to the API's PUT.
  *
  * The same shape `/admin/update-user` has, for the same reasons stated there — the API serves
  * no CORS headers, a browser form can only issue GET or POST, and there is no JavaScript on the
@@ -12,17 +13,19 @@
  * the opposite belief — that being under `/admin` makes a route privileged — is the kind that
  * gets a check left out of the next handler added here.
  *
- * **Nothing in this file decides what a review may say.** Not the two statuses, not the length
- * of a note, not what counts as plain text: all three are the API's, in
- * `app/api/admin_analyses.py`, and a copy of any of them here would be a second rule that could
- * drift from the one actually enforced. The note is forwarded exactly as typed — not trimmed,
+ * **Nothing in this file decides what a review may say.** Not the two statuses, not the three
+ * analyst assessments, not the length of a note, not what counts as plain text: all of them are
+ * the API's, in `app/api/admin_analyses.py`, and a copy of any of them here would be a second
+ * rule that could drift from the one actually enforced. The note is forwarded exactly as typed — not trimmed,
  * not escaped, not rewritten — because the API normalizes it once and silently altering
  * somebody's review on the way past would make the stored record disagree with what they wrote.
  *
- * **This route cannot touch a forensic value.** It forwards two fields to an endpoint whose
+ * **This route cannot touch a forensic value.** It forwards three fields to an endpoint whose
  * request model forbids extras, so a body carrying `risk_level` is a 422 rather than a change;
  * and the endpoint behind it writes only the review row and its audit event. There is no
- * address in this file that names the analyses API at all.
+ * address in this file that names the analyses API at all. An assessment of
+ * `DISAGREES_WITH_AUTOMATED_ASSESSMENT` is no exception: it is one nullable column on the
+ * review, and the verdict it disagrees with is not reachable from here.
  */
 
 import { NextResponse } from "next/server";
@@ -36,7 +39,7 @@ import {
   isSameOrigin,
   sessionHeaders,
 } from "../../session";
-import { reviewUrl } from "../reviews";
+import { ANALYST_ASSESSMENT_NONE, reviewUrl } from "../reviews";
 
 // How long the API is given to answer. One upsert of a single row behind a row lock, so it is
 // held to the short bound the reads are rather than the generous ones the upload paths need.
@@ -98,6 +101,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const analysisId = (form.get("analysis_id") ?? "").toString().trim();
   const status = form.get("status");
+  const analystAssessment = form.get("analyst_assessment");
   const note = form.get("note");
 
   // No analysis means nowhere to redirect back to, so this is a bare 400 rather than the
@@ -114,6 +118,19 @@ export async function POST(request: Request): Promise<NextResponse> {
     // list in this process would be one that could disagree, and the thing it would disagree
     // about is whether a word that reads as a verdict may be stored.
     status: typeof status === "string" ? status : "",
+    // The select's empty option is "not recorded", and it becomes a JSON null rather than an
+    // empty string: the API's vocabulary has three values and none of them is `""`, and the
+    // absence of an assessment is a null on the column. This is a shape conversion between a
+    // form field that cannot hold a null and a column that can — not a decision about what a
+    // review may say, which stays with the API like every other rule here.
+    //
+    // Sending null rather than omitting the key is deliberate. A PUT is the whole review, so
+    // this is how an assessment somebody recorded by mistake gets cleared.
+    analyst_assessment:
+      typeof analystAssessment === "string" &&
+      analystAssessment !== ANALYST_ASSESSMENT_NONE
+        ? analystAssessment
+        : null,
     // A textarea always submits, even when empty, so an absent field here means the form was
     // not the page's. Empty is a legitimate value — "reviewed, nothing to add" — and is sent as
     // the empty string rather than omitted, which is the same thing the API's default produces.

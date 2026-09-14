@@ -1095,6 +1095,51 @@ MAX_REVIEW_NOTE_LENGTH = 1000
 REVIEW_STATUS_CONSTRAINT = "ck_analysis_reviews_status"
 
 
+# What the reviewer thought of the automated assessment, as a separate axis from the workflow
+# status above (R9-T7). The status says whether anybody has looked; this says what they made of
+# what they saw, and the two are recorded apart because a case can be closed by somebody who
+# disagreed with it and left open by somebody who agreed.
+#
+# **An assessment is an opinion and never ground truth.** `AGREES_WITH_AUTOMATED_ASSESSMENT`
+# does not confirm the verdict and `DISAGREES_WITH_AUTOMATED_ASSESSMENT` does not overturn it:
+# `Analysis` still holds exactly what the engine decided, under the ruleset and calibration it
+# decided under, and nothing on this table is read when that verdict is rendered. The long
+# spellings are the point. A column called `analyst_verdict` holding `AGREES` would be one
+# careless join away from reading as a second answer about the media; these values cannot be
+# read as anything but a statement *about the automated assessment*, which is what they are.
+#
+# **This is not a correctness label and no counting may be built on it.** Whether an analysis
+# was a true or false positive is a question about ground truth, which this system does not yet
+# hold and which an analyst pressing a button does not create — that belongs to the ground
+# truth and evaluation work, against labelled corpora, and not to a governance row an operator
+# can rewrite. Aggregating these values into an accuracy figure would be reporting how often
+# reviewers agreed with the detector as though it were how often the detector was right.
+ANALYST_ASSESSMENT_AGREES = "AGREES_WITH_AUTOMATED_ASSESSMENT"
+ANALYST_ASSESSMENT_DISAGREES = "DISAGREES_WITH_AUTOMATED_ASSESSMENT"
+
+# Looked, and could not say. A recorded position and not the absence of one — an analyst who
+# read the evidence and found it insufficient has said something, and the column distinguishes
+# that from a review written before this field existed, which is null.
+ANALYST_ASSESSMENT_UNDETERMINED = "UNDETERMINED"
+
+# Every assessment that may be stored. A tuple for the same reason `REVIEW_STATUSES` is one:
+# the validator, the check constraint and the test that proves they agree read one list.
+#
+# Null is not in it and is not a fourth value. A review with no assessment is a review whose
+# author did not record one — every row written before R9-T7 is in that state, and none of them
+# is backfilled, because inventing an opinion for somebody is the one thing this column must
+# never do.
+ANALYST_ASSESSMENTS = (
+    ANALYST_ASSESSMENT_AGREES,
+    ANALYST_ASSESSMENT_DISAGREES,
+    ANALYST_ASSESSMENT_UNDETERMINED,
+)
+
+# The constraint holding `analyst_assessment` to the three names above, or to null. Named for
+# the same reason `REVIEW_STATUS_CONSTRAINT` is.
+ANALYST_ASSESSMENT_CONSTRAINT = "ck_analysis_reviews_analyst_assessment"
+
+
 class AnalysisReview(Base):
     """What a human said about an analysis, kept strictly apart from what the detectors said.
 
@@ -1126,13 +1171,24 @@ class AnalysisReview(Base):
 
     __tablename__ = "analysis_reviews"
 
-    # In the database and not only in the request model. The status vocabulary is the one thing
-    # about this table that must never widen by accident — see `status` below — and a rule that
-    # lives only in a Pydantic model is one route away from not running.
+    # In the database and not only in the request model. The two vocabularies here are the
+    # thing about this table that must never widen by accident — see `status` and
+    # `analyst_assessment` below — and a rule that lives only in a Pydantic model is one route
+    # away from not running.
     __table_args__ = (
         CheckConstraint(
             "status IN ('%s')" % "', '".join(REVIEW_STATUSES),
             name=REVIEW_STATUS_CONSTRAINT,
+        ),
+        # `IS NULL OR` and not a `NOT NULL` column with a default. The null is the state every
+        # review written before this column existed is in, and it is a different statement from
+        # `UNDETERMINED`: one is "nobody was asked", the other is "somebody was asked and could
+        # not say". A default would have turned the first into the second across the whole
+        # table in one migration.
+        CheckConstraint(
+            "analyst_assessment IS NULL OR analyst_assessment IN ('%s')"
+            % "', '".join(ANALYST_ASSESSMENTS),
+            name=ANALYST_ASSESSMENT_CONSTRAINT,
         ),
     )
 
@@ -1154,6 +1210,21 @@ class AnalysisReview(Base):
     # a forensic-sounding word in a governance column, which is exactly what this table exists
     # to keep out. The application would refuse it; the database refuses it too.
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    # What the reviewer made of the automated assessment, on its own axis from the status
+    # above. One of `ANALYST_ASSESSMENTS`, or null where nobody recorded one.
+    #
+    # **Nothing in the verdict path reads this column.** The report renders `Analysis` and the
+    # engine that wrote it; this is rendered beside that, labelled as a person's opinion, and
+    # the two are never combined into a single answer. An analyst disagreeing changes what the
+    # screen says a human thought and changes nothing about what the detectors found — there is
+    # no route in this application that writes a forensic column, and adding one would not start
+    # here.
+    #
+    # Nullable, and nothing is backfilled. Every review that predates R9-T7 keeps exactly the
+    # status it was written with; see `ANALYST_ASSESSMENTS` for why a default would have been a
+    # fabricated opinion rather than a convenience.
+    analyst_assessment: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Why, in the reviewer's own words. Plain text and nothing else: no Markdown, no HTML, no
     # rendering of any kind on the way in or the way out. The screen prints it as text, which
