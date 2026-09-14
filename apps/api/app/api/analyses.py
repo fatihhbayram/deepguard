@@ -50,6 +50,7 @@ from app.media import (
 )
 from app.normalization import needs_normalization
 from app.observability import current_request_id
+from app.provenance_status import provenance_state
 from app.risk_trace import PersistedSignal, build_trace
 from app.storage import store_original
 from app.web_auth import require_same_origin, require_user
@@ -399,6 +400,11 @@ class ProvenanceSignal(BaseModel):
 
     Absent or invalid credentials are not evidence of manipulation, and nothing here says
     they are. Most media carries none at all.
+
+    `provenance_status` and `provenance_availability` below are the two axes a reader is
+    meant to render (R9-T6). They restate the facts above in a closed vocabulary so that
+    "no credentials were found" and "we could not find out" cannot arrive as the same
+    state; the raw fields stay exactly as they were, and remain the evidence.
     """
 
     provider: str
@@ -418,6 +424,40 @@ class ProvenanceSignal(BaseModel):
     # recorded and deliberately never visited — fetching it would let an uploaded file
     # steer a request out of the worker — so nothing here says whether it resolves.
     remote_manifest_url: str | None
+
+    # The two provenance axes (R9-T6). Computed from the two persisted fields above rather
+    # than carried beside them, so the reported state and the evidence it was read from
+    # cannot drift apart: there is no assignment by which a caller could set one without
+    # the other, and no construction path that skips the mapping. `app.provenance_status`
+    # holds the whole mapping and the reasons for it.
+    #
+    # Neither takes anything from a detector, a score or a risk level, and neither reaches
+    # one. Provenance and manipulation are separate evidence about the same file.
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def provenance_status(self) -> str:
+        """What provenance was found: `PROVENANCE_PRESENT` or `UNVERIFIED`.
+
+        `PROVENANCE_PRESENT` says a manifest is in the file and nothing further. Whether
+        its signature holds is `validation_state` above, reported in the C2PA SDK's own
+        words and never folded into this one — an invalid signature is present provenance,
+        and reporting it as `UNVERIFIED` would hide a failed signature behind a word that
+        reads like the routine absence most media has.
+        """
+        return provenance_state(self.status, self.manifest_exists).status
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def provenance_availability(self) -> str:
+        """Whether provenance could be evaluated at all: `AVAILABLE` or `UNAVAILABLE`.
+
+        A fact about the reading, not about the media. `UNAVAILABLE` is a failed, timed-out
+        or uninterpretable read — the question was never answered — and it is the axis that
+        keeps that apart from `UNVERIFIED` / `AVAILABLE`, which is the positive finding that
+        we looked and this file carries no credentials.
+        """
+        return provenance_state(self.status, self.manifest_exists).availability
 
 
 class MediaFacts(BaseModel):

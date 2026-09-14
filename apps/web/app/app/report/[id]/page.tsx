@@ -28,6 +28,7 @@ import {
   acquisitionStatement,
   contributionRoleText,
   credentialsAbsentStatement,
+  provenanceWording,
   fetchAnalysis,
   classificationLabel,
   isKnownRiskCondition,
@@ -880,6 +881,54 @@ function SyntheticVideoSection({ signal }: { signal: SyntheticVideoSignal | null
   );
 }
 
+/**
+ * The provenance state on both axes, in the type the report leads the section with.
+ *
+ * Deliberately built like `OperationalSummary` and deliberately not inside it. The two
+ * blocks answer different questions from different evidence — was this picture altered,
+ * and who signed these bytes — and a reader who met provenance as a line item under a
+ * manipulation verdict would read it as part of that finding. It is not part of it: no
+ * verdict on this page moved this state, and this state moved no verdict.
+ *
+ * Null for a state outside the vocabulary this client knows, which prints nothing at all
+ * rather than captioning an unrecognised state with a sentence written for another one.
+ * The raw C2PA evidence below is unaffected and remains the record either way.
+ */
+function ProvenanceState({ signal }: { signal: ProvenanceSignal }) {
+  const wording = provenanceWording(
+    signal.provenance_status,
+    signal.provenance_availability,
+  );
+
+  if (wording === null) {
+    return null;
+  }
+
+  return (
+    <div className="mb-4 rounded border border-black/20 px-4 py-3 dark:border-white/25 print:border-black/45">
+      {/* Both axes, shown as the pair they are. `UNVERIFIED` alone does not say whether
+          anybody looked, so neither is ever printed without the other. */}
+      <p className="font-mono text-[11px] tracking-[0.08em] uppercase opacity-70">
+        {signal.provenance_status} · {signal.provenance_availability}
+      </p>
+
+      {/* What the state is, in the largest type in the block — the line most likely to be
+          read on its own, and the one a skimming reader takes away. */}
+      <p className="mt-1.5 text-lg font-semibold tracking-[-0.01em]">{wording.title}</p>
+
+      {/* What was actually established, about the file or about the reading of it. */}
+      <p className="mt-1.5 max-w-[76ch] text-sm leading-relaxed">{wording.meaning}</p>
+
+      {/* What it does not establish, given the same weight as the state rather than a
+          footnote's. Distinct per state on purpose: "we looked and found nothing" and "we
+          could not look" are never explained with the same sentence. */}
+      <p className="mt-2.5 max-w-[76ch] border-t border-black/12 pt-2.5 text-sm leading-relaxed dark:border-white/20 print:border-black/40">
+        {wording.clarification}
+      </p>
+    </div>
+  );
+}
+
 function ProvenanceSection({
   signal,
   analysis,
@@ -905,6 +954,8 @@ function ProvenanceSection({
         <NoSignal what="provenance" />
       ) : (
         <>
+          {/* The state first, then the evidence it was read from. */}
+          <ProvenanceState signal={signal} />
           <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Provider" value={signal.provider} />
             <Field label="Status" value={<SignalState status={signal.status} />} />
@@ -936,11 +987,14 @@ function ProvenanceSection({
           {signal.manifest_exists === false ? (
             <p className="mt-3 text-xs opacity-70">{credentialsAbsentStatement(analysis)}</p>
           ) : null}
+          {/* What the state block above does not cover: the two limits that are facts about
+              how this reading was taken rather than about what it found. Everything the
+              state itself means — absence is not evidence, presence is not proof, a failed
+              read establishes nothing — is said once, up there, per state. Repeating it
+              here in one sentence written for all three is how the three collapse back
+              into one. */}
           <p className="mt-3 text-xs opacity-70">
-            Provenance answers who signed these bytes, which is a different question from
-            whether the media was manipulated. The absence of Content Credentials is not
-            evidence of manipulation — most media carries none — and their presence is not
-            evidence of authenticity. Any remote manifest URL was recorded and never fetched.
+            Any remote manifest URL was recorded and never fetched.
             {assembled
               ? " These bytes were assembled by DeepGuard from separate video and audio streams, so this reading describes the stored artifact and not a file the source published. Reading it as a statement about the source would be a mistake in either direction."
               : ""}
@@ -1478,11 +1532,31 @@ export default async function Report({ params }: { params: Promise<{ id: string 
         </p>
 
         <SyntheticVideoSection signal={analysis.synthetic_video} />
-        <ProvenanceSection signal={analysis.provenance} analysis={analysis} />
         <ActiveSpeakerSection signal={analysis.active_speaker} />
         <FaceManipulationSection signal={analysis.face_manipulation} analysis={analysis} />
         <LipForensicsSection signal={analysis.lip_forensics} analysis={analysis} />
         <AudioSection signal={analysis.audio_authenticity} />
+
+        {/* Provenance under its own heading, outside the group above (R9-T6). It was inside
+            it until now, between two detectors, and position on a page is an argument: a
+            reader arriving at a provenance state after a run of manipulation evidence — and
+            after a paragraph explaining which sources may reach the classification — reads
+            it as one more input to that classification. It is not one, in either direction,
+            and the surest way to say so is to stop printing it among them. */}
+        <h2 className="mt-10 border-b border-black/15 pb-2 text-[13px] font-semibold tracking-[0.1em] uppercase print:border-black/40">
+          Authenticity and provenance
+        </h2>
+        <p className="mt-3 max-w-[76ch] text-xs leading-relaxed opacity-70">
+          A separate question from everything above, answered from separate evidence.
+          Provenance is what the file itself carries about where it came from and who signed
+          for it; the sections above are what detectors measured about the picture and the
+          sound. Neither reaches the other: no assessment on this page was moved by the
+          provenance state below, and the provenance state below was not moved by any
+          assessment on this page. Nothing here reports the media as authentic or
+          manipulated, and no provenance state on this page can.
+        </p>
+
+        <ProvenanceSection signal={analysis.provenance} analysis={analysis} />
 
         <footer className="mt-10 break-inside-avoid border-t border-black/15 pt-4 text-xs leading-relaxed opacity-70 dark:border-white/20 print:border-black/40">
           <p className="max-w-[76ch]">

@@ -108,7 +108,162 @@ export type ProvenanceSignal = {
   // alongside `manifest_exists: false`, and the two together are a different fact from a
   // file that claims no provenance at all. The URL was recorded and never visited.
   remote_manifest_url: string | null;
+  // The two axes the API states this reading on (R9-T6). Typed as the raw strings the API
+  // sends rather than as the unions below, for the same reason `status` is: a payload is
+  // not trusted to be in the vocabulary, and `isProvenanceStatus` is what decides whether
+  // this client can render it. See `provenanceWording` for why one axis is not enough.
+  //
+  // Null for a response from an API that predates the axes. Not defaulted, in either
+  // direction: assuming `AVAILABLE` would assert that a reading completed and assuming
+  // `UNAVAILABLE` would hide one that did, so a null simply prints no state at all and the
+  // raw C2PA evidence beside it stays the record.
+  provenance_status: string | null;
+  provenance_availability: string | null;
 };
+
+/**
+ * What provenance was found on a file, in the API's closed vocabulary.
+ *
+ * `PROVENANCE_PRESENT` says a manifest is in the file and says nothing more — not that its
+ * signature holds, which is `validation_state`, and not that the media is unaltered.
+ * `UNVERIFIED` is the other half of the axis and is emphatically not a finding: almost
+ * every file that reaches this system is `UNVERIFIED`, because almost no media on the
+ * internet carries Content Credentials at all.
+ *
+ * There is no third member, and in particular nothing this system can read produces a
+ * "verified authentic" state — see `ExcludedProvenanceStates`.
+ */
+export type ProvenanceStatus = "UNVERIFIED" | "PROVENANCE_PRESENT";
+
+/**
+ * Whether provenance could be evaluated at all — a fact about the reading, not the media.
+ *
+ * This axis exists because `UNVERIFIED` alone cannot say whether anybody looked. A file
+ * that was read and carries nothing, and a file whose reading failed, both answer
+ * `UNVERIFIED`; only this tells them apart, and telling them apart is the whole of R9-T6.
+ */
+export type ProvenanceAvailability = "AVAILABLE" | "UNAVAILABLE";
+
+export const PROVENANCE_STATUSES: readonly ProvenanceStatus[] = [
+  "UNVERIFIED",
+  "PROVENANCE_PRESENT",
+];
+
+export const PROVENANCE_AVAILABILITIES: readonly ProvenanceAvailability[] = [
+  "AVAILABLE",
+  "UNAVAILABLE",
+];
+
+/** Whether an API string is a provenance status this client is able to render. */
+export function isProvenanceStatus(value: string): value is ProvenanceStatus {
+  return (PROVENANCE_STATUSES as readonly string[]).includes(value);
+}
+
+/** Whether an API string is a provenance availability this client is able to render. */
+export function isProvenanceAvailability(
+  value: string,
+): value is ProvenanceAvailability {
+  return (PROVENANCE_AVAILABILITIES as readonly string[]).includes(value);
+}
+
+// Compile-time proof that the provenance vocabulary excludes the state this product must
+// never reach for, on the same terms as `ExcludedVerdictStates` does for the verdict. A
+// detector score cannot produce authenticity, so there is no word here for one to produce.
+export type ExcludedProvenance<V extends string> = V extends ProvenanceStatus ? never : V;
+export type ExcludedProvenanceStates = ExcludedProvenance<
+  "VERIFIED_AUTHENTIC" | "AUTHENTIC" | "VERIFIED" | "CLEAN"
+>;
+
+/**
+ * How one provenance state is worded for a reader: what it is, and what it is not.
+ *
+ * The same three-part shape as `VerdictWording`, and for the same reason. `title` is the
+ * state. `meaning` is what was actually established about this file. `clarification` is
+ * what the state does not establish, and it is the half a reader is most likely to supply
+ * wrongly on their own, so it is stated beside the state rather than in a footnote.
+ */
+export type ProvenanceWording = {
+  title: string;
+  meaning: string;
+  clarification: string;
+};
+
+/**
+ * The wording for each of the three states a provenance reading can arrive in.
+ *
+ * Three entries, and the first two are the ones that must never be merged. "We looked and
+ * found no credentials" and "we could not look" are different facts about different things
+ * — the file, and our reading of it — and a UI that explained both with one sentence would
+ * be telling a reader a file carries nothing on the strength of a read that never
+ * completed. R9-T6 exists because those two shared a word before it.
+ *
+ * None of these strings contains "real", "fake", "authentic" or "genuine" about the media,
+ * including the present case, which is exactly where a reader wants to be told the file is
+ * verified and exactly where this product will not say it.
+ */
+export const PROVENANCE_WORDING: Record<
+  "unavailable" | "absent" | "present",
+  ProvenanceWording
+> = {
+  unavailable: {
+    title: "Provenance could not be evaluated",
+    meaning:
+      "The provenance reading did not complete, so whether this file carries Content Credentials is unknown.",
+    clarification:
+      "Provenance could not be evaluated. This is a gap in the reading, not a finding about the media, and it is not evidence of manipulation or of authenticity.",
+  },
+  absent: {
+    title: "No provenance credentials found",
+    meaning:
+      "The file was read successfully and carries no Content Credentials, so there is no signed origin record to examine.",
+    clarification:
+      "The absence of provenance credentials is not evidence of manipulation. Most media on the internet does not carry these credentials.",
+  },
+  present: {
+    title: "Provenance credentials present",
+    meaning:
+      "The file was read successfully and carries a provenance manifest, recorded in full in the C2PA evidence below.",
+    clarification:
+      "A provenance manifest/credential is present. This provides origin data but its validation state must be examined separately, and it does not automatically guarantee the media has not been tampered with prior to signing.",
+  },
+};
+
+/**
+ * Resolve the two axes onto the one thing to say, or `null` for a state this client cannot
+ * render.
+ *
+ * Availability is read first and it is not a tie-break: an `UNAVAILABLE` reading answered
+ * nothing, so whatever the status axis says alongside it describes a question that was
+ * never put. That also makes the combination the API's mapping never emits —
+ * `PROVENANCE_PRESENT` on an unavailable reading — resolve to "could not be evaluated"
+ * rather than to a claim about a manifest nobody managed to read.
+ *
+ * Null for a missing axis, and for any string outside the two vocabularies. Neither an
+ * older API that does not state them nor a newer one that states something this client has
+ * not heard of is rendered through a guess: the section falls back to the raw evidence
+ * rather than captioning an unknown state with a sentence written for a different one.
+ */
+export function provenanceWording(
+  status: string | null,
+  availability: string | null,
+): ProvenanceWording | null {
+  if (
+    status === null ||
+    availability === null ||
+    !isProvenanceStatus(status) ||
+    !isProvenanceAvailability(availability)
+  ) {
+    return null;
+  }
+
+  if (availability === "UNAVAILABLE") {
+    return PROVENANCE_WORDING.unavailable;
+  }
+
+  return status === "PROVENANCE_PRESENT"
+    ? PROVENANCE_WORDING.present
+    : PROVENANCE_WORDING.absent;
+}
 
 // One stretch of video in which NVIDIA saw a tracked face speaking. The times are seconds
 // from the start of the analysed video, `face_id` is NVIDIA's own identifier for the face
@@ -2047,6 +2202,8 @@ export function parseProvenance(payload: unknown): ProvenanceSignal | null | und
     claim_generator,
     signature_issuer,
     remote_manifest_url,
+    provenance_status,
+    provenance_availability,
   } = payload as Record<string, unknown>;
 
   const parsedVersion = parseOptionalString(provider_version);
@@ -2055,6 +2212,10 @@ export function parseProvenance(payload: unknown): ProvenanceSignal | null | und
   const parsedGenerator = parseOptionalString(claim_generator);
   const parsedIssuer = parseOptionalString(signature_issuer);
   const parsedRemoteUrl = parseOptionalString(remote_manifest_url);
+  // Absentable: added by R9-T6, so a response without them predates the axes rather than
+  // being malformed. A value of the wrong type is still rejected.
+  const parsedProvenanceStatus = parseAbsentableString(provenance_status);
+  const parsedProvenanceAvailability = parseAbsentableString(provenance_availability);
 
   if (
     typeof provider !== "string" ||
@@ -2065,7 +2226,9 @@ export function parseProvenance(payload: unknown): ProvenanceSignal | null | und
     parsedState === undefined ||
     parsedGenerator === undefined ||
     parsedIssuer === undefined ||
-    parsedRemoteUrl === undefined
+    parsedRemoteUrl === undefined ||
+    parsedProvenanceStatus === undefined ||
+    parsedProvenanceAvailability === undefined
   ) {
     return undefined;
   }
@@ -2080,6 +2243,8 @@ export function parseProvenance(payload: unknown): ProvenanceSignal | null | und
     claim_generator: parsedGenerator,
     signature_issuer: parsedIssuer,
     remote_manifest_url: parsedRemoteUrl,
+    provenance_status: parsedProvenanceStatus,
+    provenance_availability: parsedProvenanceAvailability,
   };
 }
 

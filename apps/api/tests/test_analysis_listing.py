@@ -105,6 +105,10 @@ EXPECTED_SIGNAL_FIELDS = {
 # The provenance object the dashboard receives: what the file itself claims, and the
 # state of the reading that established it. No score — a signature is not a figure on a
 # scale — and no raw metadata document, which holds diagnostic detail on a failure.
+#
+# The last two are the R9-T6 axes, derived from `status` and `manifest_exists` and named
+# here because they are part of the contract a client may read. They are stated, never
+# stored: `tests/test_provenance_status.py` holds the mapping and its invariants.
 EXPECTED_PROVENANCE_FIELDS = {
     "provider",
     "signal_type",
@@ -115,6 +119,8 @@ EXPECTED_PROVENANCE_FIELDS = {
     "claim_generator",
     "signature_issuer",
     "remote_manifest_url",
+    "provenance_status",
+    "provenance_availability",
 }
 
 # The active-speaker object the dashboard receives. No score: this detector reports a
@@ -778,6 +784,12 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
                 "claim_generator": "test-camera",
                 "signature_issuer": "Test Signing Cert",
                 "remote_manifest_url": None,
+                # The R9-T6 axes, stated beside the evidence they were read from. A manifest
+                # is in the file and the read that established that completed, so: present,
+                # and evaluable. `Valid` above is not what makes it present and does not
+                # appear here — the signature's state stays the SDK's word, reported once.
+                "provenance_status": "PROVENANCE_PRESENT",
+                "provenance_availability": "AVAILABLE",
             },
             "active_speaker": {
                 "provider": "nvidia",
