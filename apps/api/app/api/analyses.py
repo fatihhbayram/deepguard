@@ -2144,3 +2144,167 @@ def get_analysis(
 
     # The id is a primary key, so the narrowed select cannot return a second row.
     return payloads[0]
+
+
+class EnrichmentRequestState(BaseModel):
+    """What asking for deferred Deep Evidence did, and where the analysis now stands.
+
+    The state after the command rather than a confirmation of it, for the reason
+    `AnalysisReviewState` is shaped that way: the caller asked for the analysis to be in a
+    particular state, and the useful answer is the state it is now in. It is the same
+    projection `AnalysisSummary` carries, so a client that reads one and then the other is
+    reading one vocabulary.
+
+    `components_queued` is what *this call* moved, and it is the only field that can differ
+    between a first request and a repeat — four, then zero. That is not a break in
+    idempotency but the evidence of it: the second call found nothing left to ask for and
+    said so, having created nothing.
+    """
+
+    analysis_id: uuid.UUID
+    decision_state: str
+    aggregate_enrichment_state: str
+    per_component_state: list[EnrichmentComponent] = []
+    components_queued: int
+
+
+@router.post(
+    "/analyses/{analysis_id}/enrichment",
+    response_model=EnrichmentRequestState,
+    # A state change, so it carries the same origin check every other dashboard mutation
+    # does — the shape `PUT /analyses/{id}/review` already uses. The session cookie is
+    # `SameSite=Lax` and would not be attached to a cross-site request in the first place;
+    # this is the independent check behind that.
+    dependencies=[Depends(require_same_origin)],
+)
+def request_enrichment(
+    analysis_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_user),
+) -> EnrichmentRequestState:
+    """Ask for Deep Evidence that was deferred at submission, without reopening the decision.
+
+    The command a Quick Scan needs: enrichment for this analysis was recorded as
+    `not_requested`, and this is how it becomes owed. R10-T2 built the mechanism and
+    deliberately left it internal; this is the door onto it and nothing more.
+
+    **It may only create enrichment execution work.** It does not evaluate, re-evaluate,
+    confirm or compare a verdict, and that is structural rather than careful: the whole of
+    the mutation is `enrichment.request`, whose single statement moves component rows from
+    `not_requested` to `queued`. There is no attribute assignment against an `Analysis`
+    anywhere below, no reference to the risk engine in the call graph this route reaches,
+    and no write to a signal row. `analyses.status` keeps meaning decision status and keeps
+    the value the worker gave it.
+
+    **Nothing here knows which detectors exist.** No component is named in this module, no
+    ruleset role is interpreted and no aggregate state is computed: membership was frozen on
+    the task rows when the analysis was decided, and the two axes are read back through
+    `app.enrichment`, which owns both derivations. A detector that a later ruleset promotes
+    out of Deep Evidence changes what this endpoint queues without this endpoint being
+    edited.
+
+    **Idempotent, and idempotent under concurrency.** The state is not read and then acted
+    on: the transition is one conditional `UPDATE ... WHERE status = 'not_requested'`, so
+    two requests that arrive together cannot both queue the same component and neither can
+    insert a second task row — the `(analysis_id, provider, signal_type)` uniqueness the
+    retry semantics rest on is never even approached, because this route inserts nothing.
+    A repeat finds no rows to move, queues zero, and answers 200 with the same state.
+
+    **A request is not a retry.** The statement reaches `not_requested` rows and nothing
+    else, so a component that failed stays failed and a component that abstained stays
+    abstained. `ENRICHMENT_PARTIAL` and `ENRICHMENT_FAILED` therefore answer 200 with their
+    state unchanged and no work created: asking for enrichment and re-running enrichment
+    that already ran are two different requests, and this is the first one. The second does
+    not exist yet, and conflating them here would let a caller quietly re-run a detector by
+    pressing the only button there is.
+
+    Two states are refused with a 409, both because of a fact about the analysis as it
+    stands rather than a rule about the outcome — the distinction `app.api.admin_users`
+    already draws between its 409 and its 400:
+
+    - **An analysis with no verdict.** `DECISION_PENDING` and `DECISION_FAILED` have no
+      enrichment reading at all (§8.1), and there is nothing for supplementary evidence to
+      supplement. Queueing work against one would also be work whose ruleset membership was
+      never established, since membership is read from the ruleset the analysis was
+      *decided* under.
+    - **A legacy single-stage analysis.** It carries no execution record because it ran
+      before one existed, and §8.2 forbids giving it one: "a pre-R10 analysis is never
+      re-run to upgrade it into the new architecture". The honest answer is that this
+      analysis cannot be enriched, not a 200 that implies something was scheduled.
+
+    A caller who may not see this analysis gets the same 404 as an id that names nothing,
+    which is `visible_to`'s rule and not a second one written here. Confirming that an id
+    exists by refusing it differently is exactly what the read routes refuse to do, and a
+    command that leaked it would undo them.
+    """
+    try:
+        visible = session.execute(
+            visible_to(select(Analysis.id), user).where(Analysis.id == analysis_id)
+        ).first()
+    except SQLAlchemyError:
+        logger.exception("Reading analysis %s failed.", analysis_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="analyses are temporarily unavailable",
+        ) from None
+
+    if visible is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="analysis not found",
+        )
+
+    decision, enrichment_state = enrichment.analysis_states(session, analysis_id)
+
+    if decision != enrichment.DECIDED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="this analysis has no verdict, so there is no enrichment to request",
+        )
+
+    if enrichment_state == enrichment.LEGACY_SINGLE_STAGE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "this analysis ran before Deep Evidence was a separate stage and carries "
+                "no enrichment execution record"
+            ),
+        )
+
+    try:
+        queued = enrichment.request(session, analysis_id)
+    except SQLAlchemyError:
+        session.rollback()
+        logger.exception("Requesting Deep Evidence for analysis %s failed.", analysis_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="enrichment could not be requested",
+        ) from None
+
+    # Read back rather than predicted. What the analysis is now is a fact about the rows,
+    # and a worker may have claimed a component between the update and this read — which is
+    # a true answer arriving slightly later, not an inconsistency (§7.5).
+    decision, enrichment_state = enrichment.analysis_states(session, analysis_id)
+    components = enrichment.component_states(session, [analysis_id])
+
+    logger.info(
+        "Deep Evidence requested for analysis %s: %s component(s) queued, now %s.",
+        analysis_id,
+        queued,
+        enrichment_state,
+    )
+
+    return EnrichmentRequestState(
+        analysis_id=analysis_id,
+        decision_state=decision,
+        aggregate_enrichment_state=enrichment_state,
+        per_component_state=[
+            EnrichmentComponent(
+                provider=component.provider,
+                signal_type=component.signal_type,
+                state=component.state,
+            )
+            for component in components.get(analysis_id, ())
+        ],
+        components_queued=queued,
+    )
