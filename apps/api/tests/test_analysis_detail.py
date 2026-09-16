@@ -239,7 +239,7 @@ def test_an_analysis_with_no_signals_at_all_returns_none_for_each(client, fake_s
 # Query budget. One analysis costs what the listing costs, and no more.
 
 
-def test_one_analysis_costs_four_statements(client, fake_session):
+def test_one_analysis_costs_five_statements(client, fake_session):
     """The same budget as the whole listing: the shape of the read does not change because
     one row comes back, and nothing is fetched per signal."""
     row = listing_row()
@@ -247,17 +247,22 @@ def test_one_analysis_costs_four_statements(client, fake_session):
 
     detail(client, row.id)
 
-    assert len(fake_session.statements) == 4
+    assert len(fake_session.statements) == 5
 
 
 def test_an_analysis_with_no_signals_reads_no_evidence_tables(client, fake_session):
-    """Nothing to look evidence up for, so the three evidence statements are not issued."""
+    """Nothing to look evidence up for, so the three evidence statements are not issued.
+
+    The execution-state statement is still issued, and deliberately so: whether an analysis
+    is still being enriched is not a question its signal rows can answer, so it is asked of
+    the task rows for every analysis rendered, including one carrying no evidence at all.
+    """
     row = unsignalled_row()
     fake_session.rows = [row]
 
     detail(client, row.id)
 
-    assert len(fake_session.statements) == 1
+    assert len(fake_session.statements) == 2
 
 
 # Dimensions. A rotated phone video has two different picture sizes — the one encoded in the

@@ -157,6 +157,32 @@ ENRICHMENT_TASK_STATUSES = (
 ENRICHMENT_TASK_STATUS_CONSTRAINT = "ck_analysis_enrichment_tasks_status"
 ENRICHMENT_TASK_COMPONENT_CONSTRAINT = "uq_analysis_enrichment_tasks_component"
 
+# Which product mode a submission asked for (R10-T3). Execution metadata and nothing else:
+# it selects the enrichment *trigger* and never a threshold, a ruleset, a coverage
+# denominator or a verdict. The same media submitted under either mode is decided by the
+# same detectors against the same calibration and reaches the same verdict; what differs is
+# whether its Deep Evidence components are queued with the decision or left to be asked for.
+#
+# `deep_analysis` writes them `queued`; `quick_scan` writes the same rows
+# `not_requested`, which §5.2 of the execution contract is explicit is a state and not a
+# failure. Null is the third answer and the compatible one: a submission that named no mode
+# gets whatever the deployment's own `DEEPGUARD_ENRICHMENT_POLICY` says, which is what every
+# submission got before this column existed and what every public-API submission still gets.
+#
+# On the job row rather than on `analyses`, because that is the boundary the distinction
+# lives on. `analyses` is the forensic record — what was measured and what was decided — and
+# a mode is neither; `analysis_jobs` is the execution record of one submission, it already
+# holds a request id for the same kind of reason, and its one-row-per-analysis uniqueness
+# means a mode cannot be asked for twice with two answers.
+PRODUCT_MODE_QUICK_SCAN = "quick_scan"
+PRODUCT_MODE_DEEP_ANALYSIS = "deep_analysis"
+
+PRODUCT_MODES = (PRODUCT_MODE_QUICK_SCAN, PRODUCT_MODE_DEEP_ANALYSIS)
+
+# Named here for the reason every other constraint name is: the model, the migration and the
+# test that proves the constraint bites all have to mean the same constraint.
+PRODUCT_MODE_CONSTRAINT = "ck_analysis_jobs_enrichment_mode"
+
 SHA256_HEX_LENGTH = 64
 
 # How the analysed artifact reached DeepGuard (R7-T12). `upload` is a file a client sent;
@@ -467,6 +493,19 @@ class AnalysisJob(Base):
 
     __tablename__ = "analysis_jobs"
 
+    __table_args__ = (
+        # A mode this deployment has no meaning for is refused by the database, not
+        # normalised by it. The API already refuses one with a 422, and this is the same
+        # refusal one layer down: a row holding `thorough` would be a submission the worker
+        # would have to guess about at enqueue time, and the honest guess is that there
+        # isn't one.
+        CheckConstraint(
+            "enrichment_mode IS NULL OR enrichment_mode IN ('%s')"
+            % "', '".join(PRODUCT_MODES),
+            name=PRODUCT_MODE_CONSTRAINT,
+        ),
+    )
+
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
@@ -478,6 +517,19 @@ class AnalysisJob(Base):
     )
 
     status: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    # Which product mode this submission asked for, or null for one that asked for none
+    # (R10-T3). Written in the same insert as the job, read back by the worker at claim time
+    # and consulted once, after the verdict is published, to decide whether this analysis's
+    # Deep Evidence components are queued or deferred.
+    #
+    # It reaches no detector, no threshold and no rule. Nothing between the claim and the
+    # verdict reads it, which is what makes "Quick Scan and Deep Analysis decide identically"
+    # a property of where this column is read rather than a promise about how it is used.
+    #
+    # Nullable and not backfilled: every job queued before this column existed named no mode,
+    # and writing one now would record a choice nobody made.
+    enrichment_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # The request that asked for this analysis, carried across the queue (R1-T4). The API
     # binds an id to every request it serves and writes it here in the same insert as the

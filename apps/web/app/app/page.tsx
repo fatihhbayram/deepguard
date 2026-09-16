@@ -1155,6 +1155,45 @@ function IngestBay({
             </label>
           </div>
 
+          {/* The scheduling choice, and only that (R10-T3). Both modes run the same
+              deciding detectors against the same calibration and reach the same verdict;
+              what differs is whether the supplementary detectors — which can reach no
+              verdict under this ruleset — are queued with the decision or left unasked. The
+              form says so, because a control that looked like "how hard should it look"
+              would be read as a choice about the finding.
+
+              Radios rather than a select, so the two options and the default are visible
+              without opening anything, and so the form keeps working with no JavaScript
+              like the rest of this page. */}
+          <fieldset className="border-t border-hair px-5 py-4">
+            <legend className="sr-only">Analysis mode</legend>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
+              <label className="flex items-center gap-2 text-[13px] text-bone">
+                <input
+                  type="radio"
+                  name="mode"
+                  value="deep_analysis"
+                  defaultChecked
+                  className="accent-accent"
+                />
+                Deep analysis
+              </label>
+              <label className="flex items-center gap-2 text-[13px] text-bone">
+                <input
+                  type="radio"
+                  name="mode"
+                  value="quick_scan"
+                  className="accent-accent"
+                />
+                Quick scan
+              </label>
+              <p className="text-[13px] leading-relaxed text-muted">
+                Both reach the same verdict from the same detectors. A quick scan does not
+                run the supplementary evidence detectors, which cannot change that verdict.
+              </p>
+            </div>
+          </fieldset>
+
           <div className="flex flex-col gap-3 border-t border-hair px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
             <p className="text-[13px] leading-relaxed text-muted">
               If both are filled in, the URL is used.

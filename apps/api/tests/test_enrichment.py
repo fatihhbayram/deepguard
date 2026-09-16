@@ -660,6 +660,145 @@ def test_queueing_never_raises_into_the_decision_that_just_completed(analysis, m
 
 
 # --------------------------------------------------------------------------------------
+# Product modes at the row level (R10-T3)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_a_quick_scan_writes_every_component_and_asks_for_none(analysis, monkeypatch):
+    """A quick scan is a deep analysis whose evidence has not been asked for yet.
+
+    The same components, the same rows, the same frozen ruleset — deferred rather than
+    absent. Had a mode changed *which* components exist, the mode would have become a
+    forensic fact about the analysis, and two reports of the same media would disagree
+    about what was even considered.
+    """
+    monkeypatch.setenv(enrichment.ENRICHMENT_POLICY_VARIABLE, enrichment.POLICY_IMMEDIATE)
+    quick = analysis()
+    deep = analysis()
+
+    with SessionLocal() as session:
+        enrichment.enqueue(session, quick, RULES_V5, "quick_scan")
+        enrichment.enqueue(session, deep, RULES_V5, "deep_analysis")
+
+    quick_tasks = read_tasks(quick)
+    deep_tasks = read_tasks(deep)
+
+    assert set(quick_tasks) == set(deep_tasks)
+    assert {task.rules_version for task in quick_tasks.values()} == {RULES_V5}
+    assert {task.status for task in quick_tasks.values()} == {"not_requested"}
+    assert {task.status for task in deep_tasks.values()} == {"queued"}
+
+
+@pytest.mark.integration
+def test_a_deferred_quick_scan_can_still_be_asked_for(analysis, monkeypatch):
+    """Deferral is a state and not a refusal: the existing trigger reaches it unchanged."""
+    monkeypatch.setenv(enrichment.ENRICHMENT_POLICY_VARIABLE, enrichment.POLICY_IMMEDIATE)
+    analysis_id = analysis()
+
+    with SessionLocal() as session:
+        enrichment.enqueue(session, analysis_id, RULES_V5, "quick_scan")
+        assert enrichment.analysis_states(session, analysis_id) == (
+            enrichment.DECIDED,
+            enrichment.ENRICHMENT_NOT_REQUESTED,
+        )
+
+        assert enrichment.request(session, analysis_id) == len(read_tasks(analysis_id))
+        assert enrichment.analysis_states(session, analysis_id) == (
+            enrichment.DECIDED,
+            enrichment.ENRICHMENT_PENDING,
+        )
+
+
+@pytest.mark.integration
+def test_the_database_refuses_a_mode_nobody_declared(analysis):
+    """The second refusal, below the route's 422 (§6.3's enforcement-in-depth habit).
+
+    A job row holding `thorough` would be a submission the worker has to guess about at
+    enqueue time, and there is no honest guess.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    analysis_id = analysis()
+
+    with SessionLocal() as session:
+        session.execute(
+            AnalysisJob.__table__.update()
+            .where(AnalysisJob.analysis_id == analysis_id)
+            .values(enrichment_mode="deep_analysis")
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        with pytest.raises(IntegrityError):
+            session.execute(
+                AnalysisJob.__table__.update()
+                .where(AnalysisJob.analysis_id == analysis_id)
+                .values(enrichment_mode="thorough")
+            )
+            session.commit()
+        session.rollback()
+
+
+# --------------------------------------------------------------------------------------
+# The batched per-component read the API projects from (R10-T3)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_the_component_states_are_read_per_analysis_in_one_statement(
+    analysis, monkeypatch
+):
+    """Two analyses, one read, and neither one's components attributed to the other."""
+    monkeypatch.setenv(enrichment.ENRICHMENT_POLICY_VARIABLE, enrichment.POLICY_IMMEDIATE)
+    enriching = analysis()
+    deferred = analysis()
+    legacy = analysis()
+
+    with SessionLocal() as session:
+        enrichment.enqueue(session, enriching, RULES_V5)
+        enrichment.enqueue(session, deferred, RULES_V5, "quick_scan")
+
+    with SessionLocal() as session:
+        states = enrichment.component_states(session, [enriching, deferred, legacy])
+
+    assert {component.state for component in states[enriching]} == {"queued"}
+    assert {component.state for component in states[deferred]} == {"not_requested"}
+    # A legacy analysis has no rows at all, which is the absence `LEGACY_SINGLE_STAGE` is
+    # projected from — not an empty tuple that could be confused with "nothing succeeded".
+    assert legacy not in states
+
+    # Named by the pair the signal rows are named by, so the two can be joined by a reader.
+    assert {
+        (component.provider, component.signal_type) for component in states[enriching]
+    } == set(enrichment.evidence_only_components(RULES_V5))
+
+
+@pytest.mark.integration
+def test_the_component_states_come_back_in_a_stable_order(analysis, monkeypatch):
+    """Nothing depends on which order; something depends on it not changing."""
+    monkeypatch.setenv(enrichment.ENRICHMENT_POLICY_VARIABLE, enrichment.POLICY_IMMEDIATE)
+    analysis_id = analysis()
+
+    with SessionLocal() as session:
+        enrichment.enqueue(session, analysis_id, RULES_V5)
+
+    with SessionLocal() as session:
+        first = enrichment.component_states(session, [analysis_id])[analysis_id]
+        second = enrichment.component_states(session, [analysis_id])[analysis_id]
+
+    assert first == second
+    assert list(first) == sorted(first, key=lambda c: (c.provider, c.signal_type))
+
+
+@pytest.mark.integration
+def test_reading_no_analyses_issues_no_statement(analysis):
+    """The listing renders an empty page without a round trip to ask about nothing."""
+    with SessionLocal() as session:
+        assert enrichment.component_states(session, []) == {}
+
+
+# --------------------------------------------------------------------------------------
 # Claiming, leasing and recovery
 # --------------------------------------------------------------------------------------
 

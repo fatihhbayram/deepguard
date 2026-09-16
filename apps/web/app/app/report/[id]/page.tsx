@@ -27,8 +27,11 @@ import {
   RiskTrace,
   SyntheticVideoSignal,
   acquisitionStatement,
+  componentDetectorName,
+  componentStateText,
   contributionRoleText,
   credentialsAbsentStatement,
+  deepEvidenceWording,
   provenanceWording,
   fetchAnalysis,
   classificationLabel,
@@ -885,6 +888,93 @@ function ScopeDisclosure({ analysis }: { analysis: AnalysisSummary }) {
   );
 }
 
+/**
+ * What has become of the supplementary Deep Evidence, in the API's words (R10-T3).
+ *
+ * **This component renders a state; it does not compute one.** It reads
+ * `aggregate_enrichment_state` and `per_component_state` off the payload and looks each one
+ * up in a table. It counts no signals, compares no two component states, and builds no
+ * aggregate — `ENRICHMENT_PARTIAL` above all, which is a claim about which components
+ * succeeded and which did not. A renderer could only reach that by looking at which evidence
+ * panels below came back empty, and an empty panel cannot tell a detector that failed from
+ * one that abstained from one nobody asked. Those are three different facts about what is
+ * known, the API can tell them apart because it reads the execution rows, and this build
+ * reports what it was told.
+ *
+ * Nothing here is drawn for an analysis that has no enrichment to report the state of. A
+ * legacy single-stage analysis and an analysis with no verdict both resolve to no wording at
+ * all, so the section is absent rather than present and hedged — a "still running" indicator
+ * on a report from before any of this existed would describe work that will never run.
+ *
+ * It says nothing about the media, and nothing here can change what the assessment above
+ * says. Every one of these sentences is about what this system scheduled and what has run.
+ */
+function DeepEvidenceSection({ analysis }: { analysis: AnalysisSummary }) {
+  const state = analysis.aggregate_enrichment_state;
+
+  // An API that predates these fields. The report keeps exactly the presentation it had, and
+  // nothing here reconstructs a state from the evidence panels below.
+  if (state === null) {
+    return null;
+  }
+
+  const wording = deepEvidenceWording(state);
+
+  // The table's own answer that this state draws no section. The condition is a null check
+  // on a lookup, deliberately and not a comparison against a state name: which states are
+  // silent is a property of the wording table, in one place, and not a rule restated here.
+  if (wording === null) {
+    return null;
+  }
+
+  return (
+    <Section title={wording.title} subtitle={wording.detail}>
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
+        {/* The API's own word, shown as the machine value it is. A reader comparing two
+            reports, or quoting one to support, is quoting the record rather than this
+            build's paraphrase of it. */}
+        <Field label="Enrichment state" value={state} />
+        <Field
+          label="Decision state"
+          value={analysis.decision_state ?? ABSENT}
+        />
+      </dl>
+
+      {analysis.per_component_state.length > 0 && (
+        <dl className="mt-4 grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
+          {analysis.per_component_state.map((component) => (
+            <Field
+              key={`${component.provider}/${component.signal_type}`}
+              label={componentDetectorName(component)}
+              value={
+                <>
+                  {componentStateText(component.state)}
+                  {/* The raw state beside the sentence, for the same reason the aggregate
+                      is shown raw above: the sentence is this build's wording and the state
+                      is the record. */}
+                  <span className="ml-2 opacity-60">({component.state})</span>
+                </>
+              }
+            />
+          ))}
+        </dl>
+      )}
+
+      {/* Printed with everything else. A PDF taken while supplementary detectors were still
+          running is a truthful document about a decided analysis with evidence outstanding —
+          not a draft, and not something to withhold until the enrichment finishes — and the
+          only thing that makes it truthful is that the state it was rendered under is on the
+          page. Nothing in this section is hidden in print. */}
+      <p className="mt-4 max-w-[76ch] text-xs leading-relaxed opacity-70">
+        This states what had run when this page was rendered. A copy printed or exported
+        before the supplementary detectors finished records the state above as it stood at
+        that moment; the assessment it accompanies is final either way, and no detector named
+        here can reach it under this ruleset.
+      </p>
+    </Section>
+  );
+}
+
 function SyntheticVideoSection({ signal }: { signal: SyntheticVideoSignal | null }) {
   return (
     <Section
@@ -1688,6 +1778,13 @@ export default async function Report({ params }: { params: Promise<{ id: string 
               ? " Two of them are calibrated and can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. Speaking evidence, mouth-dynamics evidence and audio evidence have no calibrated threshold and cannot change that classification."
               : " Only the synthetic-video detector contributes to the risk classification above; speaking evidence, face-manipulation evidence, mouth-dynamics evidence and audio evidence are recorded as independent forensic facts and cannot change that classification."}
         </p>
+
+        {/* What has run of the supplementary evidence, before the panels it is about. A
+            reader who finds an empty mouth-dynamics panel below should have already been
+            told whether that detector failed, abstained, or has not been asked yet — and
+            told it by the API, which is the only reader of this record that can tell those
+            three apart. Absent entirely for a legacy analysis and for one with no verdict. */}
+        <DeepEvidenceSection analysis={analysis} />
 
         <SyntheticVideoSection signal={analysis.synthetic_video} />
         <FaceManipulationSection signal={analysis.face_manipulation} analysis={analysis} />

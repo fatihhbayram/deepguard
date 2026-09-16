@@ -1268,3 +1268,99 @@ def test_the_upload_leaves_nothing_local_for_the_worker_to_read(
     assert response.status_code == 202
     assert new_temp_uploads() == []
     assert fake_minio.stored_keys == [body["storage_key"]]
+
+
+# The product mode a submission may ask for (R10-T3). Optional, execution-only, and refused
+# outright when it is not one of the two — the three properties that keep it from becoming a
+# way for a client to steer a forensic decision.
+
+
+def test_an_upload_that_names_no_mode_records_none(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    """The compatible default, and the reason no existing client had to change.
+
+    Null is not `deep_analysis`: it is the absence of a choice, and it is resolved at
+    enqueue time by the deployment's own enrichment policy — which is what every submission
+    got before the parameter existed.
+    """
+    response = post_upload(client, "clip.mp4", b"payload", "video/mp4")
+
+    assert response.status_code == 202
+    job = next(row for row in fake_session.added if isinstance(row, AnalysisJob))
+    assert job.enrichment_mode is None
+
+
+@pytest.mark.parametrize("mode", ["quick_scan", "deep_analysis"])
+def test_an_upload_records_the_mode_it_asked_for(
+    mode, client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    response = client.post(
+        "/api/v1/analyses",
+        files={"file": ("clip.mp4", b"payload", "video/mp4")},
+        data={"mode": mode},
+        headers={"Origin": DASHBOARD_ORIGIN},
+    )
+
+    assert response.status_code == 202
+    job = next(row for row in fake_session.added if isinstance(row, AnalysisJob))
+    assert job.enrichment_mode == mode
+
+
+def test_a_mode_changes_nothing_about_the_analysis_the_upload_commits(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    """It is execution metadata, and the forensic record does not carry it.
+
+    The analysis row, the media row and the response are compared against an upload of the
+    same bytes that named no mode at all. Everything a decision is later taken from is
+    identical; the only difference in the database is a string on the job row.
+    """
+    plain = post_upload(client, "clip.mp4", b"payload", "video/mp4").json()
+    plain_analysis = next(row for row in fake_session.added if isinstance(row, Analysis))
+    plain_media = next(row for row in fake_session.added if isinstance(row, MediaFile))
+
+    fake_session.added.clear()
+
+    quick = client.post(
+        "/api/v1/analyses",
+        files={"file": ("clip.mp4", b"payload", "video/mp4")},
+        data={"mode": "quick_scan"},
+        headers={"Origin": DASHBOARD_ORIGIN},
+    ).json()
+    quick_analysis = next(row for row in fake_session.added if isinstance(row, Analysis))
+    quick_media = next(row for row in fake_session.added if isinstance(row, MediaFile))
+
+    # The ids differ because they are two analyses; nothing else does.
+    assert {key: value for key, value in plain.items() if key != "id"} == {
+        key: value for key, value in quick.items() if key != "id"
+    }
+    assert plain_analysis.status == quick_analysis.status
+    assert plain_analysis.risk_level == quick_analysis.risk_level
+    assert plain_media.original_sha256 == quick_media.original_sha256
+    assert plain_media.was_normalized == quick_media.was_normalized
+    # And no column on the forensic record carries the mode.
+    assert not hasattr(quick_analysis, "enrichment_mode")
+    assert not hasattr(quick_media, "enrichment_mode")
+
+
+def test_an_unknown_mode_is_refused_and_nothing_is_persisted(
+    client, fake_session, new_temp_uploads, fake_minio, fake_ffprobe
+):
+    """Fails fast, and does not fall back to either mode.
+
+    The refusal happens after the bytes are read — the mode is a form field and the file is
+    read out of the same multipart body — so what matters is that no analysis is committed
+    and the caller is told which value was refused.
+    """
+    response = client.post(
+        "/api/v1/analyses",
+        files={"file": ("clip.mp4", b"payload", "video/mp4")},
+        data={"mode": "thorough"},
+        headers={"Origin": DASHBOARD_ORIGIN},
+    )
+
+    assert response.status_code == 422
+    assert "thorough" in response.json()["detail"]
+    assert _all_added(fake_session, Analysis) == []
+    assert _all_added(fake_session, AnalysisJob) == []

@@ -34,6 +34,12 @@ EXPECTED_FIELDS = {
     "id",
     "status",
     "created_at",
+    # The two execution axes R10 reads an analysis along, and the per-component states the
+    # aggregate is derived from (R10-T3). Projected by the API at serialization time from
+    # `status`, `risk_level` and the enrichment task rows; no column holds either.
+    "decision_state",
+    "aggregate_enrichment_state",
+    "per_component_state",
     "risk_level",
     "risk_rules_version",
     "risk_rule_id",
@@ -497,17 +503,26 @@ def speaking_row(signal_id, start: float, end: float, face_id: int, label: str |
 class FakeSession:
     """Stand-in for a SQLAlchemy session that records the statements it was given.
 
-    The route issues up to four: the listing, the clip evidence for the detection signals it
-    found, the speaking timeline for the active-speaker signals it found, and the windows
-    for the audio signals it found. Any evidence query is skipped when nothing was found to
-    look up, so they are told apart by the columns they read rather than by their position.
+    The route issues up to five: the listing, the clip evidence for the detection signals it
+    found, the speaking timeline for the active-speaker signals it found, the windows for
+    the audio signals it found, and the Deep Evidence task rows the two-axis projection is
+    read from (R10-T3). Any evidence query is skipped when nothing was found to look up, so
+    they are told apart by the columns they read rather than by their position.
     """
 
-    def __init__(self, rows=(), segment_rows=(), speaking_rows=(), audio_rows=()):
+    def __init__(
+        self,
+        rows=(),
+        segment_rows=(),
+        speaking_rows=(),
+        audio_rows=(),
+        enrichment_rows=(),
+    ):
         self.rows = list(rows)
         self.segment_rows = list(segment_rows)
         self.speaking_rows = list(speaking_rows)
         self.audio_rows = list(audio_rows)
+        self.enrichment_rows = list(enrichment_rows)
         self.execute_error = None
         self.statements = []
 
@@ -530,6 +545,11 @@ class FakeSession:
         # audio query reads `clip_index` too, so testing for that column first would hand
         # the audio statement the clip rows.
         sql = str(statement)
+        # Checked first and by table name: the enrichment statement reads neither of the
+        # discriminating columns below, so it would otherwise be handed another query's rows.
+        if "analysis_enrichment_tasks" in sql:
+            return self.enrichment_rows
+
         if "bona_fide_logit" in sql:
             return self.audio_rows
 
@@ -687,6 +707,13 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
             "id": str(row.id),
             "status": "completed",
             "created_at": "2026-08-19T18:08:01Z",
+            # The two execution axes (R10-T3). This fixture carries no enrichment task
+            # rows, which is what every analysis decided before R10 existed carries — so it
+            # projects as decided and single-stage, and deliberately not as
+            # `ENRICHMENT_COMPLETE`, which would claim supplementary evidence succeeded.
+            "decision_state": "DECIDED",
+            "aggregate_enrichment_state": "LEGACY_SINGLE_STAGE",
+            "per_component_state": [],
             "risk_level": "MEDIUM",
             "risk_rules_version": RULES_VERSION,
             "risk_rule_id": RULE_INDETERMINATE_BAND,
@@ -1009,7 +1036,7 @@ def test_the_decision_is_read_in_the_same_statement_as_the_listing(client, fake_
     ):
         assert column in sql
 
-    assert len(fake_session.statements) == 4
+    assert len(fake_session.statements) == 5
 
 
 # Media facts. What ffprobe read out of the original, as distinct from what the client
@@ -1079,7 +1106,7 @@ def test_the_media_facts_ride_the_listing_statement(client, fake_session):
 
     client.get("/api/v1/analyses")
 
-    assert len(fake_session.statements) == 4
+    assert len(fake_session.statements) == 5
     sql = compiled(fake_session)
     for column in ("format_name", "codec_name", "media_files.width", "media_files.height"):
         assert column in sql
@@ -1139,16 +1166,16 @@ def test_the_signal_is_read_in_the_same_statement_as_the_listing(client, fake_se
 def test_the_page_costs_the_same_number_of_queries_however_many_analyses_it_holds(
     client, fake_session
 ):
-    """The N+1 guard: four statements for one analysis, and four for twenty."""
+    """The N+1 guard: five statements for one analysis, and five for twenty."""
     fake_session.rows = [listing_row()]
     client.get("/api/v1/analyses")
-    assert len(fake_session.statements) == 4
+    assert len(fake_session.statements) == 5
 
     fake_session.statements.clear()
     fake_session.rows = [listing_row() for _ in range(20)]
     client.get("/api/v1/analyses")
 
-    assert len(fake_session.statements) == 4
+    assert len(fake_session.statements) == 5
 
 
 def test_no_segment_query_is_issued_when_no_analysis_carries_a_signal(client, fake_session):
@@ -1156,8 +1183,11 @@ def test_no_segment_query_is_issued_when_no_analysis_carries_a_signal(client, fa
 
     client.get("/api/v1/analyses")
 
-    # Nothing to look up for either evidence kind, so neither round trip is worth it.
-    assert len(fake_session.statements) == 1
+    # Nothing to look up for either evidence kind, so neither round trip is worth it. The
+    # enrichment statement is still issued: an analysis's execution state does not depend on
+    # which detectors left a signal row behind, which is the whole reason it is read from
+    # the task rows rather than inferred from the evidence.
+    assert len(fake_session.statements) == 2
 
 
 def test_the_signal_join_is_restricted_to_the_nvidia_synthetic_video_signal(
@@ -1427,7 +1457,7 @@ def test_both_signals_ride_the_same_statement(client, fake_session):
 
     client.get("/api/v1/analyses")
 
-    assert len(fake_session.statements) == 4
+    assert len(fake_session.statements) == 5
 
 
 def test_provenance_is_exposed_with_the_facts_the_file_carries(client, fake_session):
@@ -1803,9 +1833,9 @@ def test_no_timeline_query_is_issued_when_no_analysis_carries_an_active_speaker_
 
     client.get("/api/v1/analyses")
 
-    # The listing, the clip evidence and the audio windows — and nothing to look a timeline
-    # up for.
-    assert len(fake_session.statements) == 3
+    # The listing, the clip evidence, the audio windows and the enrichment tasks — and
+    # nothing to look a timeline up for.
+    assert len(fake_session.statements) == 4
 
 
 def test_a_timeline_query_failure_returns_the_same_controlled_503(client, fake_session):
@@ -2015,8 +2045,9 @@ def test_no_audio_query_is_issued_when_no_analysis_carries_an_audio_signal(
 
     client.get("/api/v1/analyses")
 
-    # The listing, the clip evidence and the timeline — nothing to look windows up for.
-    assert len(fake_session.statements) == 3
+    # The listing, the clip evidence, the timeline and the enrichment tasks — nothing to
+    # look windows up for.
+    assert len(fake_session.statements) == 4
 
 
 def test_an_audio_query_failure_returns_the_same_controlled_503(client, fake_session):

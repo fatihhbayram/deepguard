@@ -50,6 +50,7 @@ from app.api.analyses import (
     CreatedAnalysis,
     accept_upload,
     created_analysis,
+    product_mode,
 )
 from app.db.models import ACQUISITION_METHOD_URL, User
 from app.db.session import get_session
@@ -88,6 +89,13 @@ class UrlSubmission(BaseModel):
     """
 
     url: str = Field(min_length=1, max_length=MAX_URL_LENGTH)
+    # Which product mode this submission asks for, or absent for one that asks for none
+    # (R10-T3). Optional, so a client that has never heard of modes submits exactly the
+    # document it always did. Validated by `product_mode`, which refuses anything that is
+    # not one of the two rather than defaulting it — the same refusal the upload route
+    # makes, because the two doors into this pipeline must not disagree about what they
+    # accept.
+    mode: str | None = None
 
 
 def client_error(error: downloader.DownloadError) -> HTTPException:
@@ -138,6 +146,7 @@ async def accept_url(
     api_key_id: uuid.UUID | None = None,
     owner_id: uuid.UUID | None = None,
     max_active_analyses: int | None = None,
+    enrichment_mode: str | None = None,
 ) -> AcceptedUpload:
     """Download the media behind a URL and put it through the upload pipeline.
 
@@ -224,6 +233,7 @@ async def accept_url(
             api_key_id=api_key_id,
             owner_id=owner_id,
             max_active_analyses=max_active_analyses,
+            enrichment_mode=enrichment_mode,
         )
 
 
@@ -252,5 +262,10 @@ async def create_url_analysis(
     media, its identity and where it was put.
     """
     return created_analysis(
-        await accept_url(submission.url, session, owner_id=user.id)
+        await accept_url(
+            submission.url,
+            session,
+            owner_id=user.id,
+            enrichment_mode=product_mode(submission.mode),
+        )
     )

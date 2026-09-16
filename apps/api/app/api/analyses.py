@@ -8,16 +8,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, ConfigDict, computed_field
 from sqlalchemy import and_, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased
 
+from app import enrichment
 from app.db.models import (
     ACQUISITION_METHOD_UPLOAD,
     ANALYSIS_STATUS_QUEUED,
     JOB_STATUS_QUEUED,
+    PRODUCT_MODES,
     USER_ROLE_ADMIN,
     Analysis,
     AnalysisJob,
@@ -662,6 +664,26 @@ class RiskTrace(BaseModel):
     supplementary_evidence: list[RiskContribution] = []
 
 
+class EnrichmentComponent(BaseModel):
+    """One Deep Evidence component's execution state, as the API projects it (R10-T3).
+
+    The component is named by the `(provider, signal_type)` pair the signal it writes is
+    named by, so a reader joining this to the evidence in the same response has one
+    spelling to match on rather than two vocabularies to reconcile.
+
+    `state` is the persisted task status, passed through: `not_requested`, `queued`,
+    `processing`, `completed`, `abstained` or `failed`. In particular `abstained` reaches
+    the client as itself. A detector that ran and found nothing to score — no trackable
+    face, no audio stream — answered the question it was asked, and §5.2 is explicit that
+    this is a success on the enrichment axis; collapsing it into `failed` here would have
+    made the distinction unrecoverable by any renderer, however carefully written.
+    """
+
+    provider: str
+    signal_type: str
+    state: str
+
+
 class AnalysisSummary(BaseModel):
     """One analysis as its readers get it: the dashboard listing and the report route.
 
@@ -680,6 +702,35 @@ class AnalysisSummary(BaseModel):
     id: uuid.UUID
     status: str
     created_at: datetime
+    # The two axes an analysis is read along under R10, projected here and nowhere else
+    # (contract §5, R10-T3 §3.A). `status` above is the single-axis encoding this pair
+    # replaces for readers that need the distinction; it keeps its own meaning untouched,
+    # which is what §5.4 requires of it.
+    #
+    # **This projection is the authority and the client computes no part of it.** Not the
+    # aggregate, not a component's state, and above all not `ENRICHMENT_PARTIAL`, which is
+    # a claim about which components succeeded: a renderer counting signal rows to reach it
+    # would be answering a question the rows cannot answer — an absent signal is a detector
+    # that failed, or abstained, or was never asked, and the three mean different things.
+    #
+    # Both are derived at serialization time from columns that already exist — `status`,
+    # `risk_level` and the enrichment task rows — by `app.enrichment`, which is the module
+    # that owns the derivation. Nothing here re-implements it and nothing here stores it.
+    decision_state: str
+    # `ENRICHMENT_NOT_REQUESTED`, `ENRICHMENT_PENDING`, `ENRICHMENT_PROCESSING`,
+    # `ENRICHMENT_COMPLETE`, `ENRICHMENT_PARTIAL`, `ENRICHMENT_FAILED`,
+    # `LEGACY_SINGLE_STAGE`, or `ENRICHMENT_NOT_APPLICABLE` for an analysis that has no
+    # verdict for supplementary evidence to supplement.
+    #
+    # `LEGACY_SINGLE_STAGE` is the one a reader is most likely to get wrong. It is every
+    # analysis decided before R10 existed, it is emphatically not `ENRICHMENT_COMPLETE`,
+    # and it asserts nothing about which components succeeded — that is read from the
+    # signal rows, as it always was (§8.1).
+    aggregate_enrichment_state: str
+    # The same axis, per component, and the only thing that can name *which* components a
+    # `ENRICHMENT_PARTIAL` is partial about. Empty for a legacy analysis, which has no such
+    # rows and is exactly why the aggregate above reads as `LEGACY_SINGLE_STAGE`.
+    per_component_state: list[EnrichmentComponent] = []
     # What the risk engine concluded, as it was persisted: `HIGH`, `MEDIUM` or `UNKNOWN`.
     # `LOW` is measured but not activated in ruleset v1, so no analysis carries it.
     #
@@ -844,6 +895,37 @@ def active_analyses(session: Session, api_key_id: uuid.UUID) -> int:
     ).scalar_one()
 
 
+def product_mode(requested: str | None) -> str | None:
+    """Validate the product mode a submission asked for, or `None` for one that asked none.
+
+    Optional, and the default is what makes this backward compatible: a client that has
+    never heard of modes sends nothing, gets null, and its analysis is scheduled by the
+    deployment's own enrichment policy — which is exactly what it got before this parameter
+    existed. Nothing about the decision changes in either direction.
+
+    A mode that is not one of the two is refused, and refused here rather than normalised
+    into a default. A caller that sent `thorough` meant something by it, and quietly giving
+    them a Quick Scan would be answering a question they did not ask; the check constraint
+    on the column refuses the same value one layer further down, for the same reason.
+
+    An empty string is treated as absent. It is what an HTML form posts for a control the
+    operator left alone, and reading it as an invalid mode would refuse submissions from the
+    dashboard's own form.
+    """
+    if requested is None or requested.strip() == "":
+        return None
+
+    mode = requested.strip().lower()
+
+    if mode not in PRODUCT_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Unsupported analysis mode: {requested}.",
+        )
+
+    return mode
+
+
 def persist_analysis(
     session: Session,
     *,
@@ -860,6 +942,7 @@ def persist_analysis(
     api_key_id: uuid.UUID | None = None,
     owner_id: uuid.UUID | None = None,
     max_active_analyses: int | None = None,
+    enrichment_mode: str | None = None,
 ) -> Analysis:
     """Write the queued analysis, its media and the job it is owed in one transaction.
 
@@ -982,6 +1065,13 @@ def persist_analysis(
             analysis_id=analysis.id,
             status=JOB_STATUS_QUEUED,
             request_id=current_request_id(),
+            # The product mode this submission asked for, or null for one that asked for
+            # none (R10-T3). Written with the job because it is a property of this
+            # submission's execution and of nothing else: it is read once, by the worker,
+            # after the verdict is published, and it reaches no detector and no rule on
+            # the way there. It is deliberately not on `analyses`, which records what was
+            # measured and what was decided — neither of which a mode changes.
+            enrichment_mode=enrichment_mode,
         )
     )
 
@@ -1024,6 +1114,7 @@ async def accept_upload(
     api_key_id: uuid.UUID | None = None,
     owner_id: uuid.UUID | None = None,
     max_active_analyses: int | None = None,
+    enrichment_mode: str | None = None,
 ) -> AcceptedUpload:
     """Admit an upload, prove it is real media, stage it, and queue it for detection.
 
@@ -1160,6 +1251,9 @@ async def accept_upload(
             api_key_id=api_key_id,
             owner_id=owner_id,
             max_active_analyses=max_active_analyses,
+            # Already validated by the route that took it; passed straight through, like
+            # every other execution fact this function is handed rather than decides.
+            enrichment_mode=enrichment_mode,
         )
     except ActiveAnalysisLimitReached:
         # Rolled back explicitly rather than left to the session teardown: the transaction
@@ -1238,6 +1332,7 @@ def created_analysis(accepted: AcceptedUpload) -> CreatedAnalysis:
 )
 async def create_analysis(
     file: UploadFile,
+    mode: str | None = Form(default=None),
     session: Session = Depends(get_session),
     user: User = Depends(require_user),
 ) -> CreatedAnalysis:
@@ -1261,8 +1356,23 @@ async def create_analysis(
     The work is `accept_upload`; what is left here is the response, which is wider than the
     public one on purpose — the dashboard is the same trust boundary as the server, so the
     storage keys and content identity it needs are not a leak to it.
+
+    `mode` is the one new thing a caller may say about how the analysis should be scheduled
+    (R10-T3): `deep_analysis` queues Deep Evidence with the decision, `quick_scan` defers it,
+    and omitting the field leaves the deployment's policy in charge — which is what every
+    submission before this parameter existed got, and what a client that never learns about
+    modes goes on getting. It is validated here and carried no further than the job row; it
+    reaches no detector, no threshold and no rule, so the two modes decide the same media
+    identically.
     """
-    return created_analysis(await accept_upload(file, session, owner_id=user.id))
+    return created_analysis(
+        await accept_upload(
+            file,
+            session,
+            owner_id=user.id,
+            enrichment_mode=product_mode(mode),
+        )
+    )
 
 
 def signal_figure(metadata: object, key: str, expected: type | tuple[type, ...]) -> Any | None:
@@ -1825,12 +1935,45 @@ def analysis_payloads(session: Session, rows: list[Any]) -> list[AnalysisSummary
     windows = audio_windows(
         session, [row.audio_id for row in rows if row.audio_id is not None]
     )
+    # A fourth statement, batched exactly as the three above are: the Deep Evidence task
+    # rows for every analysis being rendered, which the two-axis projection below is read
+    # from. One statement whatever the number of rows, so the listing does not acquire a
+    # query per analysis.
+    components = enrichment.component_states(session, [row.id for row in rows])
+    # The projection itself, per row, from `app.enrichment`'s own two functions. The
+    # decision axis is read from the status and the verdict column; the enrichment axis
+    # from the component states above and the decision axis, because §8.1 gives an analysis
+    # with no verdict no enrichment reading at all.
+    analysis_states: dict[uuid.UUID, tuple[str, str]] = {}
+    for row in rows:
+        decision = enrichment.decision_state(row.status, row.risk_level)
+        analysis_states[row.id] = (
+            decision,
+            enrichment.enrichment_state(
+                decision,
+                [component.state for component in components.get(row.id, ())],
+            ),
+        )
 
     return [
         AnalysisSummary(
             id=row.id,
             status=row.status,
             created_at=row.created_at,
+            # Both axes, derived by `app.enrichment` from the columns already on this row
+            # and the task rows read above. Called rather than reimplemented: a second
+            # copy of this derivation would be a second answer to "is this report still
+            # filling in", and the two would disagree on the day one of them was edited.
+            decision_state=analysis_states[row.id][0],
+            aggregate_enrichment_state=analysis_states[row.id][1],
+            per_component_state=[
+                EnrichmentComponent(
+                    provider=component.provider,
+                    signal_type=component.signal_type,
+                    state=component.state,
+                )
+                for component in components.get(row.id, ())
+            ],
             # Passed through exactly as stored, null included.
             risk_level=row.risk_level,
             risk_rules_version=row.risk_rules_version,

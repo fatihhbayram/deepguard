@@ -245,6 +245,16 @@ class ClaimedJob:
     # request. The job is run exactly the same way; its log lines simply carry no id, which
     # is the truth about them.
     request_id: str | None = None
+    # Which product mode this submission asked for, or null for one that asked for none
+    # (R10-T3). Carried out of the claim with everything else, and read exactly once — at
+    # the very end of `process_one`, after the verdict has been published and the job
+    # closed, to decide whether this analysis's Deep Evidence is queued or deferred.
+    #
+    # Nothing between the claim and the verdict looks at it, and that is the guarantee
+    # rather than a description: a mode that reached a detector, a threshold or the engine
+    # would be a product choice with forensic consequences, which §4.2 does not allow it to
+    # be.
+    enrichment_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -507,6 +517,7 @@ def claim_job(session: Session) -> ClaimedJob | None:
         # there is no session, and fetching the correlation id in a second statement would be
         # a round trip for a value this one already has in hand.
         request_id=job.request_id,
+        enrichment_mode=job.enrichment_mode,
     )
     session.commit()
 
@@ -1439,7 +1450,12 @@ def process_one(session: Session) -> bool:
         # analysis that has already been decided, published and closed must not retroactively
         # fail because its supplementary evidence could not be scheduled, which would be the
         # enrichment path destroying a fast decision through the one door §7.4 does not name.
-        enrichment.enqueue(session, claimed.analysis_id, decision.rules_version)
+        enrichment.enqueue(
+            session,
+            claimed.analysis_id,
+            decision.rules_version,
+            claimed.enrichment_mode,
+        )
 
         # Then the experiment, in a table of its own (R6-T1). Nothing above waited for either
         # of these, nothing below depends on them, and `shadow.enqueue` does not raise for the

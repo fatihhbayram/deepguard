@@ -80,6 +80,8 @@ from app.db.models import (
     ENRICHMENT_TASK_STATUS_NOT_REQUESTED,
     ENRICHMENT_TASK_STATUS_PROCESSING,
     ENRICHMENT_TASK_STATUS_QUEUED,
+    PRODUCT_MODE_DEEP_ANALYSIS,
+    PRODUCT_MODE_QUICK_SCAN,
     SIGNAL_STATUS_FAILED,
     SIGNAL_STATUS_SUCCESS,
     Analysis,
@@ -312,7 +314,40 @@ def lease_deadline():
     return func.now() + timedelta(seconds=ENRICHMENT_LEASE_SECONDS)
 
 
-def enqueue(session: Session, analysis_id: uuid.UUID, rules_version: str) -> int:
+def initial_status(mode: str | None) -> str:
+    """The status this submission's Deep Evidence rows are written in (§4.2, §5.2).
+
+    Three answers from two sources, and the ordering between them is the point. A named
+    product mode is a decision the submission made and it wins; null is a submission that
+    made no such decision, and it falls through to the deployment's policy — which is what
+    every submission got before modes existed and what every submission through the public
+    API still gets. That fall-through is the whole of the backward compatibility story.
+
+    A mode this function does not recognise cannot reach it: the API refuses one with a 422
+    and the check constraint on `analysis_jobs.enrichment_mode` refuses one below that. If a
+    row somehow held one, it is treated as no mode at all — the deployment's policy — rather
+    than as a deferral, because the fail-open direction here is the one that produces a
+    report with all of its evidence.
+    """
+    if mode == PRODUCT_MODE_DEEP_ANALYSIS:
+        return ENRICHMENT_TASK_STATUS_QUEUED
+
+    if mode == PRODUCT_MODE_QUICK_SCAN:
+        return ENRICHMENT_TASK_STATUS_NOT_REQUESTED
+
+    return (
+        ENRICHMENT_TASK_STATUS_QUEUED
+        if policy() == POLICY_IMMEDIATE
+        else ENRICHMENT_TASK_STATUS_NOT_REQUESTED
+    )
+
+
+def enqueue(
+    session: Session,
+    analysis_id: uuid.UUID,
+    rules_version: str,
+    mode: str | None = None,
+) -> int:
     """Write this analysis's Deep Evidence tasks. Returns how many were written.
 
     Called by `app.worker` on the way out of a decision it completed — after the verdict is
@@ -335,6 +370,13 @@ def enqueue(session: Session, analysis_id: uuid.UUID, rules_version: str) -> int
     A duplicate is not a failure either. The unique constraint refuses a second set of tasks
     for the same analysis — a job concluded twice, two workers racing — and that refusal is the
     intended outcome rather than an error to report.
+
+    `mode` is the product mode the submission asked for, or null for one that asked for none
+    (R10-T3). It decides the status the rows are written in and nothing else: the same
+    components are written for the same analysis either way, so a Quick Scan is a Deep
+    Analysis whose evidence has not been asked for yet rather than an analysis with less of
+    it. It arrives here, after the verdict is published, and is read nowhere earlier — which
+    is what makes "the two modes decide identically" a property of the code's shape.
     """
     try:
         components = evidence_only_components(rules_version)
@@ -354,11 +396,7 @@ def enqueue(session: Session, analysis_id: uuid.UUID, rules_version: str) -> int
     if not components:
         return 0
 
-    status = (
-        ENRICHMENT_TASK_STATUS_QUEUED
-        if policy() == POLICY_IMMEDIATE
-        else ENRICHMENT_TASK_STATUS_NOT_REQUESTED
-    )
+    status = initial_status(mode)
 
     try:
         session.add_all(
@@ -1229,3 +1267,73 @@ def analysis_states(session: Session, analysis_id: uuid.UUID) -> tuple[str, str]
     ).scalars().all()
 
     return decision, enrichment_state(decision, statuses)
+
+
+@dataclass(frozen=True)
+class ComponentState:
+    """One Deep Evidence component's own state, as the API projects it (R10-T3 §3.A).
+
+    The component is named by the `(provider, signal_type)` pair everything else names it by
+    — the task row, the guard's allowlist, the signal it writes and §4.1's membership table —
+    so a reader joining this to the evidence below it has one spelling to match on.
+
+    `state` is the task's status verbatim: `not_requested`, `queued`, `processing`,
+    `completed`, `abstained` or `failed`. Not translated, not grouped and in particular not
+    collapsed — `abstained` beside `failed` is the distinction §5.2 exists to keep, and a
+    projection that folded the two would have thrown it away before any renderer could get
+    it wrong.
+    """
+
+    provider: str
+    signal_type: str
+    state: str
+
+
+def component_states(
+    session: Session, analysis_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, tuple[ComponentState, ...]]:
+    """Every analysis's per-component states, in one statement (§5.2).
+
+    Batched because its caller is a listing as well as a report: a statement per analysis
+    would put a query per row on the dashboard's read path, which is the shape
+    `app.api.analyses` already refuses for segments, timelines and audio windows.
+
+    An analysis with no task rows is absent from the result rather than present with an empty
+    tuple, and the difference matters to nobody downstream: `enrichment_state` reads an empty
+    sequence as `LEGACY_SINGLE_STAGE`, which is what a missing key resolves to through
+    `dict.get(..., ())`.
+
+    Ordered by component so two reads of the same analysis list its components in the same
+    order. Nothing depends on which order it is; something does depend on it not changing
+    between two renders of the same report.
+    """
+    if not analysis_ids:
+        return {}
+
+    rows = session.execute(
+        select(
+            AnalysisEnrichmentTask.analysis_id,
+            AnalysisEnrichmentTask.provider,
+            AnalysisEnrichmentTask.signal_type,
+            AnalysisEnrichmentTask.status,
+        )
+        .where(AnalysisEnrichmentTask.analysis_id.in_(analysis_ids))
+        .order_by(
+            AnalysisEnrichmentTask.provider,
+            AnalysisEnrichmentTask.signal_type,
+        )
+    ).all()
+
+    states: dict[uuid.UUID, list[ComponentState]] = {}
+    for row in rows:
+        states.setdefault(row.analysis_id, []).append(
+            ComponentState(
+                provider=row.provider,
+                signal_type=row.signal_type,
+                state=row.status,
+            )
+        )
+
+    return {
+        analysis_id: tuple(components) for analysis_id, components in states.items()
+    }

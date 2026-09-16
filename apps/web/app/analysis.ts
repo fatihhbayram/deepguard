@@ -417,6 +417,24 @@ export type AnalysisSummary = {
   id: string;
   status: string;
   created_at: string;
+  // The two execution axes, as the API projected them (R10-T3). The decision axis says
+  // whether a verdict exists; the enrichment axis says what has become of the supplementary
+  // Deep Evidence. `status` above is the single-axis encoding both readers had before, and
+  // it keeps the meaning it always had.
+  //
+  // **Both are the API's answers and neither is computed here.** Nothing on this page counts
+  // signal rows, compares component states or assembles an aggregate out of them: an absent
+  // evidence panel cannot distinguish a detector that failed from one that abstained from
+  // one nobody asked, and a renderer that guessed between those three would report a
+  // forensic state nobody established.
+  //
+  // Null for a payload from an API that predates these fields. A build reading null draws no
+  // execution state at all, which is exactly what this report did before they existed.
+  decision_state: string | null;
+  aggregate_enrichment_state: string | null;
+  // The same axis per component, and the only thing that can name *which* components an
+  // incomplete enrichment is missing. Empty for a legacy analysis, which has no such rows.
+  per_component_state: EnrichmentComponent[];
   // What the risk engine concluded, as the API read it off the analysis row. `HIGH`,
   // `MEDIUM` or `UNKNOWN` — never `LOW`, which ruleset v1 measures but does not emit.
   //
@@ -1695,6 +1713,285 @@ export function parseRiskTrace(payload: unknown): RiskTrace | null | undefined {
 // and it produced one that is empty. Kept apart on purpose — "we could not look" and "we
 // looked and nobody was speaking" are different facts, and neither says anything about
 // whether the media is genuine.
+/* -------------------------------------------------------------------------------------
+ * R10-T3 — the two execution axes, exactly as the API projects them
+ *
+ * Under R10 an analysis is read along two independent axes: the decision axis, which says
+ * whether a verdict exists, and the enrichment axis, which says what has become of the
+ * supplementary Deep Evidence. `DECIDED` beside `ENRICHMENT_PROCESSING` is the combination
+ * the whole architecture exists to create — a final verdict with evidence still arriving —
+ * and it is only expressible because neither axis is derived from the other.
+ *
+ * **Nothing in this file derives either axis, and nothing in the report does either.** Both
+ * arrive as strings the API computed from the persisted rows, and everything below is a
+ * lookup keyed by one of those strings: a state to a sentence, a component to a name. No
+ * signal is counted, no pair of component states is compared, and `ENRICHMENT_PARTIAL` in
+ * particular is never assembled here. It is a claim about which components succeeded, and a
+ * renderer could only reach it by counting the signal rows it can see — which cannot tell a
+ * detector that failed from one that abstained from one nobody asked, three facts that mean
+ * different things about what is known. The API can tell them apart because it reads the
+ * execution rows; this build reads what it was told.
+ * ---------------------------------------------------------------------------------- */
+
+export const DECISION_PENDING = "DECISION_PENDING";
+export const DECIDED = "DECIDED";
+export const DECISION_FAILED = "DECISION_FAILED";
+
+export const DECISION_STATES = [DECISION_PENDING, DECIDED, DECISION_FAILED] as const;
+
+export type DecisionState = (typeof DECISION_STATES)[number];
+
+export function isDecisionState(state: string): state is DecisionState {
+  return (DECISION_STATES as readonly string[]).includes(state);
+}
+
+export const ENRICHMENT_NOT_REQUESTED = "ENRICHMENT_NOT_REQUESTED";
+export const ENRICHMENT_PENDING = "ENRICHMENT_PENDING";
+export const ENRICHMENT_PROCESSING = "ENRICHMENT_PROCESSING";
+export const ENRICHMENT_COMPLETE = "ENRICHMENT_COMPLETE";
+export const ENRICHMENT_PARTIAL = "ENRICHMENT_PARTIAL";
+export const ENRICHMENT_FAILED = "ENRICHMENT_FAILED";
+export const LEGACY_SINGLE_STAGE = "LEGACY_SINGLE_STAGE";
+export const ENRICHMENT_NOT_APPLICABLE = "ENRICHMENT_NOT_APPLICABLE";
+
+export const ENRICHMENT_STATES = [
+  ENRICHMENT_NOT_REQUESTED,
+  ENRICHMENT_PENDING,
+  ENRICHMENT_PROCESSING,
+  ENRICHMENT_COMPLETE,
+  ENRICHMENT_PARTIAL,
+  ENRICHMENT_FAILED,
+  LEGACY_SINGLE_STAGE,
+  ENRICHMENT_NOT_APPLICABLE,
+] as const;
+
+export type EnrichmentState = (typeof ENRICHMENT_STATES)[number];
+
+export function isEnrichmentState(state: string): state is EnrichmentState {
+  return (ENRICHMENT_STATES as readonly string[]).includes(state);
+}
+
+/** One Deep Evidence component's state, as the API projects it. */
+export type EnrichmentComponent = {
+  provider: string;
+  signal_type: string;
+  // The persisted execution status: `not_requested`, `queued`, `processing`, `completed`,
+  // `abstained` or `failed`. Held as a string rather than narrowed at the boundary, so a
+  // state a later API adds reaches the renderer as itself and is reported as uninterpretable
+  // rather than silently mapped onto one of these six.
+  state: string;
+};
+
+export const COMPONENT_NOT_REQUESTED = "not_requested";
+export const COMPONENT_QUEUED = "queued";
+export const COMPONENT_PROCESSING = "processing";
+export const COMPONENT_COMPLETED = "completed";
+export const COMPONENT_ABSTAINED = "abstained";
+export const COMPONENT_FAILED = "failed";
+
+export const COMPONENT_STATES = [
+  COMPONENT_NOT_REQUESTED,
+  COMPONENT_QUEUED,
+  COMPONENT_PROCESSING,
+  COMPONENT_COMPLETED,
+  COMPONENT_ABSTAINED,
+  COMPONENT_FAILED,
+] as const;
+
+export type ComponentState = (typeof COMPONENT_STATES)[number];
+
+export type DeepEvidenceWording = {
+  title: string;
+  detail: string;
+};
+
+/**
+ * What each enrichment state is shown as, and the two that are shown as nothing at all.
+ *
+ * A total record over the vocabulary, which is what makes the report's section a lookup
+ * rather than a chain of conditions: `tsc` refuses a state without an entry, and a renderer
+ * that reads this table cannot reach a sentence the table does not hold.
+ *
+ * `null` means the section is not drawn. Two states earn it:
+ *
+ * - `LEGACY_SINGLE_STAGE` — the analysis ran the full detector chain in one stage, before
+ *   any of this existed. There is no enrichment to report the state of, so the report says
+ *   nothing: a "processing" indicator would describe work that will never run, and an "all
+ *   supplementary evidence succeeded" line would be a claim no legacy row can support. What
+ *   its detectors actually did is read from the evidence panels below, exactly as it always
+ *   was.
+ * - `ENRICHMENT_NOT_APPLICABLE` — no verdict exists, so there is nothing for supplementary
+ *   evidence to supplement. A state printed beside a decision that never happened would
+ *   invite reading the two as one outcome.
+ *
+ * None of these sentences says anything about the media. They say what was scheduled and
+ * what has run, which is a fact about this system and not about the video.
+ */
+export const DEEP_EVIDENCE_WORDING: Record<EnrichmentState, DeepEvidenceWording | null> = {
+  [ENRICHMENT_NOT_REQUESTED]: {
+    title: "Supplementary evidence not requested",
+    detail:
+      "This analysis was submitted as a quick scan, so its supplementary detectors were not run. That is a scheduling choice and not a failure: the assessment above is complete, was taken from the same detectors under the same ruleset, and would not be changed by the evidence below being gathered.",
+  },
+  [ENRICHMENT_PENDING]: {
+    title: "Supplementary evidence queued",
+    detail:
+      "The assessment above is final. Supplementary detectors are queued and have not started. Nothing they produce can change the assessment, the rule that was applied, or the decision coverage stated with it.",
+  },
+  [ENRICHMENT_PROCESSING]: {
+    title: "Supplementary evidence still running",
+    detail:
+      "The assessment above is final and this report is complete as a decision. Supplementary detectors are still running, so the evidence panels below may be incomplete at this moment. Nothing they produce can change the assessment, the rule that was applied, or the decision coverage stated with it.",
+  },
+  [ENRICHMENT_COMPLETE]: {
+    title: "Supplementary evidence complete",
+    detail:
+      "Every supplementary detector reached a terminal state and each of them answered. A detector that reported nothing to score — no trackable face, no audio stream — answered the question it was asked, and is counted here as having done so.",
+  },
+  [ENRICHMENT_PARTIAL]: {
+    title: "Supplementary evidence incomplete",
+    detail:
+      "Every supplementary detector reached a terminal state; some answered and some did not. The assessment above is unaffected and unqualified by this — none of these detectors can reach it under this ruleset. Which component did what is listed below.",
+  },
+  [ENRICHMENT_FAILED]: {
+    title: "Supplementary evidence unavailable",
+    detail:
+      "Every supplementary detector reached a terminal state and none of them answered. The assessment above still stands, unchanged and unqualified: an analysis with a verdict and no supplementary evidence is a complete decision with a thin report, not a broken analysis.",
+  },
+  [LEGACY_SINGLE_STAGE]: null,
+  [ENRICHMENT_NOT_APPLICABLE]: null,
+};
+
+// Shown for an enrichment state outside the vocabulary above — a later API reaching an older
+// build. The state reported is that this build cannot interpret it; nothing is inferred from
+// it, and in particular it is not read as "still running" or as "finished".
+export const DEEP_EVIDENCE_UNINTERPRETABLE: DeepEvidenceWording = {
+  title: "Supplementary evidence state not interpretable by this build",
+  detail:
+    "The API reported a state this build has no wording for. It is shown below as the record's own word, and nothing is concluded from it.",
+};
+
+/**
+ * The wording for one enrichment state, or `null` for a state that draws no section.
+ *
+ * A lookup and a membership test, and deliberately nothing else. The state is the API's
+ * answer; this function chooses a sentence for it and never a state.
+ */
+export function deepEvidenceWording(state: string): DeepEvidenceWording | null {
+  return isEnrichmentState(state)
+    ? DEEP_EVIDENCE_WORDING[state]
+    : DEEP_EVIDENCE_UNINTERPRETABLE;
+}
+
+/**
+ * What each component state is shown as.
+ *
+ * `abstained` is the entry this table exists for. A detector that abstains for a documented
+ * forensic reason — no trackable face, no audio stream — was asked, and answered, and its
+ * answer is evidence. It is not a failure, it is not grouped with one, and it is not worded
+ * like one: nothing in its sentence says the detector broke, errored or was unavailable.
+ *
+ * `not_requested` is the second. A component nobody asked is not a component that failed,
+ * and the difference between those two is the whole reason the API reports a state per
+ * component instead of leaving a renderer to notice which evidence panels came back empty.
+ */
+export const COMPONENT_STATE_LABELS: Record<ComponentState, string> = {
+  [COMPONENT_NOT_REQUESTED]: "Not requested",
+  [COMPONENT_QUEUED]: "Queued",
+  [COMPONENT_PROCESSING]: "Running",
+  [COMPONENT_COMPLETED]: "Reading recorded",
+  [COMPONENT_ABSTAINED]: "Not applicable — detector abstained",
+  [COMPONENT_FAILED]: "No reading — detector failed",
+};
+
+// Shown for a component state outside the vocabulary above, for the same reason and with the
+// same refusal to guess as `DEEP_EVIDENCE_UNINTERPRETABLE`.
+export const COMPONENT_STATE_UNINTERPRETABLE = "State not interpretable by this build";
+
+export function componentStateText(state: string): string {
+  return (COMPONENT_STATE_LABELS as Record<string, string>)[state] ??
+    COMPONENT_STATE_UNINTERPRETABLE;
+}
+
+/**
+ * The detector a component names, in the words the rest of the report uses for it.
+ *
+ * Keyed by the `signal_type` the API reports, which is the same spelling the evidence panels
+ * below are keyed by, so a reader matching a state to a panel is matching one vocabulary. An
+ * unfamiliar component is named by its own pair rather than paraphrased.
+ */
+export function componentDetectorName(component: EnrichmentComponent): string {
+  switch (component.signal_type) {
+    case "lip_forensics":
+      return "Mouth-dynamics model";
+    case "face_forgery":
+      return "Face-forgery model";
+    case "active_speaker":
+      return "Active-speaker detection";
+    case "audio_authenticity":
+      return "Audio-authenticity model";
+    default:
+      return `${component.provider}/${component.signal_type}`;
+  }
+}
+
+/**
+ * The decision axis, or `undefined` for a payload that carries no readable one.
+ *
+ * Absent and null are both accepted and both become null, for the reason
+ * `acquisition_method` is: an API that predates R10-T3 has no such key, and an older API
+ * must not make the whole analysis unreadable. A build reading null draws no state, which is
+ * the same thing it did before these fields existed.
+ */
+export function parseExecutionState(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  return typeof value === "string" ? value : undefined;
+}
+
+/**
+ * The per-component states, or `undefined` for a payload that is not a list of them.
+ *
+ * A malformed entry invalidates the list rather than being skipped, exactly as a malformed
+ * contribution invalidates a trace: a component quietly dropped would be a component the
+ * report says nothing about, which is indistinguishable from one that was never scheduled.
+ */
+export function parseEnrichmentComponents(
+  value: unknown,
+): EnrichmentComponent[] | undefined {
+  if (value === undefined || value === null) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const components: EnrichmentComponent[] = [];
+
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) {
+      return undefined;
+    }
+
+    const { provider, signal_type, state } = entry as Record<string, unknown>;
+
+    if (
+      typeof provider !== "string" ||
+      typeof signal_type !== "string" ||
+      typeof state !== "string"
+    ) {
+      return undefined;
+    }
+
+    components.push({ provider, signal_type, state });
+  }
+
+  return components;
+}
+
 export const SPEAKER_UNAVAILABLE = "Unavailable";
 export const NO_SPEAKING_FACES = "No speaking faces detected";
 // Shown where NVIDIA saw a face speaking but matched it to no diarized voice.
@@ -2324,6 +2621,9 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     id,
     status,
     created_at,
+    decision_state,
+    aggregate_enrichment_state,
+    per_component_state,
     risk_level,
     risk_rules_version,
     risk_rule_id,
@@ -2362,6 +2662,12 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
   const riskRuleId = parseOptionalString(risk_rule_id);
   const riskCalibrationId = parseOptionalString(risk_calibration_id);
   const riskTrace = parseRiskTrace(risk_trace);
+  // Absent and null are both read as "this API does not report an execution state", which is
+  // a state this page renders — as nothing at all — rather than a payload it refuses. Only a
+  // value that is present and is not a string is malformed.
+  const decisionState = parseExecutionState(decision_state);
+  const enrichmentState = parseExecutionState(aggregate_enrichment_state);
+  const components = parseEnrichmentComponents(per_component_state);
 
   const signal = parseSignal(synthetic_video);
   const provenanceSignal = parseProvenance(provenance);
@@ -2387,6 +2693,9 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     riskRuleId === undefined ||
     riskCalibrationId === undefined ||
     riskTrace === undefined ||
+    decisionState === undefined ||
+    enrichmentState === undefined ||
+    components === undefined ||
     signal === undefined ||
     provenanceSignal === undefined ||
     activeSpeaker === undefined ||
@@ -2403,6 +2712,9 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     id,
     status,
     created_at,
+    decision_state: decisionState,
+    aggregate_enrichment_state: enrichmentState,
+    per_component_state: components,
     risk_level: riskLevel,
     risk_rules_version: riskRulesVersion,
     risk_rule_id: riskRuleId,

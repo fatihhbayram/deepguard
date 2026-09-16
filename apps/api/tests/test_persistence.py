@@ -198,6 +198,11 @@ def test_migration_created_the_analysis_schema(database):
         "analysis_id",
         "status",
         "request_id",
+        # Which product mode the submission asked for, or null for one that asked for none
+        # (R10-T3). Execution metadata on the execution record: it selects the enrichment
+        # trigger and reaches no detector, threshold or rule, which is why it is here and
+        # not on `analyses`.
+        "enrichment_mode",
         "lease_expires_at",
         "error_message",
         "created_at",

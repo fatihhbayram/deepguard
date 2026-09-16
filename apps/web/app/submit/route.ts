@@ -154,10 +154,25 @@ export async function POST(request: Request): Promise<NextResponse> {
     return back({ error: "Choose a file or paste a URL first." });
   }
 
+  // Which product mode the form asked for (R10-T3). Forwarded as the operator sent it and
+  // never interpreted here: this handler holds no list of valid modes and no default, so an
+  // unfamiliar value is refused by the API — which owns that vocabulary — rather than
+  // silently rewritten by the hop in between. A form posting no mode forwards none, which is
+  // the state a client that never heard of modes leaves the API in.
+  //
+  // It travels on both doors, because both accept it. A mode dropped on the URL door would
+  // quietly ignore a choice the operator made on the same form.
+  const mode = (form.get("mode") ?? "").toString().trim();
+
   const target = url ? `${apiUrl()}/api/v1/analyses/url` : `${apiUrl()}/api/v1/analyses`;
-  const body = url ? JSON.stringify({ url }) : new FormData();
+  const body = url
+    ? JSON.stringify(mode ? { url, mode } : { url })
+    : new FormData();
   if (!url && body instanceof FormData) {
     body.append("file", file as File, (file as File).name);
+    if (mode) {
+      body.append("mode", mode);
+    }
   }
 
   // The session cookie and the browser's origin, restated for the server-to-server call.
