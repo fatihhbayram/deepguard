@@ -1025,6 +1025,19 @@ def _operational_summary(source: str) -> str:
     return body.split("\nfunction ", 1)[0]
 
 
+def _v5_verdict_helper(source: str) -> str:
+    """The body of the `v5Verdict` helper, from its signature to its closing brace.
+
+    R9 moved the version guard out of `OperationalSummary` and into this one function, because
+    the condition is asked twice — once by the summary and once by the page body, which drops
+    the legacy classification card when the summary has already said what the card would repeat.
+    Two copies of that condition could disagree. The guard is therefore asserted where it now
+    lives, and the summary is asserted to delegate to it rather than to restate it.
+    """
+    body = source.split("function v5Verdict(", 1)[1]
+    return body.split("\n}", 1)[0]
+
+
 @requires_web
 def test_the_report_says_each_v5_verdict_in_the_words_r9_t5_locked():
     """All three sentences of all three verdicts, verbatim.
@@ -1120,15 +1133,26 @@ def test_the_operational_summary_is_withheld_from_every_pre_v5_report():
     guard that prevents it is an equality against v5's own version string — not a "not legacy"
     test, which a sixth ruleset would silently pass.
     """
-    body = _operational_summary(WEB_REPORT.read_text(encoding="utf-8"))
+    source = WEB_REPORT.read_text(encoding="utf-8")
+    body = _operational_summary(source)
+    guard = _v5_verdict_helper(source)
 
-    assert "trace.rules_version !== RULES_VERSION_V5" in body
+    # The summary does not carry the condition itself. It asks the single helper that holds it,
+    # so the page cannot grow a second copy of the guard that could disagree with the first.
+    assert "v5Verdict(" in body
     assert "return null;" in body
-    # And an unknown verdict under v5 is withheld too, rather than shown under a borrowed entry.
-    assert "isV5Verdict(trace.risk_level)" in body
 
+    # And the guard is an equality against v5's own version string — not a "not legacy" test,
+    # which a sixth ruleset would silently pass.
+    assert "trace.rules_version !== RULES_VERSION_V5" in guard
+    assert "return null;" in guard
+    # And an unknown verdict under v5 is withheld too, rather than shown under a borrowed entry.
+    assert "isV5Verdict(trace.risk_level)" in guard
+
+    # Neither the guard nor the sentences it gates may name a legacy ruleset or a legacy level.
     for legacy in ("RULES_VERSION_V4", "RULES_VERSION_V3", "RULES_VERSION_V2", "HIGH", "MEDIUM"):
         assert legacy not in body, legacy
+        assert legacy not in guard, legacy
 
 
 @requires_web
@@ -1309,11 +1333,14 @@ def test_a_v4_report_never_falls_back_to_the_p7_wording():
     """
     source = WEB_REPORT.read_text(encoding="utf-8")
 
-    # The import, the scope-of-the-model chain, and two `analysis.risk_rules_version` chains:
-    # the face-manipulation panel's `decides`, and the independent-evidence introduction.
-    assert source.count("RULES_VERSION_V4") == 4
+    # The import, the scope-of-the-model chain, and three `analysis.risk_rules_version` chains:
+    # the face-manipulation panel's `decides`, the mouth-dynamics panel's `evidenceOnly`, and
+    # the independent-evidence introduction. R9 added the second of those three — v4 is one of
+    # the two rulesets under which the mouth-dynamics model is calibrated and still may not
+    # decide — which is why both totals below moved by one and the `ruleset ===` count did not.
+    assert source.count("RULES_VERSION_V4") == 5
     assert source.count("ruleset === RULES_VERSION_V4") == 1
-    assert source.count("analysis.risk_rules_version === RULES_VERSION_V4") == 2
+    assert source.count("analysis.risk_rules_version === RULES_VERSION_V4") == 3
 
     # The sentence a v4 decision must never reach. It is still there, and still the last branch
     # for the version it is true of.
