@@ -1141,6 +1141,41 @@ def conclude_job(session: Session, claimed: ClaimedJob) -> RiskDecision | None:
         session.rollback()
         return None
 
+    # The Deep Evidence execution record, in the transaction that publishes the verdict
+    # (R10 follow-up). Not after it, which is where R10-T2 put it: the enrichment axis is
+    # projected from these rows and their absence means `LEGACY_SINGLE_STAGE` — an analysis
+    # that ran before the two-stage architecture existed. Written in a later transaction,
+    # they left a gap in which a freshly decided analysis was `DECIDED` with no execution
+    # record, which is precisely the shape of a 2025 row, and any reader landing in that gap
+    # would have called a new analysis historical. Here there is no gap: an observer sees
+    # the verdict and the rows together or sees neither.
+    #
+    # Below the guard, deliberately. A worker whose claim was recovered while it ran has
+    # already returned above, so a job that is no longer entitled to publish stages nothing
+    # and cannot collide with the rows the winning worker wrote.
+    #
+    # The mode is read here and nowhere earlier in this file. It chooses the status these
+    # rows are written in — queued, or deferred as `not_requested` — and reaches no
+    # detector, no threshold and no rule on the way (§4.2).
+    staged = enrichment.stage(
+        session,
+        claimed.analysis_id,
+        decision.rules_version,
+        claimed.enrichment_mode,
+    )
+
+    if staged == 0:
+        # The only path to an analysis that is decided under R10 and still projects as
+        # legacy. Unreachable in this build — the ruleset the engine decides under declares
+        # its membership, and only one component is switchable off — so it is logged rather
+        # than guarded against: a deployment that reaches it has a configuration problem
+        # this line names.
+        logger.warning(
+            "Analysis %s was decided with no Deep Evidence components staged; its "
+            "enrichment axis will read as legacy.",
+            claimed.analysis_id,
+        )
+
     session.commit()
 
     return decision
@@ -1443,24 +1478,16 @@ def process_one(session: Session) -> bool:
         # decision-complete: the report can be opened and nothing below may change what it
         # says. Only at this point is anything else allowed to be scheduled against it.
         #
-        # Deep Evidence first (R10-T2). Its tasks are queued here rather than at upload
-        # because enrichment membership is read from the ruleset the analysis was *decided*
-        # under, and that is not known until the decision exists. `enrichment.enqueue` runs in
-        # its own transaction after the decision has been committed, and it does not raise: an
-        # analysis that has already been decided, published and closed must not retroactively
-        # fail because its supplementary evidence could not be scheduled, which would be the
-        # enrichment path destroying a fast decision through the one door §7.4 does not name.
-        enrichment.enqueue(
-            session,
-            claimed.analysis_id,
-            decision.rules_version,
-            claimed.enrichment_mode,
-        )
-
-        # Then the experiment, in a table of its own (R6-T1). Nothing above waited for either
-        # of these, nothing below depends on them, and `shadow.enqueue` does not raise for the
-        # same reason `enrichment.enqueue` does not — a customer's analysis must not fail
-        # because an experiment could not be queued.
+        # Deep Evidence is already scheduled. Its rows were written by `conclude_job`, in the
+        # same transaction as the verdict, because the absence of those rows is what
+        # `LEGACY_SINGLE_STAGE` means and an analysis must never be decided and momentarily
+        # indistinguishable from a pre-R10 one. Membership still comes from the ruleset the
+        # analysis was *decided* under, which is why it could not have been done at upload.
+        #
+        # The experiment is different and stays here, in a table of its own (R6-T1). Nothing
+        # projects an analysis's state from a `ShadowRun`, so there is no reading of the
+        # analysis that its absence can corrupt — and `shadow.enqueue` does not raise, because
+        # a customer's analysis must not fail because an experiment could not be queued.
         shadow.enqueue(session, claimed.analysis_id)
 
         logger.info(

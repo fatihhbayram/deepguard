@@ -17,6 +17,7 @@ claiming and guarding are checked against real PostgreSQL because locking and tr
 be demonstrated against anything else.
 """
 
+import time
 import uuid
 from datetime import timedelta
 
@@ -480,6 +481,21 @@ def analysis(database):
         session.commit()
 
 
+def stage_and_commit(session, analysis_id, rules_version, mode=None) -> int:
+    """Stage this analysis's components and commit them, as the worker's verdict does.
+
+    `enrichment.stage` joins the caller's transaction and does not commit, because in
+    production it runs inside the transaction that publishes the verdict — that is the whole
+    point of it (see its docstring, and `app.worker.conclude_job`). These tests are not
+    publishing a verdict, so they own the commit. A fixture that forgot it would leave the
+    rows invisible to the separate session every assertion here reads through.
+    """
+    staged = enrichment.stage(session, analysis_id, rules_version, mode)
+    session.commit()
+
+    return staged
+
+
 def read_analysis(analysis_id):
     with SessionLocal() as session:
         return session.get(Analysis, analysis_id)
@@ -518,7 +534,7 @@ def test_queueing_writes_one_row_per_deep_evidence_component(analysis, monkeypat
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        queued = enrichment.enqueue(session, analysis_id, RULES_V5)
+        queued = stage_and_commit(session, analysis_id, RULES_V5)
 
     tasks = read_tasks(analysis_id)
 
@@ -550,7 +566,7 @@ def test_a_disabled_detector_gets_no_task_row_at_all(analysis, monkeypatch):
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
 
     tasks = read_tasks(analysis_id)
 
@@ -567,7 +583,7 @@ def test_deferring_writes_the_rows_and_asks_for_none_of_them(analysis, monkeypat
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         assert enrichment.analysis_states(session, analysis_id) == (
             enrichment.DECIDED,
             enrichment.ENRICHMENT_NOT_REQUESTED,
@@ -591,7 +607,7 @@ def test_asking_for_deferred_enrichment_queues_it(analysis, monkeypatch):
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         requested = enrichment.request(session, analysis_id)
 
         assert requested == len(read_tasks(analysis_id))
@@ -615,7 +631,7 @@ def test_asking_again_does_not_re_run_what_already_finished(analysis, monkeypatc
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         session.execute(
             AnalysisEnrichmentTask.__table__.update()
             .where(AnalysisEnrichmentTask.analysis_id == analysis_id)
@@ -641,18 +657,21 @@ def test_a_legacy_analysis_is_read_as_single_stage_rather_than_enriched(analysis
 
 
 @pytest.mark.integration
-def test_queueing_never_raises_into_the_decision_that_just_completed(analysis, monkeypatch):
-    """The load-bearing property of `enqueue`, not loose error handling.
+def test_staging_never_raises_into_the_decision_being_published(analysis, monkeypatch):
+    """An undeclared ruleset yields no rows and no exception.
 
-    An analysis that has been decided, published and closed must not retroactively fail
-    because its supplementary evidence could not be *scheduled*. That would be the enrichment
-    path destroying a fast decision through the one door §7.4 does not name.
+    `stage` now runs inside the transaction that publishes the verdict, so an exception here
+    would abort that transaction and no analysis under that ruleset could be decided at all.
+    A deployment whose ruleset has no declared membership has a configuration problem; it
+    does not have a system that refuses to decide anything. The cost is that its analyses
+    project as legacy until the membership is declared, which `app.worker.conclude_job` logs
+    a warning about on every such decision.
     """
     analysis_id = analysis()
 
     with SessionLocal() as session:
         # A ruleset nothing declares roles for: the failure `enqueue` is most likely to meet.
-        assert enrichment.enqueue(session, analysis_id, "r11-v6.0.0") == 0
+        assert stage_and_commit(session, analysis_id, "r11-v6.0.0") == 0
 
     assert read_tasks(analysis_id) == {}
     assert read_analysis(analysis_id).status == "completed"
@@ -678,8 +697,8 @@ def test_a_quick_scan_writes_every_component_and_asks_for_none(analysis, monkeyp
     deep = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, quick, RULES_V5, "quick_scan")
-        enrichment.enqueue(session, deep, RULES_V5, "deep_analysis")
+        stage_and_commit(session, quick, RULES_V5, "quick_scan")
+        stage_and_commit(session, deep, RULES_V5, "deep_analysis")
 
     quick_tasks = read_tasks(quick)
     deep_tasks = read_tasks(deep)
@@ -697,7 +716,7 @@ def test_a_deferred_quick_scan_can_still_be_asked_for(analysis, monkeypatch):
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5, "quick_scan")
+        stage_and_commit(session, analysis_id, RULES_V5, "quick_scan")
         assert enrichment.analysis_states(session, analysis_id) == (
             enrichment.DECIDED,
             enrichment.ENRICHMENT_NOT_REQUESTED,
@@ -756,8 +775,8 @@ def test_the_component_states_are_read_per_analysis_in_one_statement(
     legacy = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, enriching, RULES_V5)
-        enrichment.enqueue(session, deferred, RULES_V5, "quick_scan")
+        stage_and_commit(session, enriching, RULES_V5)
+        stage_and_commit(session, deferred, RULES_V5, "quick_scan")
 
     with SessionLocal() as session:
         states = enrichment.component_states(session, [enriching, deferred, legacy])
@@ -781,7 +800,7 @@ def test_the_component_states_come_back_in_a_stable_order(analysis, monkeypatch)
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
 
     with SessionLocal() as session:
         first = enrichment.component_states(session, [analysis_id])[analysis_id]
@@ -810,7 +829,7 @@ def test_claiming_takes_every_queued_component_of_one_analysis(analysis, monkeyp
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         claimed = enrichment.claim(session)
 
     assert claimed is not None
@@ -839,7 +858,7 @@ def test_enrichment_reads_the_derivative_the_decision_was_taken_from(analysis, m
     )
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         claimed = enrichment.claim(session)
 
     assert claimed.storage_key == "derivatives/abc123"
@@ -856,7 +875,7 @@ def test_a_decision_with_no_readable_artifact_fails_its_components(analysis, mon
     analysis_id = analysis(was_normalized=True, derivative_storage_key=None)
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         assert enrichment.process_one(session) is True
 
     tasks = read_tasks(analysis_id)
@@ -882,7 +901,7 @@ def test_a_stale_enrichment_lease_is_recovered_without_touching_the_analysis(
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         enrichment.claim(session)
         # The worker died: the lease it promised to renew has fallen into the past.
         session.execute(
@@ -926,7 +945,7 @@ def test_a_queued_decision_job_is_claimed_before_any_enrichment(analysis, monkey
 
     enriching = analysis()
     with SessionLocal() as session:
-        enrichment.enqueue(session, enriching, RULES_V5)
+        stage_and_commit(session, enriching, RULES_V5)
 
     # Three analyses still owed a decision, queued behind a full enrichment backlog.
     pending = [analysis(status="queued", risk_level=None) for _ in range(3)]
@@ -957,7 +976,7 @@ def test_enrichment_is_only_claimed_once_the_decision_queue_is_empty(analysis, m
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         # No decision job is queued, so the loop's first question comes back empty.
         assert worker.claim_job(session) is None
         assert enrichment.claim(session) is not None
@@ -1139,7 +1158,7 @@ def test_the_boundary_allows_the_evidence_enrichment_is_for(analysis, monkeypatc
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
 
     with enrichment_session(ALLOWED) as session:
         signal = AnalysisSignal(
@@ -1379,7 +1398,7 @@ def test_a_completed_enrichment_leaves_the_verdict_exactly_as_it_found_it(
     )
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         assert enrichment.process_one(session) is True
 
     after = read_analysis(analysis_id)
@@ -1410,7 +1429,7 @@ def test_a_component_that_failed_is_partial_and_the_verdict_still_stands(
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         enrichment.process_one(session)
 
         assert enrichment.analysis_states(session, analysis_id) == (
@@ -1452,7 +1471,7 @@ def test_a_component_that_crashes_outright_costs_only_that_component(
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         # True: there was work, it was claimed, and every component of it was concluded.
         assert enrichment.process_one(session) is True
 
@@ -1497,7 +1516,7 @@ def test_a_claim_that_cannot_be_run_at_all_leaves_the_decision_untouched(
     monkeypatch.setattr(enrichment, "fetch_object", unreachable)
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         assert enrichment.process_one(session) is True
 
         assert enrichment.analysis_states(session, analysis_id) == (
@@ -1532,7 +1551,7 @@ def test_a_broken_enrichment_does_not_stop_the_worker_loop(
     monkeypatch.setattr(enrichment, "recover_stale_tasks", explode)
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         # Reported as "nothing was done" rather than raised into the loop.
         assert enrichment.process_one(session) is False
 
@@ -1550,7 +1569,7 @@ def test_re_running_a_component_replaces_its_evidence_rather_than_doubling_it(
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         enrichment.process_one(session)
 
         # Ask for the whole thing again, as a retry would.
@@ -1601,7 +1620,7 @@ def test_an_abstaining_component_ends_terminal_and_not_failed(
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         enrichment.process_one(session)
 
         assert enrichment.analysis_states(session, analysis_id) == (
@@ -1647,7 +1666,7 @@ def test_an_analysis_whose_components_all_abstained_is_fully_enriched(
     analysis_id = analysis()
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         enrichment.process_one(session)
 
         assert enrichment.analysis_states(session, analysis_id) == (
@@ -1677,7 +1696,7 @@ def test_a_component_whose_artifact_never_existed_manufactures_no_signal_row(
     analysis_id = analysis(was_normalized=True, derivative_storage_key=None)
 
     with SessionLocal() as session:
-        enrichment.enqueue(session, analysis_id, RULES_V5)
+        stage_and_commit(session, analysis_id, RULES_V5)
         assert enrichment.process_one(session) is True
 
     # No evidence rows at all, for any component.
@@ -1692,3 +1711,457 @@ def test_a_component_whose_artifact_never_existed_manufactures_no_signal_row(
     assert "abstained" not in {task.status for task in tasks.values()}
 
     assert read_analysis(analysis_id).risk_level == "NO_CALIBRATED_MANIPULATION_SIGNAL"
+
+
+# --------------------------------------------------------------------------------------
+# The decision and its execution record land together (R10 follow-up)
+# --------------------------------------------------------------------------------------
+#
+# The enrichment axis is projected from the task rows, and their *absence* is not nothing:
+# §8.1 defines it as `LEGACY_SINGLE_STAGE`, an analysis that ran the whole detector chain in
+# one stage before R10 existed. R10-T2 wrote those rows in a transaction of their own, after
+# the verdict was already committed, which left a window — milliseconds wide, but real — in
+# which a brand-new analysis was `DECIDED` with no execution record and was therefore
+# indistinguishable from a 2025 one. Any reader landing in it called a new analysis
+# historical, and the enrichment trigger endpoint refused it with a 409 saying so.
+#
+# The rows are now staged inside the transaction that publishes the verdict. These tests are
+# about the seam rather than about enrichment: that the two become visible together, that no
+# concurrent reader can catch them apart, and that the decision itself is untouched by the
+# change.
+
+import threading  # noqa: E402 — beside the tests that need it, not the file's imports
+
+
+@pytest.fixture
+def undecided(database):
+    """An analysis in exactly the state `conclude_job` is called in.
+
+    Queued, with its job `processing`, its media row written and both deciding detectors'
+    evidence already committed — the point at which the only thing left is the
+    classification and its publication. Modelled on `tests/test_worker_v5_decision.py`,
+    which drives the same function for the verdict's own semantics.
+    """
+    created = []
+
+    def make(*, mode=None):
+        with SessionLocal() as session:
+            analysis = Analysis(status="queued")
+            session.add(analysis)
+            session.flush()
+
+            digest = uuid.uuid4().hex + uuid.uuid4().hex
+            session.add(
+                MediaFile(
+                    analysis_id=analysis.id,
+                    original_filename="clip.mp4",
+                    content_type="video/mp4",
+                    size_bytes=4096,
+                    original_sha256=digest,
+                    original_storage_key=f"originals/{digest}",
+                    format_name="mov,mp4,m4a,3gp,3g2,mj2",
+                    codec_name="h264",
+                    width=1920,
+                    height=1080,
+                    duration=12.34,
+                    frame_rate=30.0,
+                    pix_fmt="yuv420p",
+                    constant_frame_rate=True,
+                    was_normalized=False,
+                )
+            )
+            # The two deciding detectors, written as the fast path writes them: the exact
+            # provider deployments the calibration was measured against, so the verdict
+            # below is a real one rather than `INCONCLUSIVE` for want of a reading.
+            session.add(
+                AnalysisSignal(
+                    analysis_id=analysis.id,
+                    provider=risk_engine.SVD_PROVIDER,
+                    signal_type=risk_engine.SVD_SIGNAL_TYPE,
+                    status="SUCCESS",
+                    score=0.1234,
+                    provider_version=risk_engine.SVD_PROVIDER_VERSION,
+                    signal_metadata={"total_clips": 7, "scored_clips": 7},
+                )
+            )
+            session.add(
+                AnalysisSignal(
+                    analysis_id=analysis.id,
+                    provider=risk_engine.FACE_PROVIDER,
+                    signal_type=risk_engine.FACE_SIGNAL_TYPE,
+                    status="SUCCESS",
+                    score=0.0456,
+                    provider_version=risk_engine.FACE_PROVIDER_VERSION,
+                    signal_metadata={"frames_scored": 6},
+                )
+            )
+            job = AnalysisJob(
+                analysis_id=analysis.id, status="processing", enrichment_mode=mode
+            )
+            session.add(job)
+            session.commit()
+            created.append(analysis.id)
+
+            return worker.ClaimedJob(
+                job_id=job.id,
+                analysis_id=analysis.id,
+                original_storage_key="originals/unused",
+                normalization_required=False,
+                frame_rate=30.0,
+                enrichment_mode=mode,
+            )
+
+    yield make
+
+    with SessionLocal() as session:
+        for analysis_id in created:
+            session.query(Analysis).filter(Analysis.id == analysis_id).delete()
+        session.commit()
+
+
+def observed_state(analysis_id):
+    """Both axes, read through a session of this reader's own.
+
+    A separate session on purpose: what is being asked is what a *different* transaction can
+    see, and reading through the one doing the writing would see its own uncommitted rows.
+    """
+    with SessionLocal() as reader:
+        return enrichment.analysis_states(reader, analysis_id)
+
+
+@pytest.mark.integration
+def test_the_verdict_and_its_execution_record_become_visible_together(
+    undecided, monkeypatch
+):
+    """The atomicity itself, observed from outside the transaction that writes both.
+
+    The publication's own commit is wrapped so that an independent session can be asked, at
+    the last possible instant before it lands, what it can see. The answer has to be
+    nothing: no verdict and no task rows. One statement later both are there. That is the
+    whole fix — there is no moment at which one exists without the other.
+    """
+    claimed = undecided()
+    analysis_id = claimed.analysis_id
+    seen_at_commit = {}
+
+    with SessionLocal() as session:
+        real_commit = session.commit
+
+        def observing_commit():
+            with SessionLocal() as reader:
+                analysis = reader.get(Analysis, analysis_id)
+                seen_at_commit["status"] = analysis.status
+                seen_at_commit["risk_level"] = analysis.risk_level
+                seen_at_commit["tasks"] = (
+                    reader.query(AnalysisEnrichmentTask)
+                    .filter_by(analysis_id=analysis_id)
+                    .count()
+                )
+            real_commit()
+
+        monkeypatch.setattr(session, "commit", observing_commit)
+
+        decision = worker.conclude_job(session, claimed)
+
+    assert decision is not None
+
+    # Immediately before the commit, another transaction could see neither half.
+    assert seen_at_commit == {"status": "queued", "risk_level": None, "tasks": 0}
+
+    # Immediately after it, it can see both.
+    stored = read_analysis(analysis_id)
+    assert stored.status == "completed"
+    assert stored.risk_level == decision.risk_level
+    assert len(read_tasks(analysis_id)) == len(
+        enrichment.evidence_only_components(decision.rules_version)
+    )
+
+
+@pytest.mark.integration
+def test_no_concurrent_reader_can_catch_a_decided_analysis_looking_legacy(undecided):
+    """The invariant, hunted for rather than reasoned about.
+
+    A reader samples both axes in a tight loop on its own connection while the publication
+    happens on another. Every sample is kept, and the pair this task exists to eliminate —
+    `DECIDED` beside `LEGACY_SINGLE_STAGE` — must appear in none of them. The reader is also
+    asserted to have seen the analysis both before and after the decision, so a run that
+    sampled only one side cannot pass by missing the window entirely.
+    """
+    claimed = undecided(mode="quick_scan")
+    analysis_id = claimed.analysis_id
+
+    samples: list[tuple[str, str]] = []
+    # The watcher takes its first sample before the publication is allowed to start, and
+    # keeps sampling until it sees a decided one. Starting the two together would not be
+    # enough: whichever wins the start, the point is that the samples span the moment.
+    sampled = threading.Event()
+
+    def watch():
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            samples.append(observed_state(analysis_id))
+            sampled.set()
+            if samples[-1][0] == enrichment.DECIDED:
+                return
+
+    watcher = threading.Thread(target=watch)
+    watcher.start()
+
+    assert sampled.wait(timeout=20), "the watcher never took a sample"
+    with SessionLocal() as session:
+        decision = worker.conclude_job(session, claimed)
+    watcher.join(timeout=30)
+
+    assert decision is not None
+    assert len(samples) > 1, "the watcher took no useful samples"
+    assert (enrichment.DECIDED, enrichment.LEGACY_SINGLE_STAGE) not in samples, samples
+
+    # The run really did span the publication, so the absence above means something.
+    assert (enrichment.DECISION_PENDING, enrichment.ENRICHMENT_NOT_APPLICABLE) in samples
+    assert (enrichment.DECIDED, enrichment.ENRICHMENT_NOT_REQUESTED) in samples
+
+
+@pytest.mark.integration
+def test_a_deferred_submission_reads_as_not_requested_the_instant_it_is_decided(
+    undecided,
+):
+    """A Quick Scan is unambiguous from its first readable moment."""
+    claimed = undecided(mode="quick_scan")
+
+    with SessionLocal() as session:
+        assert worker.conclude_job(session, claimed) is not None
+
+    assert observed_state(claimed.analysis_id) == (
+        enrichment.DECIDED,
+        enrichment.ENRICHMENT_NOT_REQUESTED,
+    )
+
+
+@pytest.mark.integration
+def test_a_requested_submission_reads_as_pending_the_instant_it_is_decided(undecided):
+    """And so is a Deep Analysis, in the other direction."""
+    claimed = undecided(mode="deep_analysis")
+
+    with SessionLocal() as session:
+        assert worker.conclude_job(session, claimed) is not None
+
+    assert observed_state(claimed.analysis_id) == (
+        enrichment.DECIDED,
+        enrichment.ENRICHMENT_PENDING,
+    )
+
+
+@pytest.mark.integration
+def test_a_submission_with_no_mode_follows_the_deployment_policy_atomically(
+    undecided, monkeypatch
+):
+    monkeypatch.setenv(enrichment.ENRICHMENT_POLICY_VARIABLE, enrichment.POLICY_IMMEDIATE)
+    claimed = undecided(mode=None)
+
+    with SessionLocal() as session:
+        assert worker.conclude_job(session, claimed) is not None
+
+    assert observed_state(claimed.analysis_id) == (
+        enrichment.DECIDED,
+        enrichment.ENRICHMENT_PENDING,
+    )
+
+
+@pytest.mark.integration
+def test_a_historical_analysis_still_reads_as_legacy(analysis):
+    """`LEGACY_SINGLE_STAGE` keeps its meaning, which is the other half of the fix.
+
+    Closing the window must not be done by making the absence of task rows mean something
+    else. A decided analysis with no rows is still exactly what §8.1 says it is, and this
+    fixture — a completed analysis nothing ever staged rows for — is a pre-R10 row.
+    """
+    analysis_id = analysis()
+
+    assert read_tasks(analysis_id) == {}
+    assert observed_state(analysis_id) == (
+        enrichment.DECIDED,
+        enrichment.LEGACY_SINGLE_STAGE,
+    )
+
+
+@pytest.mark.integration
+def test_a_worker_that_lost_its_claim_stages_nothing(undecided):
+    """The rows are below the guard, so a publication that is refused writes neither half.
+
+    A recovered job leaves its analysis `failed`, and a worker coming back to life must not
+    publish over that. It must also not leave task rows behind on an analysis it did not
+    decide — which would give a `DECISION_FAILED` analysis an execution record for a
+    decision that never happened.
+    """
+    claimed = undecided(mode="deep_analysis")
+
+    # Recovery, as `recover_stale_jobs` performs it: the job is terminal and the analysis
+    # failed before this worker gets to publish.
+    with SessionLocal() as session:
+        session.execute(
+            AnalysisJob.__table__.update()
+            .where(AnalysisJob.id == claimed.job_id)
+            .values(status="failed", error_message="StaleJobLease", lease_expires_at=None)
+        )
+        session.execute(
+            Analysis.__table__.update()
+            .where(Analysis.id == claimed.analysis_id)
+            .values(status="failed")
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        assert worker.conclude_job(session, claimed) is None
+
+    assert read_tasks(claimed.analysis_id) == {}
+    stored = read_analysis(claimed.analysis_id)
+    assert stored.status == "failed"
+    assert stored.risk_level is None
+    assert observed_state(claimed.analysis_id) == (
+        enrichment.DECISION_FAILED,
+        enrichment.ENRICHMENT_NOT_APPLICABLE,
+    )
+
+
+@pytest.mark.integration
+def test_an_enrichment_request_racing_the_publication_is_safe(undecided):
+    """The trigger endpoint's mechanism, called throughout a decision being published.
+
+    Whatever the interleaving, the end state is one row per component with no duplicate,
+    and the analysis is decided. A request that arrives before the rows exist moves nothing
+    and says zero — it cannot create a task, because the transition only ever updates rows
+    that are already there.
+    """
+    claimed = undecided(mode="quick_scan")
+    analysis_id = claimed.analysis_id
+
+    requested: list[int] = []
+    sampled = threading.Event()
+    published = threading.Event()
+
+    def keep_asking():
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            with SessionLocal() as session:
+                requested.append(enrichment.request(session, analysis_id))
+            sampled.set()
+            # Keeps asking across the publication and for one pass after it, so the
+            # transition is asked for from both sides of the moment it becomes possible.
+            if published.is_set():
+                return
+
+    asker = threading.Thread(target=keep_asking)
+    asker.start()
+
+    assert sampled.wait(timeout=20), "the asker never made its first request"
+    with SessionLocal() as session:
+        decision = worker.conclude_job(session, claimed)
+    published.set()
+    asker.join(timeout=30)
+
+    assert decision is not None
+
+    tasks = read_tasks(analysis_id)
+    components = enrichment.evidence_only_components(decision.rules_version)
+    # One row per component and no duplicate: the keys are the components themselves.
+    assert set(tasks) == set(components)
+    with SessionLocal() as reader:
+        assert (
+            reader.query(AnalysisEnrichmentTask)
+            .filter_by(analysis_id=analysis_id)
+            .count()
+            == len(components)
+        )
+
+    # The verdict is whole, whatever the asker did while it was being written.
+    stored = read_analysis(analysis_id)
+    assert stored.status == "completed"
+    assert (stored.risk_level, stored.risk_rule_id, stored.risk_rules_version) == (
+        decision.risk_level,
+        decision.rule_id,
+        decision.rules_version,
+    )
+    # Every component ended up in one of the two states this race can produce, and the
+    # aggregate is a real one rather than legacy.
+    assert {task.status for task in tasks.values()} <= {"not_requested", "queued"}
+    assert observed_state(analysis_id)[1] in (
+        enrichment.ENRICHMENT_NOT_REQUESTED,
+        enrichment.ENRICHMENT_PENDING,
+    )
+
+
+@pytest.mark.integration
+def test_staging_changes_nothing_about_the_decision_or_its_evidence(undecided):
+    """The deciding detectors' rows are byte-identical across the publication.
+
+    Staging happens in the same transaction as the verdict, which is exactly the
+    transaction that must not touch anything else. The SVD and B7 rows are read before and
+    after, in full.
+    """
+    claimed = undecided(mode="deep_analysis")
+    analysis_id = claimed.analysis_id
+
+    def deciding_evidence():
+        with SessionLocal() as reader:
+            return {
+                (row.provider, row.signal_type): (
+                    row.status,
+                    row.score,
+                    row.provider_version,
+                    row.signal_metadata,
+                    row.risk_level,
+                )
+                for row in reader.query(AnalysisSignal)
+                .filter_by(analysis_id=analysis_id)
+                .all()
+            }
+
+    before = deciding_evidence()
+    assert set(before) == {SVD_COMPONENT, B7_COMPONENT}
+
+    with SessionLocal() as session:
+        decision = worker.conclude_job(session, claimed)
+
+    assert deciding_evidence() == before
+
+    stored = read_analysis(analysis_id)
+    assert (
+        stored.risk_level,
+        stored.risk_rule_id,
+        stored.risk_rules_version,
+        stored.risk_calibration_id,
+    ) == (
+        decision.risk_level,
+        decision.rule_id,
+        decision.rules_version,
+        decision.calibration_id,
+    )
+
+
+def test_a_decided_analysis_always_has_components_to_stage(monkeypatch):
+    """The one remaining path to a decided-but-recordless analysis, closed by measurement.
+
+    Staging writes no rows in exactly two situations: a ruleset whose membership is
+    undeclared, and a ruleset all of whose components this deployment has switched off. An
+    analysis decided in either would be `DECIDED` with no execution record — the state this
+    fix exists to make impossible — so both are asserted unreachable rather than left to a
+    comment.
+
+    The first is unreachable because the engine's own ruleset is declared here, which the
+    top of this module already asserts. The second is unreachable because only one
+    component has a switch at all: with Effort turned off, the ruleset still has three.
+    """
+    from app.effort import ENABLED_VARIABLE
+
+    declared = enrichment.evidence_only_components(risk_engine.RULES_VERSION_V5)
+    assert declared, "the ruleset the engine decides under declares no components"
+
+    monkeypatch.setenv(ENABLED_VARIABLE, "false")
+    enabled = [
+        component for component in declared if enrichment._component_enabled(component)
+    ]
+
+    assert enabled, "every component of the deciding ruleset can be switched off"
+    assert len(enabled) == len(declared) - 1, (
+        "exactly one component is switchable; if that changed, the reasoning above did too"
+    )

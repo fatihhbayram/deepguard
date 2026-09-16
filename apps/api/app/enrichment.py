@@ -342,48 +342,67 @@ def initial_status(mode: str | None) -> str:
     )
 
 
-def enqueue(
+def stage(
     session: Session,
     analysis_id: uuid.UUID,
     rules_version: str,
     mode: str | None = None,
 ) -> int:
-    """Write this analysis's Deep Evidence tasks. Returns how many were written.
+    """Add this analysis's Deep Evidence task rows to the caller's transaction.
 
-    Called by `app.worker` on the way out of a decision it completed — after the verdict is
-    committed and the job closed, never before. The ordering is the contract's: enrichment is
-    not a precondition of the decision (§4.2) and an analysis that never gets here is a
-    decision that failed, which §8.1 gives no enrichment reading at all.
+    Returns how many were added. **Adds, and does not commit** — the caller owns the
+    transaction, and which transaction that is turns out to be the whole point of this
+    function.
 
-    Every component gets a row whether or not this deployment wants it run yet. A deferred
-    component is `not_requested`, which is a state and not an absence — the module docstring
-    and `AnalysisEnrichmentTask` both say why that distinction is what keeps legacy analyses
-    readable.
+    `app.worker.conclude_job` calls it between the statement that publishes the verdict and
+    the commit that makes it durable, so the rows and the verdict land together or not at
+    all. That is not tidiness. The enrichment axis is projected from these rows, and their
+    absence means one specific thing — `LEGACY_SINGLE_STAGE`, an analysis that ran the full
+    chain in one stage before R10 existed (§8.1). If the rows were written in a transaction
+    of their own after the verdict, then for the width of that gap a freshly decided R10
+    analysis would be indistinguishable from a 2025 one: a reader would see `DECIDED` with
+    no execution record and, reading exactly what §8.1 tells it to read, would report the
+    analysis as historical. Same transaction, no gap, no false reading.
 
-    **Never raises**, deliberately, and it is the load-bearing property of this function rather
-    than loose error handling. It runs in its own transaction after the analysis is already
-    complete; a failure here rolls back these inserts and nothing else. An analysis that had
-    been decided, published and closed must not retroactively fail because its supplementary
-    evidence could not be *scheduled* — that would let the enrichment path destroy a fast
-    decision through the one door §7.4 did not think to name.
+    So the ordering is now an invariant rather than a scheduling detail: **no committed
+    state exists in which an analysis is decided under R10 and has no enrichment execution
+    record.** An observer in another transaction sees both or neither.
 
-    A duplicate is not a failure either. The unique constraint refuses a second set of tasks
-    for the same analysis — a job concluded twice, two workers racing — and that refusal is the
-    intended outcome rather than an error to report.
+    This is a deliberate revision of R10-T2, which committed these rows separately so that a
+    failure to *schedule* enrichment could never fail an already-published decision. That
+    protection is not lost, it moves: the rows are added *before* the commit, so a failure
+    here aborts a verdict that was never published and the job is retried under §7.1, which
+    permits exactly that. What cannot happen either way is the thing §7.4 forbids — a
+    published verdict undone by enrichment — because at the moment this function runs there
+    is no published verdict to undo.
+
+    An undeclared ruleset is still not an exception. It is logged and yields no rows, which
+    leaves that deployment's analyses projecting as legacy until its membership is declared
+    — wrong, and wrong loudly in the log, but not a deployment in which no analysis can be
+    decided at all. `UnknownRuleset` is unreachable in this build: `EVIDENCE_ONLY_COMPONENTS`
+    declares the only ruleset the engine decides under, and a test asserts that against the
+    engine itself.
+
+    Every enabled component gets a row whether or not this deployment wants it run yet. A
+    deferred component is `not_requested`, which is a state and not an absence — the module
+    docstring and `AnalysisEnrichmentTask` both say why that distinction is what keeps legacy
+    analyses readable, and it is the same distinction this function's placement protects.
 
     `mode` is the product mode the submission asked for, or null for one that asked for none
     (R10-T3). It decides the status the rows are written in and nothing else: the same
     components are written for the same analysis either way, so a Quick Scan is a Deep
     Analysis whose evidence has not been asked for yet rather than an analysis with less of
-    it. It arrives here, after the verdict is published, and is read nowhere earlier — which
-    is what makes "the two modes decide identically" a property of the code's shape.
+    it. It is read here, after the verdict has been evaluated and written, and nowhere
+    earlier — which is what makes "the two modes decide identically" a property of the
+    code's shape.
     """
     try:
         components = evidence_only_components(rules_version)
     except UnknownRuleset:
         logger.warning(
             "No Deep Evidence membership is declared for the ruleset analysis %s was decided "
-            "under; no enrichment was queued. The analysis is unaffected.",
+            "under; no enrichment was staged. The analysis is unaffected, and its enrichment "
+            "axis will read as legacy until that membership is declared.",
             analysis_id,
             exc_info=True,
         )
@@ -398,31 +417,21 @@ def enqueue(
 
     status = initial_status(mode)
 
-    try:
-        session.add_all(
-            [
-                AnalysisEnrichmentTask(
-                    analysis_id=analysis_id,
-                    provider=provider,
-                    signal_type=signal_type,
-                    status=status,
-                    rules_version=rules_version,
-                )
-                for provider, signal_type in components
-            ]
-        )
-        session.commit()
-    except Exception:
-        session.rollback()
-        logger.warning(
-            "Queueing Deep Evidence for analysis %s failed; the analysis is unaffected.",
-            analysis_id,
-            exc_info=True,
-        )
-        return 0
+    session.add_all(
+        [
+            AnalysisEnrichmentTask(
+                analysis_id=analysis_id,
+                provider=provider,
+                signal_type=signal_type,
+                status=status,
+                rules_version=rules_version,
+            )
+            for provider, signal_type in components
+        ]
+    )
 
     logger.info(
-        "Queued %s Deep Evidence component(s) for analysis %s as %s.",
+        "Staged %s Deep Evidence component(s) for analysis %s as %s.",
         len(components),
         analysis_id,
         status,
