@@ -11,6 +11,7 @@ for work again, not what it finds.
 
 import dataclasses
 import hashlib
+import statistics
 import threading
 import time
 import uuid
@@ -23,6 +24,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app import (
     detection,
+    enrichment,
     observability,
     normalization,
     nvidia_active_speaker,
@@ -62,6 +64,7 @@ from app.api.analyses import active_analyses
 from app.auth import generate_api_key
 from app.db.models import (
     Analysis,
+    AnalysisEnrichmentTask,
     AnalysisJob,
     AnalysisSegment,
     AnalysisSignal,
@@ -281,10 +284,20 @@ def fake_storage(monkeypatch):
             self.paths.append(Path(file_path))
             if self.error:
                 raise self.error
-            # Distinguishable per artifact, so a test can tell which object was handed to
-            # which evidence source rather than trusting the key it was asked for.
+            # An object that was stored is served back as it was stored. Since R10-T2 that
+            # matters rather than being pedantry: the decision phase uploads the derivative
+            # and the enrichment phase downloads it again in a later poll, so this is the only
+            # thing that carries one artifact between the two, exactly as MinIO does in
+            # production. A fake that handed back stand-in bytes would have let a test pass
+            # while the two phases read different media.
+            #
+            # Anything never stored is distinguishable per artifact, so a test can still tell
+            # which object was handed to which evidence source rather than trusting the key it
+            # was asked for.
             Path(file_path).write_bytes(
-                ORIGINAL_BYTES if key.startswith("originals/") else VIDEO_BYTES
+                self.uploaded_bytes.get(
+                    key, ORIGINAL_BYTES if key.startswith("originals/") else VIDEO_BYTES
+                )
             )
 
         def bucket_exists(self, bucket):
@@ -780,6 +793,32 @@ def read_media(analysis_id) -> MediaFile:
         return reader.query(MediaFile).filter_by(analysis_id=analysis_id).one()
 
 
+def run_full_analysis(session):
+    """Run a job the way the deployed loop runs one: the fast decision, then Deep Evidence.
+
+    R10-T2 split what used to be a single `process_one` into two phases over two polls. The
+    verdict is published by the first and is final from that instant; the evidence-only
+    detectors — LipForensics, Effort, active speaker, AASIST — run in the second, against the
+    derivative the first uploaded.
+
+    Every test below that asserts one of those four signals uses this rather than
+    `worker.process_one`, because a single call no longer produces them and asserting that it
+    does would be asserting the architecture R10 removed. Tests that are about the *decision* —
+    what is claimed, what is fetched, when the verdict is published — deliberately keep calling
+    `worker.process_one` alone: that they still pass while producing only three signals is
+    itself the property R10 exists to create.
+
+    The loop drains, because `enrichment.process_one` takes one analysis per call and a test
+    may have left more than one behind.
+    """
+    worked = worker.process_one(session)
+
+    while enrichment.process_one(session):
+        pass
+
+    return worked
+
+
 @pytest.mark.integration
 def test_claiming_a_job_marks_it_processing_and_commits(queue):
     analysis_id, job_id = queue()
@@ -1029,7 +1068,7 @@ def test_both_evidence_sources_are_persisted_as_independent_signals(queue, fake_
     analysis_id, job_id = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
@@ -1228,6 +1267,10 @@ def run_loop(monkeypatch, outcomes):
     # belongs to `tests/test_shadow_mode.py`; here it is stubbed out so these tests stay
     # about when the loop pauses and nothing else.
     monkeypatch.setattr(worker.shadow, "process_one", lambda _session: False)
+    # And Deep Evidence, which an idle poll also looks for since R10-T2. Stubbed for the same
+    # reason shadow is: what it does against a real queue belongs to
+    # `tests/test_enrichment.py`, and these tests are about when the loop pauses.
+    monkeypatch.setattr(worker.enrichment, "process_one", lambda _session: False)
     monkeypatch.setattr(worker, "SessionLocal", lambda: _NullSession())
     worker.run(stopping, sleep=clock)
 
@@ -1441,29 +1484,40 @@ def test_a_timed_out_transcode_records_only_the_failure_kind(
 
 
 @pytest.mark.integration
-def test_audio_extraction_that_ran_out_of_time_fails_the_job(
+def test_audio_extraction_that_ran_out_of_time_no_longer_fails_the_analysis(
     queue, fake_storage, fake_audio
 ):
+    """R10-T2 inverted this, deliberately, and it is the clearest case in the suite.
+
+    Before R10 the audio chain ran inside the decision job, so an extraction that breached its
+    deadline failed the whole analysis: no verdict, `analyses.status` = `failed`, and a
+    customer told that nothing could be determined about their media — because of a limit this
+    worker set on a detector that, under `r9-v5.0.0`, decides nothing.
+
+    Deep Evidence failures never destroy Fast Decisions (§7.4). The audio chain is enrichment
+    now, so the timeout costs the two audio components and reaches nothing else: the verdict
+    is published from SVD and B7 as it always would have been, the job is `completed`, and the
+    analysis is `DECIDED` beside `ENRICHMENT_PARTIAL`.
+    """
     analysis_id, job_id = queue()
     fake_audio.error = speaker_diarization.SpeakerDiarizationTimeout(
         "Audio extraction timed out after 300s"
     )
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
-    # The audio side of the same rule: the job is failed, because it did not finish.
-    assert read_job(job_id).status == "failed"
-    assert read_job(job_id).error_message == "SpeakerDiarizationTimeout"
-    assert read_analysis(analysis_id).status == "failed"
+    # The decision finished and nothing about the audio chain was in its way.
+    assert read_job(job_id).status == "completed"
+    assert read_job(job_id).error_message is None
+    assert read_analysis(analysis_id).status == "completed"
+    assert read_analysis(analysis_id).risk_level is not None
 
     signals = read_signals(analysis_id)
-    # But the readings taken before the extraction was attempted are complete and independent
-    # of it, so they are kept rather than discarded with the job. Only the two signals the
-    # timeout actually prevented are absent.
-    #
-    # All three local readings are among the survivors because they run before the audio chain
-    # and need nothing from it — which is the whole reason they were placed there.
+    # Everything the timeout did not prevent is here, across both phases. The two signals it
+    # did prevent are absent rather than written as `FAILED` rows: a timeout is a statement
+    # about this worker, and recording one as evidence would attribute the machine's condition
+    # to the video.
     assert set(signals) == {
         "provenance",
         "synthetic_video",
@@ -1474,22 +1528,47 @@ def test_audio_extraction_that_ran_out_of_time_fails_the_job(
     assert "active_speaker" not in signals
     assert "audio_authenticity" not in signals
 
+    # And it is readable per component, which is what makes `ENRICHMENT_PARTIAL` traceable.
+    with SessionLocal() as session:
+        tasks = {
+            (task.provider, task.signal_type): task
+            for task in session.query(AnalysisEnrichmentTask)
+            .filter_by(analysis_id=analysis_id)
+            .all()
+        }
+        assert enrichment.analysis_states(session, analysis_id) == (
+            enrichment.DECIDED,
+            enrichment.ENRICHMENT_PARTIAL,
+        )
+
+    assert tasks[("nvidia", "active_speaker")].status == "failed"
+    assert tasks[("nvidia", "active_speaker")].error_message == "SpeakerDiarizationTimeout"
+    assert tasks[("aasist", "audio_authenticity")].status == "failed"
+    # The readings taken before the audio chain are complete and independent of it, so a
+    # failure there leaves them standing (rule 11).
+    assert tasks[("lipforensics", "lip_forensics")].status == "completed"
+
 
 @pytest.mark.integration
 def test_evidence_produced_before_a_timeout_survives_it(
     queue, fake_storage, fake_audio, fake_nvidia
 ):
+    """The regression this test exists for, restated under the two-phase pipeline.
+
+    NVIDIA answered, and the answer is a complete, self-contained reading of this media (rule
+    11). A later timeout in the unrelated audio chain does not make it less true. What changed
+    in R10-T2 is that the timeout no longer even reaches the job that published it: the
+    synthetic-video signal and the verdict taken from it are committed and closed before the
+    audio chain is attempted at all.
+    """
     analysis_id, job_id = queue()
     fake_audio.error = speaker_diarization.SpeakerDiarizationTimeout(
         "Audio extraction timed out after 300s"
     )
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
-    # The regression this test exists for: NVIDIA answered, and the answer is a complete,
-    # self-contained reading of this media (rule 11). A later timeout in the unrelated audio
-    # chain does not make it less true, and the job failing must not take it down with it.
     signal = read_signals(analysis_id)["synthetic_video"]
     assert signal.status == "SUCCESS"
     assert signal.score == NVIDIA_PROBABILITY
@@ -1500,15 +1579,14 @@ def test_evidence_produced_before_a_timeout_survives_it(
     # write that dropped them would leave a scored signal with nothing behind it.
     assert read_segments(signal.id)
 
-    # And the analysis is still failed and still unclassified. Keeping the evidence must not
-    # turn a job that did not finish into one that did, and no rule was run over a partial
-    # evidence set: a null risk level is the absence of a conclusion, not `UNKNOWN`, which
-    # is a conclusion an explicit rule reached.
+    # And the analysis is decided, which is the half of this that R10 changed. A verdict was
+    # reached from the decision-eligible evidence, and an enrichment timeout is not entitled
+    # to take it away.
     analysis = read_analysis(analysis_id)
-    assert analysis.status == "failed"
-    assert analysis.risk_level is None
-    assert analysis.risk_rule_id is None
-    assert read_job(job_id).error_message == "SpeakerDiarizationTimeout"
+    assert analysis.status == "completed"
+    assert analysis.risk_level is not None
+    assert analysis.risk_rule_id is not None
+    assert read_job(job_id).error_message is None
 
 
 @pytest.mark.integration
@@ -1596,7 +1674,7 @@ def test_all_five_evidence_sources_are_persisted_as_independent_signals(
     analysis_id, job_id = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
@@ -1695,7 +1773,7 @@ def test_real_speaking_times_are_persisted(queue, fake_storage):
     analysis_id, _ = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     segments = read_segments(read_signals(analysis_id)["active_speaker"].id)
 
@@ -1710,7 +1788,7 @@ def test_speaking_segments_carry_the_labels_the_model_reported(queue, fake_stora
     analysis_id, _ = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     segments = read_segments(read_signals(analysis_id)["active_speaker"].id)
 
@@ -1724,7 +1802,7 @@ def test_speaking_segments_invent_no_clip_evidence(queue, fake_storage):
     analysis_id, _ = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     segments = read_segments(read_signals(analysis_id)["active_speaker"].id)
 
@@ -1759,7 +1837,7 @@ def test_each_signal_owns_only_its_own_evidence(queue, fake_storage):
     analysis_id, _ = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
@@ -1776,7 +1854,7 @@ def test_the_signal_records_the_rate_the_frames_were_read_against(queue, fake_st
     analysis_id, _ = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     metadata = read_signals(analysis_id)["active_speaker"].signal_metadata
 
@@ -1795,7 +1873,7 @@ def test_nvidia_is_given_deterministically_numbered_speakers(queue, fake_storage
     queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     _, diarization, _ = fake_active_speaker.calls[0]
 
@@ -1814,7 +1892,7 @@ def test_the_prepared_artifact_is_what_both_nvidia_signals_see(
     queue(was_normalized=True)
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     video_bytes, _, _ = fake_active_speaker.calls[0]
 
@@ -1829,7 +1907,7 @@ def test_the_audio_is_extracted_once_from_that_artifact(
     queue(was_normalized=True)
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     # One extraction for the whole job: doing it per consumer would decode the same media
     # three times to produce three identical files.
@@ -1852,7 +1930,7 @@ def test_the_temporary_wav_is_removed_afterwards(queue, fake_storage, fake_audio
     queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     _, destination = fake_audio.calls[0]
     # A container that ran for a week would otherwise hold one WAV per analysed video.
@@ -1869,7 +1947,7 @@ def test_media_with_no_audio_keeps_the_other_two_signals(queue, fake_storage, fa
     fake_audio.error = speaker_diarization.SpeakerDiarizationAudioError("no audio stream")
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
@@ -1904,7 +1982,7 @@ def test_an_unconfigured_diarizer_costs_only_its_own_signal(
     )
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
@@ -1927,7 +2005,7 @@ def test_an_active_speaker_refusal_does_not_touch_the_other_signals(
     )
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
@@ -1948,7 +2026,7 @@ def test_an_active_speaker_timeout_is_told_apart_from_a_refusal(
     )
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     # NVIDIA may still have been working, which says nothing about the media either way.
     assert read_signals(analysis_id)["active_speaker"].status == "TIMEOUT"
@@ -1963,7 +2041,7 @@ def test_a_synthetic_video_failure_does_not_cost_the_speaker_timeline(
     fake_nvidia.error = nvidia_video.NvidiaProviderTimeout("deadline exceeded")
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
@@ -1977,30 +2055,48 @@ def test_a_synthetic_video_failure_does_not_cost_the_speaker_timeline(
 def test_media_that_cannot_be_transcoded_fails_every_artifact_signal(
     queue, fake_storage, fake_ffmpeg
 ):
-    """All three read the prepared artifact, so none is reachable without it.
+    """Media that cannot be prepared is a fact about the media, and each path records it once.
 
-    The audio the local checkpoint reads is extracted from that artifact too, which is why
-    a failed transcode reaches it as well even though it calls no provider.
+    NVIDIA was asked about this media and had no answer — it takes MP4 and nothing else — so
+    the fast path writes a `FAILED` synthetic-video signal and completes the job. The verdict
+    is taken from that, which is a real classification over real evidence.
+
+    The Deep Evidence components were never asked anything. R10-T2 records that on their task
+    rows rather than as `FAILED` signals: there is no artifact to read, no detector was
+    invoked, and a `FAILED` signal row means a source was asked and could not answer. The
+    reason is legible per component, which is what §7.4 requires of an enrichment failure, and
+    the forensic record keeps saying only what actually happened.
     """
     analysis_id, job_id = queue(was_normalized=True)
     fake_ffmpeg.error = normalization.NormalizationError("ffmpeg exited with 1")
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
     assert read_job(job_id).status == "completed"
     assert signals["synthetic_video"].status == "FAILED"
-    assert signals["active_speaker"].status == "FAILED"
-    assert signals["audio_authenticity"].status == "FAILED"
-    # Each records the gap in its own right rather than one standing in for the other.
-    assert signals["active_speaker"].signal_type == "active_speaker"
-    assert signals["active_speaker"].signal_metadata == {"error": "NormalizationError"}
-    assert signals["audio_authenticity"].provider == "aasist"
-    assert signals["audio_authenticity"].signal_metadata == {"error": "NormalizationError"}
+    assert signals["synthetic_video"].signal_metadata == {"error": "NormalizationError"}
     # And the source that had already answered keeps its evidence.
     assert signals["provenance"].status == "SUCCESS"
+
+    # The evidence-only rows are absent rather than failed, and the reason lives on the tasks.
+    assert "active_speaker" not in signals
+    assert "audio_authenticity" not in signals
+
+    with SessionLocal() as session:
+        tasks = (
+            session.query(AnalysisEnrichmentTask).filter_by(analysis_id=analysis_id).all()
+        )
+        assert {task.status for task in tasks} == {"failed"}
+        assert {task.error_message for task in tasks} == {
+            enrichment.MISSING_ARTIFACT_ERROR
+        }
+        assert enrichment.analysis_states(session, analysis_id) == (
+            enrichment.DECIDED,
+            enrichment.ENRICHMENT_FAILED,
+        )
 
 
 @pytest.mark.integration
@@ -2013,7 +2109,7 @@ def test_an_active_speaker_failure_leaves_no_temp_files_behind(
     )
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     _, destination = fake_audio.calls[0]
     assert not destination.exists()
@@ -2029,7 +2125,7 @@ def test_the_audio_signal_is_persisted_without_a_file_level_score(queue, fake_st
     analysis_id, _ = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signal = read_signals(analysis_id)["audio_authenticity"]
 
@@ -2047,7 +2143,7 @@ def test_audio_windows_are_persisted_chronologically_with_both_logits(queue, fak
     analysis_id, _ = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     segments = read_segments(read_signals(analysis_id)["audio_authenticity"].id)
 
@@ -2067,7 +2163,7 @@ def test_audio_window_bounds_are_the_preprocessing_boundaries(queue, fake_storag
     analysis_id, _ = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signal = read_signals(analysis_id)["audio_authenticity"]
     segments = read_segments(signal.id)
@@ -2090,7 +2186,7 @@ def test_the_audio_signal_records_what_produced_its_windows(queue, fake_storage)
     analysis_id, _ = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     metadata = read_signals(analysis_id)["audio_authenticity"].signal_metadata
 
@@ -2138,7 +2234,7 @@ def test_a_truncated_audio_sweep_says_so_on_the_signal(queue, fake_storage, fake
     analysis_id, _ = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signal = read_signals(analysis_id)["audio_authenticity"]
     segments = read_segments(signal.id)
@@ -2166,7 +2262,7 @@ def test_a_clip_with_no_face_is_a_failed_signal_and_not_a_score(
     fake_face_detector.error = FaceDetectorNoFaceFound("no face in any sampled frame")
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
     face = signals["face_manipulation"]
@@ -2193,7 +2289,7 @@ def test_a_broken_face_classifier_costs_only_the_face_signal(
     fake_face_detector.error = FaceDetectorModelUnavailable("weights are missing")
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
@@ -2217,7 +2313,7 @@ def test_a_broken_lip_forensics_model_costs_only_the_lip_forensics_signal(
     fake_lip_forensics.error = LipForensicsModelUnavailable("weights are missing")
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
@@ -2242,7 +2338,7 @@ def test_a_clip_with_no_trackable_face_is_an_abstention_not_a_low_score(
     fake_lip_forensics.error = LipForensicsNoTrackedFace("no run held a face")
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
@@ -2260,7 +2356,7 @@ def test_the_lip_forensics_model_reads_the_same_artifact_the_others_do(
     queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     assert fake_lip_forensics.analysed_bytes == [ORIGINAL_BYTES]
     assert fake_lip_forensics.analysed_bytes == fake_nvidia.analysed_bytes
@@ -2290,13 +2386,13 @@ def test_the_lip_forensics_signal_no_longer_changes_the_coverage_of_a_verdict(
 
     with_signal, _ = queue()
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     fake_lip_forensics.error = LipForensicsModelUnavailable("weights are missing")
 
     without_signal, _ = queue()
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     scored = read_analysis(with_signal)
     unscored = read_analysis(without_signal)
@@ -2335,7 +2431,7 @@ def test_an_emphatic_lip_forensics_score_does_not_produce_a_finding_on_its_own(
     )
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     analysis = read_analysis(analysis_id)
     signals = read_signals(analysis_id)
@@ -2359,7 +2455,7 @@ def test_a_quiet_mouth_dynamics_score_cannot_hold_back_another_detectors_finding
     analysis_id, _ = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     analysis = read_analysis(analysis_id)
 
@@ -2397,7 +2493,7 @@ def test_a_face_score_below_its_threshold_does_not_produce_a_finding(
     fake_nvidia.probability = 0.4646
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     analysis = read_analysis(analysis_id)
     signals = read_signals(analysis_id)
@@ -2473,39 +2569,39 @@ def test_media_that_cannot_be_transcoded_leaves_no_local_signal_at_all(
 ):
     """A detector that was never invoked leaves no row — not a `FAILED` one.
 
-    The two states must not be merged. A `FAILED` face-manipulation signal is a finding:
-    the classifier ran and could not produce evidence, which is what a missing checkpoint,
-    an unverified torch or a clip with no face in it each record. Nothing of the sort
-    happened here — the transcode raised before the call that runs the classifier was ever
-    reached — so writing a failure would be recording a finding nobody made, and would put
-    this detector's name on a gap it had no part in.
+    The two states must not be merged. A `FAILED` face-manipulation signal is a finding: the
+    classifier ran and could not produce evidence, which is what a missing checkpoint, an
+    unverified torch or a clip with no face in it each record. Nothing of the sort happened
+    here — the transcode raised before the call that runs the classifier was ever reached — so
+    writing a failure would be recording a finding nobody made, and would put this detector's
+    name on a gap it had no part in.
 
-    The other three artifact-dependent signals *are* written as `FAILED` on this path, and
-    that asymmetry is the point rather than an inconsistency: each of those sources was
-    genuinely asked about this media and had no answer, because NVIDIA takes MP4 and
-    nothing else and the audio is demuxed from the same derivative that never existed.
+    The synthetic-video signal *is* written as `FAILED` on this path, and that asymmetry is
+    the point rather than an inconsistency: NVIDIA was genuinely asked about this media and
+    had no answer, because it takes MP4 and nothing else.
+
+    Since R10-T2 the same reasoning covers LipForensics from the other side of the split. It
+    is not invoked because there was no artifact for the enrichment phase to fetch, so it
+    writes no row either — and the two detectors reach that same absence by two different
+    routes, one inside the decision job and one outside it.
     """
     analysis_id, job_id = queue(was_normalized=True)
     fake_ffmpeg.error = normalization.NormalizationError("ffmpeg refused the source")
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
     assert read_job(job_id).status == "completed"
-    # The rows are absent, and the local checkpoints are what were never invoked to produce
-    # them. Both, not only the first: they run together, past the transcode that failed.
     assert "face_manipulation" not in signals
     assert "lip_forensics" not in signals
     assert fake_face_detector.video_paths == []
     assert fake_lip_forensics.video_paths == []
 
-    # The sources that *were* asked keep their failures, and the provenance read off the
-    # forensic original before any of this survives untouched.
+    # The source that *was* asked keeps its failure, and the provenance read off the forensic
+    # original before any of this survives untouched.
     assert signals["synthetic_video"].status == "FAILED"
-    assert signals["active_speaker"].status == "FAILED"
-    assert signals["audio_authenticity"].status == "FAILED"
     assert signals["provenance"].status == "SUCCESS"
 
 
@@ -2543,7 +2639,7 @@ def test_a_broken_checkpoint_costs_only_the_audio_signal(queue, fake_storage, fa
     fake_aasist.error = AudioDetectorModelUnavailable("checkpoint is missing")
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
@@ -2573,7 +2669,7 @@ def test_an_unconfigured_diarizer_does_not_cost_the_audio_windows(
     )
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
 
@@ -2588,7 +2684,7 @@ def test_the_other_evidence_rows_are_unchanged_by_the_audio_signal(queue, fake_s
     analysis_id, _ = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     signals = read_signals(analysis_id)
     clips = read_segments(signals["synthetic_video"].id)
@@ -2727,7 +2823,7 @@ def test_a_provider_failure_falls_back_to_the_other_detector(
     analysis_id, _ = queue()
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
     analysis = read_analysis(analysis_id)
     signals = read_signals(analysis_id)
@@ -2771,26 +2867,25 @@ def test_the_engine_is_run_against_the_evidence_that_was_committed(
 
     The engine is intercepted to look the analysis up itself: whatever it sees must already
     be committed, which is only true if the evidence transaction closed before it ran.
+
+    Since R10-T2 this also demonstrates §3.2, which is the load-bearing claim of the whole
+    phase. The fast decision runs before LipForensics has executed, so the lip argument is
+    still fetched, still passed, and is now **absent** — and under `r9-v5.0.0` absent is
+    indistinguishable in outcome from present, because the ruleset reads it nowhere. The
+    worker does not start deciding which arguments the engine is entitled to read; that has
+    always been the engine's business.
     """
     seen = {}
 
     def spy(svd_evidence, face_evidence, lip_evidence):
         with SessionLocal() as reader:
-            seen["committed"] = (
-                reader.query(AnalysisSignal)
-                .filter_by(analysis_id=analysis_id, signal_type="synthetic_video")
-                .one()
-            )
-            seen["committed_face"] = (
-                reader.query(AnalysisSignal)
-                .filter_by(analysis_id=analysis_id, signal_type="face_manipulation")
-                .one()
-            )
-            seen["committed_lip"] = (
-                reader.query(AnalysisSignal)
-                .filter_by(analysis_id=analysis_id, signal_type="lip_forensics")
-                .one()
-            )
+            committed = {
+                signal.signal_type: signal
+                for signal in reader.query(AnalysisSignal)
+                .filter_by(analysis_id=analysis_id)
+                .all()
+            }
+        seen["committed"] = committed
         seen["evidence"] = svd_evidence
         seen["face_evidence"] = face_evidence
         seen["lip_evidence"] = lip_evidence
@@ -2801,22 +2896,26 @@ def test_the_engine_is_run_against_the_evidence_that_was_committed(
     monkeypatch.setattr(worker, "evaluate_v5", spy)
 
     with SessionLocal() as session:
-        worker.process_one(session)
+        run_full_analysis(session)
 
-    # Read on a separate connection while the engine was running: the row was already there.
-    assert seen["committed"].score == NVIDIA_PROBABILITY
+    # Read on a separate connection while the engine was running: the rows were already there.
+    assert seen["committed"]["synthetic_video"].score == NVIDIA_PROBABILITY
     assert seen["evidence"].score == NVIDIA_PROBABILITY
     assert seen["evidence"].provider_version == NVIDIA_FUNCTION_ID
     assert seen["evidence"].total_clips == 7
-    # All three calibrated signals are read back from the committed rows, not carried over.
-    assert seen["committed_face"].score == FACE_SCORE
+    # Both decision-eligible signals are read back from the committed rows, not carried over.
+    assert seen["committed"]["face_manipulation"].score == FACE_SCORE
     assert seen["face_evidence"].score == FACE_SCORE
     assert seen["face_evidence"].provider_version == FACETORCH_CHECKPOINT
     assert seen["face_evidence"].frames_scored == 6
-    assert seen["committed_lip"].score == LIP_FORENSICS_SCORE
-    assert seen["lip_evidence"].score == LIP_FORENSICS_SCORE
-    assert seen["lip_evidence"].provider_version == LIPFORENSICS_MODEL
-    assert seen["lip_evidence"].windows_scored == 3
+
+    # And the evidence-only row is not there yet, because it had not run yet. This is the
+    # latency R10 exists to remove, observed at the moment the verdict is taken.
+    assert "lip_forensics" not in seen["committed"]
+    assert seen["lip_evidence"] is None
+
+    # It arrives afterwards, against the same analysis, and changes nothing about the verdict.
+    assert read_signals(analysis_id)["lip_forensics"].score == LIP_FORENSICS_SCORE
 
 
 @pytest.mark.integration
@@ -2827,6 +2926,11 @@ def test_a_classification_that_breaks_fails_the_job_but_keeps_the_evidence(
 
     A defect in the engine must not be swallowed as a verdict, and must not cost the
     analysis the forensic evidence that was already written down.
+
+    It also shows where enrichment is *not* queued. Deep Evidence is scheduled on the way out
+    of a decision that succeeded, from the ruleset that decision was taken under — so a job
+    that never reached a verdict queues none, and the analysis has no enrichment axis at all
+    (§8.1). Enrichment supplements an answer; there is no answer here to supplement.
     """
     analysis_id, job_id = queue()
 
@@ -2836,7 +2940,7 @@ def test_a_classification_that_breaks_fails_the_job_but_keeps_the_evidence(
     monkeypatch.setattr(worker, "evaluate_v5", broken)
 
     with SessionLocal() as session:
-        assert worker.process_one(session) is True
+        assert run_full_analysis(session) is True
 
     analysis = read_analysis(analysis_id)
     signals = read_signals(analysis_id)
@@ -2847,18 +2951,22 @@ def test_a_classification_that_breaks_fails_the_job_but_keeps_the_evidence(
     assert analysis.status == "failed"
     assert analysis.risk_level is None
     assert analysis.risk_rules_version is None
-    # And every forensic signal the job produced is still there.
-    assert set(signals) == {
-        "provenance",
-        "synthetic_video",
-        "active_speaker",
-        "audio_authenticity",
-        "face_manipulation",
-        "face_forgery",
-        "lip_forensics",
-    }
+    # And every forensic signal the fast decision produced is still there.
+    assert set(signals) == {"provenance", "synthetic_video", "face_manipulation"}
     assert signals["synthetic_video"].score == NVIDIA_PROBABILITY
     assert len(read_segments(signals["synthetic_video"].id)) == 2
+
+    with SessionLocal() as session:
+        assert (
+            session.query(AnalysisEnrichmentTask)
+            .filter_by(analysis_id=analysis_id)
+            .count()
+            == 0
+        )
+        assert enrichment.analysis_states(session, analysis_id) == (
+            enrichment.DECISION_FAILED,
+            enrichment.ENRICHMENT_NOT_APPLICABLE,
+        )
 
 
 # --- stale job recovery (P9-F1) -----------------------------------------------------------
@@ -3535,3 +3643,258 @@ def test_a_derivative_that_cannot_be_measured_still_completes_the_job(
     # The artifact itself was produced, stored and recorded regardless.
     assert media.derivative_storage_key in fake_storage.uploaded_bytes
     assert read_job(job_id).status == "completed"
+
+
+# --- R10 fast-path priority probe (R10-T2) ------------------------------------------------
+#
+# §4.2: "Deep Evidence must never contend for a resource in a way that can starve the Fast
+# Decision Path. If the two share a GPU or a concurrency slot, the fast path takes priority.
+# Latency regression on the fast path is a failure of R10 even if every verdict is correct."
+#
+# That is three separate claims and they are checked separately below: the loop asks in the
+# right order, a backlog cannot get in front of a queued job, and the decision costs no more
+# wall time with enrichment work waiting than without it.
+
+
+def test_the_loop_asks_for_a_decision_job_before_it_asks_for_enrichment(monkeypatch):
+    """The ordering, checked against the real loop rather than a restatement of it.
+
+    This is where the priority actually lives. There is no weighting, no quota and no
+    scheduler: `run` asks for a queued job on every pass, and only a pass that found none goes
+    looking for Deep Evidence. So the property to demonstrate is that enrichment is never
+    consulted on a poll where a decision job was claimed.
+    """
+    stopping = worker.Stopping()
+    calls = []
+    # Two polls that find a job, then one that does not, then stop.
+    decisions = [True, True, False]
+
+    def decision(_session):
+        calls.append("decision")
+        if not decisions:
+            stopping.requested = True
+            return True
+        return decisions.pop(0)
+
+    def deep_evidence(_session):
+        calls.append("enrichment")
+        return False
+
+    monkeypatch.setattr(worker, "process_one", decision)
+    monkeypatch.setattr(worker.enrichment, "process_one", deep_evidence)
+    monkeypatch.setattr(worker.shadow, "process_one", lambda _session: False)
+    monkeypatch.setattr(worker, "SessionLocal", lambda: _NullSession())
+
+    worker.run(stopping, sleep=FakeClock())
+
+    # Every poll begins with the decision question.
+    assert calls[0] == "decision"
+    # And enrichment is reached exactly once — on the third poll, the one that found no job.
+    assert calls == ["decision", "decision", "decision", "enrichment", "decision"]
+
+
+@pytest.mark.integration
+def test_an_enrichment_backlog_cannot_get_in_front_of_a_queued_job(queue, fake_storage):
+    """Starvation, against a real backlog and real queued work.
+
+    Twelve Deep Evidence components are waiting — three analyses' worth — when four uploads
+    arrive. Every one of the four is claimed and decided before a single component is claimed,
+    and the backlog is untouched throughout. The test above proves the loop asks in this
+    order; this proves the queues behave when it does.
+    """
+    backlog = []
+    for _ in range(3):
+        analysis_id, _ = queue()
+        with SessionLocal() as session:
+            worker.process_one(session)
+        backlog.append(analysis_id)
+
+    def queued_components():
+        with SessionLocal() as session:
+            return (
+                session.query(AnalysisEnrichmentTask)
+                .filter(
+                    AnalysisEnrichmentTask.analysis_id.in_(backlog),
+                    AnalysisEnrichmentTask.status == "queued",
+                )
+                .count()
+            )
+
+    waiting = queued_components()
+    assert waiting == 12, "the backlog this test needs was not queued"
+
+    # Four uploads arrive behind that backlog.
+    arriving = [queue()[0] for _ in range(4)]
+
+    decided = []
+    for _ in range(4):
+        with SessionLocal() as session:
+            # The loop's first question, every time. It must find work.
+            claimed = worker.claim_job(session)
+            assert claimed is not None, "a queued decision job was passed over for enrichment"
+            decided.append(claimed.analysis_id)
+
+    assert sorted(decided) == sorted(arriving)
+    # Not one component was claimed while decision work existed.
+    assert queued_components() == waiting
+
+
+@pytest.mark.integration
+def test_the_decision_costs_no_more_with_an_enrichment_backlog_waiting(queue, fake_storage):
+    """Latency, measured rather than argued — and measured the way a noisy box allows.
+
+    Deliberately not a test for zero jitter. Detector calls are faked here, so what is being
+    timed is the decision path's own database and orchestration work, on a container that is
+    also running PostgreSQL and whatever else the suite left behind. An exact-millisecond
+    assertion would fail on load and prove nothing when it passed.
+
+    What it does assert is that there is no *meaningful repeatable* regression, and it is
+    built to make that claim survivable: the two conditions are interleaved so that drift in
+    machine load falls on both equally, medians are compared rather than means so one paused
+    container cannot carry the result, and the bound is generous with an absolute floor so a
+    sub-millisecond baseline cannot be tripped by scheduler noise.
+
+    The reason it should hold flat is structural, and the measurement is a check on the
+    structure rather than the argument for it: `process_one` claims from `analysis_jobs` and
+    touches no enrichment table, so a backlog is not merely deprioritised — it is not on the
+    decision path's critical path at all.
+    """
+    rounds = 5
+    with_backlog, without_backlog = [], []
+
+    for index in range(rounds):
+        # Interleaved: each round times one decision under each condition, so any drift in
+        # machine load over the run falls on both series rather than on whichever ran last.
+        for loaded in (True, False):
+            if loaded:
+                enriching, _ = queue()
+                with SessionLocal() as session:
+                    worker.process_one(session)
+
+            queue()
+            with SessionLocal() as session:
+                started = time.perf_counter()
+                assert worker.process_one(session) is True
+                elapsed = time.perf_counter() - started
+
+            (with_backlog if loaded else without_backlog).append(elapsed)
+
+    loaded_median = statistics.median(with_backlog)
+    quiet_median = statistics.median(without_backlog)
+
+    # A generous ratio with an absolute floor. The floor is what keeps a very fast baseline
+    # from making the ratio meaningless: doubling 2ms is noise, not a regression.
+    allowed = max(quiet_median * 3.0, quiet_median + 0.100)
+
+    # Printed, not merely asserted. A latency probe whose figures are invisible unless it
+    # fails tells an operator nothing about the margin it passed by, and the margin is what
+    # says whether the next change eroded it. `pytest -s` shows it.
+    print(
+        f"\nfast-path decision median: {quiet_median * 1000:.1f}ms quiet, "
+        f"{loaded_median * 1000:.1f}ms with a Deep Evidence backlog "
+        f"(allowed {allowed * 1000:.1f}ms, n={rounds} interleaved)"
+    )
+
+    assert loaded_median <= allowed, (
+        f"decision latency regressed with enrichment queued: median {loaded_median:.4f}s "
+        f"against {quiet_median:.4f}s quiet (allowed {allowed:.4f}s)"
+    )
+
+
+@pytest.mark.integration
+def test_an_enrichment_crash_and_retry_cannot_move_the_decision_job(queue, fake_storage, monkeypatch):
+    """Invariant I11 at the row level: the decision *job* is as untouchable as the verdict.
+
+    The analysis is checked elsewhere in this suite; what is checked here is `analysis_jobs`,
+    which is the row a recovery path could plausibly reach for — it is the one enrichment
+    would have shared had R10-T2 widened it instead of adding a table. Every column is
+    compared, `updated_at` included, so an idempotent-looking rewrite is caught too.
+    """
+    analysis_id, job_id = queue()
+
+    with SessionLocal() as session:
+        worker.process_one(session)
+
+    def snapshot():
+        with SessionLocal() as session:
+            job = session.get(AnalysisJob, job_id)
+            return (
+                job.status,
+                job.error_message,
+                job.lease_expires_at,
+                job.created_at,
+                job.updated_at,
+                job.analysis_id,
+                job.request_id,
+            )
+
+    before = snapshot()
+    assert before[0] == "completed"
+
+    # The enrichment worker collapses, twice, with a retry in between.
+    def explode(storage_key, path):
+        raise RuntimeError("the object store went away")
+
+    monkeypatch.setattr(enrichment, "fetch_object", explode)
+
+    with SessionLocal() as session:
+        assert enrichment.process_one(session) is True
+        assert snapshot() == before
+
+        # Retried, as an operator or a recovery would.
+        session.execute(
+            AnalysisEnrichmentTask.__table__.update()
+            .where(AnalysisEnrichmentTask.analysis_id == analysis_id)
+            .values(status="queued", error_message=None)
+        )
+        session.commit()
+        assert enrichment.process_one(session) is True
+
+    assert snapshot() == before
+    # And the verdict with it.
+    assert read_analysis(analysis_id).status == "completed"
+    assert read_analysis(analysis_id).risk_level is not None
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "outcome",
+    ["succeeds", "fails", "times out"],
+)
+def test_provenance_never_holds_up_the_verdict(queue, fake_storage, fake_c2pa, outcome):
+    """§3.3: provenance is orthogonal, whatever becomes of it.
+
+    It answers a different question — is there independent source evidence? — and it enters no
+    coverage arithmetic under any ruleset. So it may not block the fast decision, and the
+    verdict completes whether it completes quickly, fails, returns nothing or times out.
+
+    The timeout is exercised as the exception it arrives as. `extract_provenance` catches
+    everything below it deliberately — the failure that matters to the caller is that
+    provenance is unknown, not which of the SDK's exceptions said so — so a deadline breach
+    and a broken SDK reach the worker identically, and neither reaches the verdict.
+    """
+    analysis_id, job_id = queue()
+
+    if outcome == "fails":
+        fake_c2pa.error = RuntimeError("the C2PA SDK fell over")
+    elif outcome == "times out":
+        fake_c2pa.error = TimeoutError("reading credentials outlived its limit")
+
+    with SessionLocal() as session:
+        assert worker.process_one(session) is True
+
+    # The verdict is published in every case, from the decision-eligible evidence alone.
+    analysis = read_analysis(analysis_id)
+    assert read_job(job_id).status == "completed"
+    assert analysis.status == "completed"
+    assert analysis.risk_level is not None
+    assert analysis.risk_rules_version is not None
+    assert analysis.risk_rule_id is not None
+
+    # And provenance records what happened to it, in its own right, beside the verdict.
+    provenance = read_signals(analysis_id)["provenance"]
+    assert provenance.status == ("SUCCESS" if outcome == "succeeds" else "FAILED")
+    # Never a score: provenance is a set of facts about a signature, not a figure on a scale.
+    assert provenance.score is None
+    assert provenance.risk_level is None
+

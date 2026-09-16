@@ -61,6 +61,7 @@ from app.face_detector import (
 from app.lip_forensics import (
     LipForensicsError,
     LipForensicsEvidence,
+    LipForensicsNoTrackedFace,
     analyze_lip_forensics,
 )
 from app.db.models import (
@@ -84,6 +85,7 @@ from app.nvidia_video import (
     analyze_video,
 )
 from app.speaker_diarization import (
+    SpeakerDiarizationAudioError,
     SpeakerDiarizationError,
     SpeakerTurn,
     diarize_speakers,
@@ -719,6 +721,48 @@ def unanalysable_audio(error: Exception) -> AnalysisSignal:
         # The failure kind, never the message: it can quote the local artifact's path.
         signal_metadata={"error": type(error).__name__},
     )
+
+
+# The failures above that are not failures: a detector that was asked, answered, and whose
+# answer is "there was nothing here to score" (R10-T1 §5.2).
+#
+# Every one of these is already recorded exactly as the failures beside it — a `FAILED` signal
+# carrying the exception's class name — and that is deliberate and stays. The *evidence* is a
+# reading that produced no score, which is what `FAILED` means on a signal row, and R9's
+# coverage arithmetic treats an abstention as unresolved coverage on purpose (see
+# `app.risk_engine`: a detector that abstained on difficult media must not *buy* complete
+# coverage by declining to look). Nothing here changes what is persisted or what any verdict
+# is taken from.
+#
+# What it is for is the *enrichment axis*, which asks a different question of the same row:
+# not "is this reading usable" but "did this component terminate successfully". §5.2 is
+# explicit that an abstention did — "It was asked, it answered, and its answer is evidence" —
+# so `app.enrichment` reads this set to tell an abstention apart from a checkpoint that was
+# missing, and R10-T3 is forbidden from rendering the two the same way.
+#
+# **Bound to the classes rather than to their spellings.** `__name__` rather than a string
+# literal, so a rename follows automatically and a deletion is an ImportError above rather than
+# a set that silently stops matching. A literal list here would be the drift this codebase
+# keeps refusing elsewhere — the same reason `app.enrichment` derives its membership from the
+# ruleset instead of naming detectors.
+#
+# Declared here, in the module that owns the detector integrations and already imports all
+# three, rather than in `app.enrichment`. Which failures are statements about the media is
+# detector knowledge; what an enrichment component does with that is orchestration, and the
+# two stay on their own sides of the line.
+ABSTENTION_ERRORS = frozenset(
+    {
+        # No run of frames held a face this model could track through all of them.
+        LipForensicsNoTrackedFace.__name__,
+        # No sampled frame yielded a face at all. R7-T9 abstained on 10.73% of genuine media.
+        EffortNoFaceDetected.__name__,
+        # The media carries no audio this pipeline can prepare — most often no audio stream at
+        # all, which is an ordinary property of an upload rather than a server fault. It is the
+        # one entry that abstains two components at once, because both were waiting on the same
+        # extraction: the speaker timeline and the audio windows.
+        SpeakerDiarizationAudioError.__name__,
+    }
+)
 
 
 def face_manipulation_metadata(evidence: FaceManipulationEvidence) -> dict:

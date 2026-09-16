@@ -490,6 +490,24 @@ def disposable_database(database):
         server.dispose()
 
 
+@pytest.fixture
+def database_at_the_widening(disposable_database):
+    """The disposable database wound back to the revision these downgrade tests are about.
+
+    `disposable_database` migrates to head, which is what the three tests above want: they ask
+    whether the chain from nothing still runs clean with a new revision on the end of it. The
+    downgrade tests want something narrower and are explicit about it since R10-T2 put a
+    revision after this one — they are about *this* migration's conditional downgrade, so they
+    start at this migration rather than at whatever happens to be last. `downgrade -1` from
+    head would otherwise reverse somebody else's revision and assert nothing about this one.
+    """
+    wound_back = alembic(["downgrade", THIS_REVISION], disposable_database)
+    assert wound_back.returncode == 0, wound_back.stderr
+    assert current_revision(disposable_database) == THIS_REVISION
+
+    return disposable_database
+
+
 def insert_analysis(url, risk_level: str | None) -> uuid.UUID:
     """Write one row straight into the disposable database, ORM uninvolved.
 
@@ -548,11 +566,18 @@ def current_revision(url) -> str:
         target.dispose()
 
 
-def test_a_fresh_database_migrates_to_head_at_the_new_revision(disposable_database):
-    """`alembic upgrade head` from empty lands on this revision with the wide columns."""
-    assert current_revision(disposable_database) == THIS_REVISION
+def test_a_fresh_database_migrates_to_head_with_the_wide_columns(disposable_database):
+    """`alembic upgrade head` from empty leaves both verdict columns wide.
+
+    The widening is asserted rather than the revision. R9-T8A was head when this was written
+    and R10-T2 put a revision after it, and the claim worth keeping was never "this migration
+    is last" — it was "a database built from nothing can hold an R9 verdict".
+    """
     assert stored_width(disposable_database, "analyses") == WIDTH
     assert stored_width(disposable_database, "analysis_signals") == WIDTH
+    # The widening is in the applied history, wherever head has moved to since.
+    history = alembic(["history"], disposable_database)
+    assert THIS_REVISION in history.stdout
 
 
 def test_the_migration_directory_has_exactly_one_head(disposable_database):
@@ -561,7 +586,6 @@ def test_the_migration_directory_has_exactly_one_head(disposable_database):
 
     assert heads.returncode == 0, heads.stderr
     assert len([line for line in heads.stdout.splitlines() if line.strip()]) == 1
-    assert THIS_REVISION in heads.stdout
 
 
 def test_the_models_and_the_migrated_schema_agree(disposable_database):
@@ -578,7 +602,7 @@ def test_the_models_and_the_migrated_schema_agree(disposable_database):
 
 @pytest.mark.parametrize("verdict", (*V4_VERDICTS, None))
 def test_downgrade_succeeds_when_every_stored_verdict_fits_the_old_width(
-    disposable_database, verdict
+    database_at_the_widening, verdict
 ):
     """A database that never stored a v5 verdict can still go back, as it always could.
 
@@ -587,19 +611,19 @@ def test_downgrade_succeeds_when_every_stored_verdict_fits_the_old_width(
     and a migration that could not be reversed in that state would be a one-way door bolted
     on for a risk that had not materialised.
     """
-    insert_analysis(disposable_database, verdict)
+    insert_analysis(database_at_the_widening, verdict)
 
-    downgraded = alembic(["downgrade", "-1"], disposable_database)
+    downgraded = alembic(["downgrade", "-1"], database_at_the_widening)
 
     assert downgraded.returncode == 0, downgraded.stderr
-    assert current_revision(disposable_database) == PREVIOUS_REVISION
-    assert stored_width(disposable_database, "analyses") == LEGACY_WIDTH
-    assert stored_width(disposable_database, "analysis_signals") == LEGACY_WIDTH
+    assert current_revision(database_at_the_widening) == PREVIOUS_REVISION
+    assert stored_width(database_at_the_widening, "analyses") == LEGACY_WIDTH
+    assert stored_width(database_at_the_widening, "analysis_signals") == LEGACY_WIDTH
 
 
 @pytest.mark.parametrize("verdict", V5_VERDICTS_TOO_LONG_FOR_THE_OLD_COLUMN)
 def test_downgrade_refuses_when_a_stored_verdict_is_too_long(
-    disposable_database, verdict
+    database_at_the_widening, verdict
 ):
     """The refusal, which is the whole point of the conditional downgrade.
 
@@ -609,26 +633,26 @@ def test_downgrade_refuses_when_a_stored_verdict_is_too_long(
     And both columns are still wide — no DDL was emitted at all, because the check runs
     before any of it.
     """
-    insert_analysis(disposable_database, verdict)
+    insert_analysis(database_at_the_widening, verdict)
 
-    downgraded = alembic(["downgrade", "-1"], disposable_database)
+    downgraded = alembic(["downgrade", "-1"], database_at_the_widening)
 
     assert downgraded.returncode != 0
-    assert current_revision(disposable_database) == THIS_REVISION
-    assert stored_width(disposable_database, "analyses") == WIDTH
-    assert stored_width(disposable_database, "analysis_signals") == WIDTH
+    assert current_revision(database_at_the_widening) == THIS_REVISION
+    assert stored_width(database_at_the_widening, "analyses") == WIDTH
+    assert stored_width(database_at_the_widening, "analysis_signals") == WIDTH
 
 
-def test_the_refusal_says_what_is_in_the_way(disposable_database):
+def test_the_refusal_says_what_is_in_the_way(database_at_the_widening):
     """The operator is told which table, how many rows, and which verdict.
 
     Asserted because the reason this check exists at all is legibility: PostgreSQL already
     refuses the narrowing on its own, and an error that did not name the offending value
     would be no more use than the one the server gives.
     """
-    insert_analysis(disposable_database, VERDICT_NO_SIGNAL)
+    insert_analysis(database_at_the_widening, VERDICT_NO_SIGNAL)
 
-    downgraded = alembic(["downgrade", "-1"], disposable_database)
+    downgraded = alembic(["downgrade", "-1"], database_at_the_widening)
     reported = downgraded.stdout + downgraded.stderr
 
     assert downgraded.returncode != 0
@@ -637,15 +661,15 @@ def test_the_refusal_says_what_is_in_the_way(disposable_database):
     assert str(LEGACY_WIDTH) in reported
 
 
-def test_the_guard_covers_the_signal_column_too(disposable_database):
+def test_the_guard_covers_the_signal_column_too(database_at_the_widening):
     """A long value in `analysis_signals.risk_level` blocks the downgrade as well.
 
     Nothing writes that column today, which is exactly why it is worth an assertion: a
     guard that only looked at `analyses` would pass every test above and truncate silently
     on the first database where the other column had been put to use.
     """
-    analysis_id = insert_analysis(disposable_database, None)
-    target = create_engine(disposable_database)
+    analysis_id = insert_analysis(database_at_the_widening, None)
+    target = create_engine(database_at_the_widening)
 
     try:
         with target.begin() as connection:
@@ -668,10 +692,10 @@ def test_the_guard_covers_the_signal_column_too(disposable_database):
     finally:
         target.dispose()
 
-    downgraded = alembic(["downgrade", "-1"], disposable_database)
+    downgraded = alembic(["downgrade", "-1"], database_at_the_widening)
     reported = downgraded.stdout + downgraded.stderr
 
     assert downgraded.returncode != 0
     assert "analysis_signals.risk_level" in reported
-    assert current_revision(disposable_database) == THIS_REVISION
-    assert stored_width(disposable_database, "analyses") == WIDTH
+    assert current_revision(database_at_the_widening) == THIS_REVISION
+    assert stored_width(database_at_the_widening, "analyses") == WIDTH

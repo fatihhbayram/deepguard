@@ -4,6 +4,28 @@ Uploads stage the forensic original and record that the rest is owed; nothing in
 ever transcodes or calls a detector. This is what does, in its own container, on its own
 schedule.
 
+Since R10-T2 a job is the **Fast Decision Path** and only that. It runs media acquisition and
+the normalization the deciding detectors need, NVIDIA SVD, EfficientNet-B7 and the provenance
+read, evaluates `evaluate_v5` over the evidence it committed, publishes the verdict, and is
+finished. The evidence-only detectors — LipForensics, Effort, active speaker, AASIST — are no
+longer in this path at all: they are Deep Evidence Enrichment, they run afterwards out of
+`app.enrichment`, and nothing in this file waits for them.
+
+The reason is latency, and the reason it is *safe* is `r9-v5.0.0`. Those four detectors are
+`evidence_only` under the live ruleset: they are counted in no coverage denominator, they can
+trip no rule, and their absence, failure or abstention removes no coverage. The job used to
+spend minutes on them before an analysis was allowed to reach `completed`, and the verdict at
+the end of those minutes was the verdict the first two detectors had already determined.
+`docs/architecture/R10_EXECUTION_CONTRACT.md` is the contract this implements, and §3.2 is
+specific about the consequence for `conclude_job`: the lip argument is still fetched and still
+passed, and it is now normally absent, which under v5 is indistinguishable in outcome from
+present.
+
+Provenance stays here (§3.3). It is cheap, it is independent, it is read from the forensic
+original rather than from a derivative, and it enters no coverage arithmetic under any ruleset
+— so where it runs is a latency decision carrying no semantic weight, and moving it would have
+bought nothing while changing the one reader that depends on seeing the original's bytes.
+
 Four transactions per job, never one:
 
 1. claim — take a `queued` job, mark it `processing`, commit, release the lock;
@@ -60,6 +82,16 @@ Normalization moved here in P4-F2 (D020). It used to run on the upload request u
 deadline that was really about how long a client would wait, which rejected a perfectly
 good 4K HEVC upload before anything had been analysed.
 
+An idle poll runs the Deep Evidence work, and only an idle one (R10-T2). That ordering is
+where the Fast Decision Path's strict resource priority actually lives: this loop asks for a
+queued job first, every time, and only a poll that found none goes looking for enrichment. A
+queued analysis is therefore never behind an enrichment task, which is what §4.2 requires when
+it says Deep Evidence "must never contend for a resource in a way that can starve the Fast
+Decision Path". It is the same ordering that has kept shadow mode behind production work since
+R6-T1, applied to a second kind of secondary work — and enrichment goes first of the two,
+because supplementary forensic evidence a customer will read outranks an experiment nobody
+can.
+
 An idle poll also runs one shadow experiment, and only an idle one (R6-T1). Uncalibrated
 workloads are exercised on real traffic from this same loop, behind every queued job and
 writing to a table of its own — see `app.shadow`, which says why none of what they observe
@@ -108,27 +140,20 @@ from app.db.schema import SchemaNotReady, check_schema_ready
 from app.db.session import SessionLocal, engine
 from app.limits import InvalidTimeout, validate as validate_limits
 from app.detection import (
-    ACTIVE_SPEAKER_SIGNAL,
     EFFICIENTNET_B7_PROVIDER,
     FACE_MANIPULATION_SIGNAL,
     LIP_FORENSICS_SIGNAL,
     LIPFORENSICS_PROVIDER,
     NVIDIA_PROVIDER,
     SYNTHETIC_VIDEO_SIGNAL,
-    analyse_audio,
-    detect_effort,
     detect_face_manipulation,
-    detect_lip_forensics,
     detect_synthetic_video,
     extract_provenance,
-    unanalysable_audio,
     undetectable_media,
 )
-from app.effort import is_enabled as effort_enabled
 from app.normalization import NormalizationError, NormalizationTimeout, normalize_to_mp4
-from app import shadow
+from app import enrichment, shadow
 from app.observability import bind_request_id, configure_logging, reset_request_id
-from app.speaker_diarization import SpeakerDiarizationTimeout
 from app.risk_engine import (
     FaceEvidence,
     LipEvidence,
@@ -559,21 +584,6 @@ def run_detection(path: Path):
     return asyncio.run(detect_synthetic_video(path))
 
 
-def run_audio_evidence(path: Path, frame_rate: float):
-    """Ask both audio questions about the prepared artifact, off one extracted WAV.
-
-    A second event loop rather than one shared with the detection above, because the two
-    are independent evidence and are deliberately not made to depend on each other's
-    lifetime: one being slow, cancelled or broken must not reach into the other.
-
-    Active speaker and AASIST share this loop because they share the WAV, and only that.
-    The whole chain — audio extraction, diarization, NVIDIA, the local checkpoint —
-    happens inside this one call, so the temporary WAV never outlives it, and the two
-    answers it returns are still separate signals that never inform each other.
-    """
-    return asyncio.run(analyse_audio(path, frame_rate))
-
-
 @dataclass(frozen=True)
 class SignalEvidence:
     """One signal and the timeline rows that belong to it, before either is persisted.
@@ -588,113 +598,87 @@ class SignalEvidence:
 
 
 def local_readings(path: Path) -> tuple[SignalEvidence, ...]:
-    """Ask every local checkpoint about the prepared artifact, in this order, one at a time.
+    """Ask the local checkpoint that decides about the prepared artifact.
 
-    The three of them are written out rather than looked up. There is no registry, no table
-    of detectors and no dispatch here — R5-T2 said adding a third would be a third line in
-    this tuple, and R7-T11 was that line — because what R5-T2 needed was for the *callers*
-    to stop naming each model individually, not for the models to become interchangeable.
-    They are not: one judges the appearance of a face crop, one judges how a mouth moves,
-    and one judges aligned face crops through a CLIP subspace decomposition, on three
-    different scales, and nothing downstream of this function compares them (rule 11).
+    One reading since R10-T2, where this stopped being "every local checkpoint" and became
+    "the local checkpoint the verdict needs". EfficientNet-B7 is `decision_eligible` under
+    `r9-v5.0.0`; Effort and LipForensics are `evidence_only`, so they moved to Deep Evidence
+    Enrichment and `app.enrichment` is what runs them now. What they cost was the point: the
+    B7 costs seconds, Effort costs about forty of them and LipForensics costs minutes, and the
+    verdict used to wait for all three to learn something only the first could tell it.
 
-    Sequential, and deliberately so. All three are blocking CPU inference in a container
-    with a CPU quota and a 6 GiB cap, so running them at once would not finish sooner — it
-    would contend for the same cores and hold three models resident at the same peak, and
-    Effort alone peaks at 3.9 GiB. The order is the cheap one first: the B7 costs seconds,
-    Effort costs about forty, and LipForensics costs minutes.
+    Still a tuple, and still spread into `Evidence.entries`, which is the one thing here worth
+    defending rather than collapsing. The shape is not an abstraction over interchangeable
+    detectors — R5-T2 made that point and it still holds, and nothing dispatches or registers
+    anything here — it is what lets this function return *nothing* on the path where the
+    transcode failed and the checkpoint was never invoked. That distinction is forensic: a
+    `FAILED` row means a source was asked and had no answer, and a detector nothing ran has
+    made no finding to record. A single field would have had to carry a `None` that every
+    reader downstream then had to interpret.
 
-    None can fail this job. Each records its own failures as a `FAILED` signal — see
-    `app.detection` — so a missing checkpoint, an unreadable clip or a torch that broke
-    costs that reading and nothing else, including the readings beside it.
-
-    Effort is the one entry here whose presence is conditional, and the condition is a
-    rollback switch rather than a policy: `app.effort.is_enabled` is on unless a deployment
-    turns it off, and turning it off returns this system to the exact SVD + B7 decisional
-    baseline with nothing to migrate. That works precisely because no rule reads the row it
-    gates — an analysis without an Effort signal is decided identically to one with it, and
-    `Evidence.local_readings` already tolerates a shorter tuple because a transcode failure
-    produces an empty one. A disabled detector writes no row at all rather than a `FAILED`
-    one: nothing asked it anything, and absence is the honest record for that.
+    It cannot fail this job. `detect_face_manipulation` records its own failures as a `FAILED`
+    signal — see `app.detection` — so a missing checkpoint or an unreadable clip costs this
+    reading and nothing else, and the risk engine has an explicit rule for the absence.
     """
-    readings = [
-        SignalEvidence(signal=detect_face_manipulation(path), segments=[]),
-    ]
-
-    if effort_enabled():
-        readings.append(SignalEvidence(signal=detect_effort(path), segments=[]))
-
-    readings.append(SignalEvidence(signal=detect_lip_forensics(path), segments=[]))
-
-    return tuple(readings)
+    return (SignalEvidence(signal=detect_face_manipulation(path), segments=[]),)
 
 
 @dataclass(frozen=True)
 class Evidence:
-    """Everything asking about one prepared artifact produced, and what preparing it left.
+    """Everything the Fast Decision Path produced about one prepared artifact.
 
-    They travel together because they are all asked about the same artifact and the
-    transcode that produces it either serves them or none of them. They are still wholly
-    separate findings — separate rows, separate statuses, separate evidence — and one
-    failing says nothing about the others.
+    Narrowed in R10-T2 to what the automated verdict needs: NVIDIA's synthetic-video reading
+    and EfficientNet-B7's face-manipulation reading, plus the identity of the derivative both
+    were read from. The active-speaker and audio-authenticity fields that used to sit here are
+    gone from this path — they are Deep Evidence, `app.enrichment` owns them, and their rows
+    are written against the same analysis after this job has closed.
+
+    They travel together because they are asked about the same artifact and the transcode that
+    produces it either serves both or neither. They are still wholly separate findings —
+    separate rows, separate statuses, separate evidence — and one failing says nothing about
+    the other.
 
     The derivative's identity travels with them because it succeeds or fails with the
-    preparation: there is no derivative to record when the transcode is what went wrong,
-    and a key recorded without anything having read it would name an unused artifact.
+    preparation: there is no derivative to record when the transcode is what went wrong, and a
+    key recorded without anything having read it would name an unused artifact. It is also what
+    Deep Evidence later reads, which is a second reason it is committed by this path rather
+    than invented by that one — enrichment reads the artifact the verdict was taken from, never
+    a fresh transcode of its own.
     """
 
     detection: SignalEvidence
-    # What the local checkpoints made of the artifact, in the order `local_readings` ran
-    # them. A tuple rather than one field per model since R5-T2, which is the whole of the
-    # Rule-of-Three refactor and is worth being precise about: these are not interchangeable
-    # detectors behind an abstraction, and nothing here dispatches, registers or configures
-    # them. They are grouped because everything downstream — `entries` below, the timeout
-    # path, the transcode-failure path — treats them identically and would otherwise have to
-    # name each one three times over, which is exactly the drift that lets a third model be
-    # persisted on one path and dropped on another.
-    #
-    # Empty when they were never invoked, which is exactly the case where the transcode
-    # failed: they are the artifact-dependent readings that are not attempted at all when
-    # there is no artifact. The other three are recorded as `FAILED` there because each is a
-    # source that was asked about this media and had no answer — NVIDIA takes MP4 and nothing
-    # else, and the audio is demuxed from the same missing derivative — whereas nothing ever
-    # asked these checkpoints anything.
+    # What the deciding local checkpoint made of the artifact. A tuple rather than one field
+    # since R5-T2, and kept as one through R10-T2 even though only EfficientNet-B7 remains in
+    # it, because the reason for the shape was never plurality — see `local_readings`. It is
+    # empty exactly when the transcode failed and the checkpoint was never invoked, and an
+    # empty tuple contributes no row rather than a `FAILED` one.
     #
     # The distinction is the same one `AnalysisTimedOut` draws and for the same reason: a
-    # `FAILED` row is a finding ("this source was asked and could not answer"), and writing
-    # one for a detector that was never reached would be recording a finding nobody made.
-    # Absence is the honest record, and it is not the same fact as a failed reading.
+    # `FAILED` row is a finding ("this source was asked and could not answer"), and writing one
+    # for a detector that was never reached would be recording a finding nobody made. Absence
+    # is the honest record, and it is not the same fact as a failed reading.
     local_readings: tuple[SignalEvidence, ...]
-    active_speaker: SignalEvidence
-    audio_authenticity: SignalEvidence
     derivative_storage_key: str | None = None
     derivative_sha256: str | None = None
     # The geometry of the derivative the findings above were read from, as the transcode
-    # measured it. Travels with the key for the same reason the hash does: it is a fact
-    # about that artifact, it only exists when that artifact does, and recording it apart
-    # from the key it belongs to would let the two describe different files.
+    # measured it. Travels with the key for the same reason the hash does: it is a fact about
+    # that artifact, it only exists when that artifact does, and recording it apart from the
+    # key it belongs to would let the two describe different files.
     analyzed_width: int | None = None
     analyzed_height: int | None = None
 
     def entries(self) -> tuple[SignalEvidence, ...]:
         """The artifact-dependent findings that exist, in the order they are written.
 
-        Named rather than unpacked at the call site so the partial path below and the
-        complete one persist through the same code: a signal added to this class and not to
-        this tuple would be a visible omission, and one written on one path but not the
-        other is exactly the drift the two paths must not have.
+        Named rather than unpacked at the call site so the partial path below and the complete
+        one persist through the same code: a signal added to this class and not to this tuple
+        would be a visible omission, and one written on one path but not the other is exactly
+        the drift the two paths must not have.
 
         The local readings are spread in place, so an empty tuple contributes nothing rather
-        than an empty or failed row — see the field above. Every other entry is required, so
-        an omission there is a `TypeError` at construction rather than a silently missing
-        signal.
+        than an empty or failed row — see the field above.
         """
-        return (
-            self.detection,
-            *self.local_readings,
-            self.active_speaker,
-            self.audio_authenticity,
-        )
+        return (self.detection, *self.local_readings)
 
 
 class AnalysisTimedOut(Exception):
@@ -747,94 +731,62 @@ class AnalysisTimedOut(Exception):
 
 
 def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
-    """Prepare the artifact detection needs, ask every question about it, report the outcomes.
+    """Prepare the artifact the decision needs, ask the deciding detectors, report the outcomes.
 
-    One preparation serves them all: the transcode is the expensive step and the artifact
-    it produces is exactly what each NIM wants and what the analysable audio is extracted
-    from, so it is produced once and held for the length of every call rather than
-    transcoded again per consumer.
+    One preparation serves both: the transcode is the expensive step and the artifact it
+    produces is exactly what the NIM wants and what EfficientNet-B7 reads, so it is produced
+    once and held for the length of both calls rather than transcoded again per consumer.
 
-    The audio pair is run last and cannot fail this job. `analyse_audio` records every
-    failure of its own chains as a signal, so a missing Hugging Face token, an unreachable
-    second NVIDIA function or a missing local checkpoint costs the affected signal and
-    nothing else. The local visual checkpoints in between behave the same way for the same
-    reason — see `local_readings`.
+    Since R10-T2 this is the Fast Decision Path and nothing else. The audio chain that used to
+    run last here — active speaker and AASIST, off one extracted WAV — is Deep Evidence and
+    runs out of `app.enrichment` against the derivative this function uploaded. So is
+    LipForensics, and so is Effort. Removing them from here is the whole of R10's latency
+    claim, and it is safe because none of the four is read by `r9-v5.0.0`: §3.2 of the
+    execution contract works through what that means for the lip argument `conclude_job` still
+    passes.
 
-    Media that cannot be transcoded is a fact about the media, so it becomes a failed
-    signal rather than a failed job — the same treatment a provider that refuses gets, and
-    for the same reason: the provenance already read off this file must not be thrown away
-    because ffmpeg could not produce an MP4. Three of the artifact-dependent signals record
-    it, because each of those sources was asked about this media and had no answer — NVIDIA
-    takes MP4 and nothing else, and the audio the local checkpoint reads is extracted from
-    the same derivative that was never produced.
+    Media that cannot be transcoded is a fact about the media, so it becomes a failed signal
+    rather than a failed job — the same treatment a provider that refuses gets, and for the
+    same reason: the provenance already read off this file must not be thrown away because
+    ffmpeg could not produce an MP4. The synthetic-video signal records it, because NVIDIA was
+    asked about this media and had no answer — it takes MP4 and nothing else.
 
-    The local visual readings are the exception, and deliberately: they are never invoked at
-    all on this path, so they produce no rows rather than `FAILED` ones. Recording a failure
-    for a detector nothing ran would be a finding nobody made — the same distinction
+    The local visual reading is the exception, and deliberately: it is never invoked at all on
+    that path, so it produces no row rather than a `FAILED` one. Recording a failure for a
+    detector nothing ran would be a finding nobody made — the same distinction
     `AnalysisTimedOut` draws for the signals a timeout never reached.
 
-    `NormalizationUnavailable` is deliberately not caught. ffmpeg missing from the image is
-    a broken container, not broken media, and recording it as evidence about the video
-    would leave a real defect looking like a routine gap. It propagates and fails the job,
-    exactly as `NvidiaLocalFileError` does.
+    `NormalizationUnavailable` is deliberately not caught. ffmpeg missing from the image is a
+    broken container, not broken media, and recording it as evidence about the video would
+    leave a real defect looking like a routine gap. It propagates and fails the job, exactly as
+    `NvidiaLocalFileError` does.
 
-    Since R1-T3 a transcode that ran out of time, and audio extraction that did, are
-    neither of those. `NormalizationTimeout` and `SpeakerDiarizationTimeout` are not
-    subclasses of the error types caught here, so neither becomes a signal: a timeout is a
-    statement about this worker — a machine under load, a limit set too tight — and writing
-    it down as a finding about the media would attribute the machine's condition to the
-    video. Both are re-raised as `AnalysisTimedOut`, which fails the job.
+    Since R1-T3 a transcode that ran out of time is neither of those. `NormalizationTimeout` is
+    not a subclass of the error type caught here, so it never becomes a signal: a timeout is a
+    statement about this worker — a machine under load, a limit set too tight — and writing it
+    down as a finding about the media would attribute the machine's condition to the video. It
+    is re-raised as `AnalysisTimedOut`, which fails the job.
 
-    What that re-raise carries is the point of it. Everything already obtained travels with
-    the exception, so a timeout during audio extraction costs the audio signals and neither
-    the synthetic-video verdict NVIDIA had already returned nor the local readings taken
-    after it. Failing the job and keeping its evidence are separate decisions here, and this
-    is what lets `process_one` make them separately.
+    The audio-extraction timeout that used to be re-raised here went with the audio chain. A
+    Deep Evidence component that runs out of time now fails that component's task and reaches
+    nothing on this path at all, which is §7.4 — Deep Evidence failures never destroy Fast
+    Decisions — holding at the one place it used to be untrue.
     """
     try:
         with prepared_artifact(claimed, original) as artifact:
             signal, segments = run_detection(artifact.path)
             detected = SignalEvidence(signal=signal, segments=segments)
 
-            # Second, and before the audio chain, so that an audio extraction which runs out
-            # of time costs neither these readings nor the one above them. They are local,
-            # blocking CPU work with no socket and no deadline of their own — `app.limits`
-            # says why the bounds there do not cover in-process inference — and each records
-            # its own failures, so nothing they do can fail this job.
+            # Second, and after NVIDIA, so the cheap local reading is taken against the same
+            # artifact the remote one saw. It is blocking CPU inference with no socket and no
+            # deadline of its own — `app.limits` says why the bounds there do not cover
+            # in-process inference — and it records its own failures, so nothing it does can
+            # fail this job.
             local = local_readings(artifact.path)
-
-            try:
-                # The rate NVIDIA's frame indices have to be read against. It is the rate of
-                # the artifact just handed over: a derivative was transcoded to hold exactly
-                # this rate constant, and media that needed no derivative is the original,
-                # whose probed rate this is.
-                (speaker_signal, speaker_segments), (audio_signal, audio_segments) = (
-                    run_audio_evidence(artifact.path, claimed.frame_rate)
-                )
-            except SpeakerDiarizationTimeout as error:
-                # The detection above is finished and independent of anything the audio
-                # chain would have produced, so it goes with the exception rather than
-                # being lost to it. So does the derivative it read, which is why the
-                # identity is carried too: the artifact provably exists and provably had a
-                # reader.
-                raise AnalysisTimedOut(
-                    error,
-                    produced=(detected, *local),
-                    derivative_storage_key=artifact.storage_key,
-                    derivative_sha256=artifact.sha256,
-                    analyzed_width=artifact.width,
-                    analyzed_height=artifact.height,
-                ) from error
 
             return Evidence(
                 detection=detected,
                 local_readings=local,
-                active_speaker=SignalEvidence(
-                    signal=speaker_signal, segments=speaker_segments
-                ),
-                audio_authenticity=SignalEvidence(
-                    signal=audio_signal, segments=audio_segments
-                ),
                 derivative_storage_key=artifact.storage_key,
                 derivative_sha256=artifact.sha256,
                 analyzed_width=artifact.width,
@@ -842,10 +794,10 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
             )
     except NormalizationTimeout as error:
         # Nothing artifact-dependent was reached: the transcode is what timed out, and every
-        # signal below it needed the artifact it never produced. `produced` is therefore
-        # empty — which is not the same as "no evidence survives this job". The provenance
-        # read off the forensic original happened before this call and is `process_one`'s to
-        # keep, exactly as it would be on any other failure.
+        # signal below it needed the artifact it never produced. `produced` is therefore empty
+        # — which is not the same as "no evidence survives this job". The provenance read off
+        # the forensic original happened before this call and is `process_one`'s to keep,
+        # exactly as it would be on any other failure.
         logger.warning("Preparing the media for detection ran out of time.", exc_info=True)
         raise AnalysisTimedOut(error) from error
     except NormalizationError as error:
@@ -854,18 +806,11 @@ def analyse(claimed: ClaimedJob, original: Path) -> Evidence:
             detection=SignalEvidence(
                 signal=undetectable_media(error, SYNTHETIC_VIDEO_SIGNAL), segments=[]
             ),
-            # Explicitly nothing. Neither local checkpoint is invoked on this path — the
-            # call that would have run them is inside the `with` block above, past the
-            # transcode that raised — so there is no reading to record, failed or otherwise.
-            # Stated here rather than left to a default so the omission is deliberate and
-            # visible.
+            # Explicitly nothing. The local checkpoint is not invoked on this path — the call
+            # that would have run it is inside the `with` block above, past the transcode that
+            # raised — so there is no reading to record, failed or otherwise. Stated here
+            # rather than left to a default so the omission is deliberate and visible.
             local_readings=(),
-            active_speaker=SignalEvidence(
-                signal=undetectable_media(error, ACTIVE_SPEAKER_SIGNAL), segments=[]
-            ),
-            audio_authenticity=SignalEvidence(
-                signal=unanalysable_audio(error), segments=[]
-            ),
         )
 
 
@@ -908,13 +853,22 @@ def persist_evidence(
     analysis unable to say what was detected.
 
     Every signal that exists is written as its own row and none waits on another: they are
-    independent evidence, and an analysis that got provenance and a speaker timeline but
-    no synthetic-video verdict — or any other combination — records exactly that. An
-    analysis carries at most six, and fewer when a source was never reached.
-    Provenance and the two local visual readings are the three that never own segments — the
-    first because a signature is not a timeline, the other two because R3-T1's and R5-T1's
-    contracts are each one clip to one score — while the other three each own their own and
-    never share a row.
+    independent evidence, and an analysis that got provenance but no synthetic-video verdict —
+    or any other combination — records exactly that. This path writes at most three of them
+    since R10-T2: provenance, the synthetic-video verdict and the face-manipulation reading.
+    The other rows an analysis carries are Deep Evidence and arrive later, written against this
+    same analysis by `app.enrichment` through a session that cannot reach these three.
+
+    Provenance and the local visual reading are the two that never own segments — the first
+    because a signature is not a timeline, the second because R3-T1's contract is one clip to
+    one score — while the synthetic-video row owns its own and shares them with nothing.
+
+    **The order across the two paths is the invariant, not the transaction.** §7.5 requires
+    that a verdict never become visible without its supporting evidence already being durable,
+    and that is satisfied here by this commit landing before `conclude_job` publishes — the
+    order the worker has always used, confirmed rather than assumed when R10-T2 inspected it.
+    What is forbidden is the reverse, and nothing on the enrichment path can produce it: that
+    path publishes no verdict.
 
     The job stays `processing` across this commit, and deliberately so. Nothing can pick it
     up in the gap — `claim_job` only ever takes `queued` rows — and leaving the status for
@@ -1474,32 +1428,41 @@ def process_one(session: Session) -> bool:
             )
             return True
 
-        # The production analysis is finished: its evidence is committed, its decision is
-        # recorded and its job is closed. Only now is an experiment allowed to be scheduled
-        # against it, and only as a row in a table of its own (R6-T1). Nothing above waited
-        # for this, nothing below depends on it, and `shadow.enqueue` does not raise — a
-        # customer's analysis must not fail because an experiment could not be queued.
+        # The verdict is published and the decision job is closed, so the analysis is now
+        # decision-complete: the report can be opened and nothing below may change what it
+        # says. Only at this point is anything else allowed to be scheduled against it.
+        #
+        # Deep Evidence first (R10-T2). Its tasks are queued here rather than at upload
+        # because enrichment membership is read from the ruleset the analysis was *decided*
+        # under, and that is not known until the decision exists. `enrichment.enqueue` runs in
+        # its own transaction after the decision has been committed, and it does not raise: an
+        # analysis that has already been decided, published and closed must not retroactively
+        # fail because its supplementary evidence could not be scheduled, which would be the
+        # enrichment path destroying a fast decision through the one door §7.4 does not name.
+        enrichment.enqueue(session, claimed.analysis_id, decision.rules_version)
+
+        # Then the experiment, in a table of its own (R6-T1). Nothing above waited for either
+        # of these, nothing below depends on them, and `shadow.enqueue` does not raise for the
+        # same reason `enrichment.enqueue` does not — a customer's analysis must not fail
+        # because an experiment could not be queued.
         shadow.enqueue(session, claimed.analysis_id)
 
         logger.info(
-            "Completed job %s with a %s detection signal, %s, a %s active-speaker signal, a "
-            "%s audio-authenticity signal and a %s provenance signal%s. Risk %s by %s under "
-            "%s.",
+            "Completed job %s with a %s detection signal, %s and a %s provenance signal%s. "
+            "Risk %s by %s under %s.",
             claimed.job_id,
             evidence.detection.signal.status,
-            # Each local reading named with the signal it wrote, and `no local readings` when
-            # there are none — because absence here is not a status. They are the readings
-            # never invoked when the transcode failed, and the `Evidence` field says at length
-            # why that is recorded as no row rather than a `FAILED` one. This line enumerates
-            # what the job wrote, so it has to be able to say that they were not written;
-            # printing `None` would read as a status the database can hold.
+            # The local reading named with the signal it wrote, and `no local readings` when
+            # there is none — because absence here is not a status. It is the reading never
+            # invoked when the transcode failed, and the `Evidence` field says at length why
+            # that is recorded as no row rather than a `FAILED` one. This line enumerates what
+            # the job wrote, so it has to be able to say it was not written; printing `None`
+            # would read as a status the database can hold.
             ", ".join(
                 f"a {entry.signal.status} {entry.signal.signal_type} signal"
                 for entry in evidence.local_readings
             )
             or "no local readings",
-            evidence.active_speaker.signal.status,
-            evidence.audio_authenticity.signal.status,
             provenance_signal.status,
             " against a normalized derivative" if evidence.derivative_storage_key else "",
             decision.risk_level,
@@ -1593,12 +1556,31 @@ def run(stopping: Stopping, sleep=time.sleep) -> None:
                 worked = process_one(session)
 
                 if not worked:
+                    # Deep Evidence only on a poll that found no decision job (R10-T2). That
+                    # ordering is the Fast Decision Path's strict resource priority, and it is
+                    # structural rather than a scheduling hint: a queued job is claimed on
+                    # every pass before this line is reached, so enrichment cannot be holding
+                    # the worker when one arrives to be claimed — and an analysis submitted
+                    # while a component is running is picked up by the next poll after it,
+                    # never queued behind the rest of the enrichment backlog.
+                    #
+                    # `enrichment.process_one` swallows its own failures, so a broken component
+                    # cannot reach the backoff below, cannot stop the next job being claimed,
+                    # and cannot turn an idle poll into an error. §7.4 requires exactly that:
+                    # Deep Evidence failures never destroy Fast Decisions, and a loop this one
+                    # crashed out of would have destroyed the next one.
+                    worked = enrichment.process_one(session)
+
+                if not worked:
                     # Production work first, always, and shadow work only on a poll that found
                     # none (R6-T1). That ordering is what makes shadow mode structurally
                     # incapable of delaying an analysis: an experiment is never claimed while a
-                    # queued job exists. `shadow.process_one` swallows its own failures, so a
-                    # broken experiment cannot reach the backoff below, cannot stop the next
-                    # job being claimed, and cannot turn an idle poll into an error.
+                    # queued job exists. It now sits behind enrichment as well as behind the
+                    # decision, because supplementary evidence a customer will read outranks an
+                    # experiment no customer can. `shadow.process_one` swallows its own
+                    # failures, so a broken experiment cannot reach the backoff below, cannot
+                    # stop the next job being claimed, and cannot turn an idle poll into an
+                    # error.
                     worked = shadow.process_one(session)
         except Exception:
             logger.exception("The worker loop failed; retrying.")

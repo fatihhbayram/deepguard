@@ -756,45 +756,49 @@ def test_effort_runs_unless_a_deployment_turns_it_off(monkeypatch):
         assert effort.is_enabled() is True
 
 
-def test_a_disabled_effort_writes_no_row_at_all(monkeypatch, tmp_path):
+def test_a_disabled_effort_writes_no_row_at_all(monkeypatch):
     """Absence, not a `FAILED` row: nothing asked the detector anything.
 
     A `FAILED` row is a finding — "this source was asked and could not answer" — and writing one
     for a detector that was never reached would record a finding nobody made. It is also what
     makes the rollback clean: an analysis run with Effort off is indistinguishable from one run
     before Effort existed.
+
+    The switch moved in R10-T2 and does the same thing in the same direction. Effort is
+    `evidence_only` under `r9-v5.0.0`, so it is Deep Evidence now rather than a reading inside
+    the decision job, and turning it off means it gets no task row — so it writes no signal and
+    counts in no enrichment state. `tests/test_enrichment.py` checks that consequence against
+    real rows; what is checked here is the switch itself.
     """
-    from app import worker
+    from app import enrichment
 
     monkeypatch.setenv(effort.ENABLED_VARIABLE, "false")
-    monkeypatch.setattr(detection, "detect_face_manipulation", lambda _p: _row("b7"))
-    monkeypatch.setattr(detection, "detect_lip_forensics", lambda _p: _row("lip"))
-    monkeypatch.setattr(worker, "detect_face_manipulation", lambda _p: _row("b7"))
-    monkeypatch.setattr(worker, "detect_lip_forensics", lambda _p: _row("lip"))
-    monkeypatch.setattr(
-        worker, "detect_effort", lambda _p: pytest.fail("Effort ran while disabled")
-    )
 
-    readings = worker.local_readings(tmp_path / "clip.mp4")
-
-    assert [reading.signal.provider for reading in readings] == ["b7", "lip"]
+    assert not enrichment._component_enabled((EFFORT_PROVIDER, FACE_FORGERY_SIGNAL))
+    # And it reaches nothing else. The switch is Effort's alone; the other components are not
+    # configurable and must not become so by sharing a code path with one that is.
+    for component in enrichment.evidence_only_components("r9-v5.0.0"):
+        if component != (EFFORT_PROVIDER, FACE_FORGERY_SIGNAL):
+            assert enrichment._component_enabled(component)
 
 
-def test_an_enabled_effort_is_the_third_reading(monkeypatch, tmp_path):
-    """And it runs between the two, cheapest first — the order `local_readings` documents."""
-    from app import worker
+def test_an_enabled_effort_is_deep_evidence_under_the_live_ruleset(monkeypatch):
+    """On unless a deployment turns it off, and enriching rather than deciding.
+
+    Before R10-T2 this asserted that Effort was the second of three readings inside the
+    decision job, in the order `local_readings` documented. That ordering no longer exists to
+    assert: the job runs the deciding detectors and stops, and Effort is one of the four
+    components the enrichment phase claims afterwards. What survives is the claim that
+    mattered — it runs, and nothing it produces can reach a verdict.
+    """
+    from app import enrichment
 
     monkeypatch.delenv(effort.ENABLED_VARIABLE, raising=False)
-    monkeypatch.setattr(worker, "detect_face_manipulation", lambda _p: _row("b7"))
-    monkeypatch.setattr(worker, "detect_lip_forensics", lambda _p: _row("lip"))
-    monkeypatch.setattr(worker, "detect_effort", lambda _p: _row(EFFORT_PROVIDER))
 
-    readings = worker.local_readings(tmp_path / "clip.mp4")
-
-    assert [reading.signal.provider for reading in readings] == ["b7", EFFORT_PROVIDER, "lip"]
-    # No timeline evidence: the frozen protocol is one clip to one reading, and a per-frame row
-    # would claim the sampled frames were detections of manipulation at those moments.
-    assert all(reading.segments == [] for reading in readings)
+    assert enrichment._component_enabled((EFFORT_PROVIDER, FACE_FORGERY_SIGNAL))
+    assert (EFFORT_PROVIDER, FACE_FORGERY_SIGNAL) in enrichment.evidence_only_components(
+        "r9-v5.0.0"
+    )
 
 
 def _row(provider: str):

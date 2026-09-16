@@ -98,6 +98,65 @@ SHADOW_RUN_STATUS_PROCESSING = "processing"
 SHADOW_RUN_STATUS_COMPLETED = "completed"
 SHADOW_RUN_STATUS_FAILED = "failed"
 
+# The state of one Deep Evidence component's execution against one analysis (R10-T2). A
+# third vocabulary rather than a reuse of `JOB_STATUS_*` or `SHADOW_RUN_STATUS_*`, for the
+# reason the shadow set is separate from the job set and one more besides: this one has a
+# state neither of the others has.
+#
+# `not_requested` is that state, and it is the whole of R10's on-demand trigger. A component
+# row written in it is owed nothing — enrichment for this analysis was deferred, which §5.2
+# of the execution contract is explicit is *not* a failure — and asking for enrichment later
+# is one conditional update from `not_requested` to `queued`. Representing the deferral as a
+# row rather than as an absence is what lets the absence keep meaning something else: an
+# analysis with no rows here at all ran before R10 existed, and is read as
+# `LEGACY_SINGLE_STAGE` (§8.1).
+#
+# The other four are the ordinary life of a leased unit of work, and they are per *component*
+# — LipForensics separately from AASIST — because `ENRICHMENT_PARTIAL` has to be able to name
+# which component failed rather than assert a summary nobody can trace back (§5.4).
+ENRICHMENT_TASK_STATUS_NOT_REQUESTED = "not_requested"
+ENRICHMENT_TASK_STATUS_QUEUED = "queued"
+ENRICHMENT_TASK_STATUS_PROCESSING = "processing"
+ENRICHMENT_TASK_STATUS_COMPLETED = "completed"
+
+# The terminal state that is neither of the two obvious ones: the detector ran, and answered
+# that there was nothing here for it to score — no trackable face, no audio stream (R10-T1
+# §5.2). It is a **success** on the enrichment axis, and it is a separate status from
+# `completed` rather than folded into it because the two are different facts about what the
+# component did, and an operator reading these rows should not have to open the signal row to
+# tell "scored the media" from "found nothing to score".
+#
+# Deliberately not `failed`. "A component that abstains for a documented forensic reason — no
+# face track, no audio stream — succeeded. It was asked, it answered, and its answer is
+# evidence, and R10-T3 must not render it as [a failure]." An analysis of a silent clip is not
+# an analysis whose enrichment broke.
+#
+# It changes nothing about the evidence or the verdict. The signal row is still written exactly
+# as it always was — `FAILED`, with the abstention's own exception class in its metadata — and
+# R9's coverage arithmetic still treats an abstention as unresolved coverage, which is the
+# whole point of that rule (`app.risk_engine`). This status is the *enrichment* reading of the
+# same row, and the two questions have different right answers.
+ENRICHMENT_TASK_STATUS_ABSTAINED = "abstained"
+
+ENRICHMENT_TASK_STATUS_FAILED = "failed"
+
+# Every status an enrichment task row may hold, as one tuple, so the model's check
+# constraint and the migration that creates it name the same six and cannot drift apart.
+ENRICHMENT_TASK_STATUSES = (
+    ENRICHMENT_TASK_STATUS_NOT_REQUESTED,
+    ENRICHMENT_TASK_STATUS_QUEUED,
+    ENRICHMENT_TASK_STATUS_PROCESSING,
+    ENRICHMENT_TASK_STATUS_COMPLETED,
+    ENRICHMENT_TASK_STATUS_ABSTAINED,
+    ENRICHMENT_TASK_STATUS_FAILED,
+)
+
+# Named here rather than written as a literal in the migration, for the same reason
+# `SINGLE_OWNER_CONSTRAINT` is: the model, the migration and the test that proves the
+# constraint bites all have to mean the same constraint.
+ENRICHMENT_TASK_STATUS_CONSTRAINT = "ck_analysis_enrichment_tasks_status"
+ENRICHMENT_TASK_COMPONENT_CONSTRAINT = "uq_analysis_enrichment_tasks_component"
+
 SHA256_HEX_LENGTH = 64
 
 # How the analysed artifact reached DeepGuard (R7-T12). `upload` is a file a client sent;
@@ -463,6 +522,121 @@ class AnalysisJob(Base):
     )
     # Touched on every write, so the age of a job's current state is readable — the figure
     # a stuck `processing` job is spotted by.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class AnalysisEnrichmentTask(Base):
+    """One Deep Evidence component's execution against one analysis (R10-T2).
+
+    R10 splits execution into two paths over the same `Analysis`: the Fast Decision Path,
+    whose work is still `analysis_jobs` and whose outcome is still the risk columns on
+    `analyses`, and Deep Evidence Enrichment, whose work is these rows. The split exists so
+    that the automated verdict stops waiting on detectors that, under `r9-v5.0.0`, cannot
+    affect it — see `docs/architecture/R10_EXECUTION_CONTRACT.md`.
+
+    **One row per component, not one per analysis.** The alternative — a single enrichment
+    job row with a summary status — was rejected by §5.4 of the contract and it is worth
+    saying why here rather than only there: `ENRICHMENT_PARTIAL` is a claim that some
+    components succeeded and others did not, and a summary column asserts that without being
+    able to name either group. An operator asking "what is missing from this report" would
+    have to infer it from which signal rows failed to appear, which is an absence, and an
+    absence cannot distinguish a component that failed from one that was never asked. These
+    rows carry the answer directly: a status per component and an error message per
+    component.
+
+    **This table is not `analysis_jobs` and does not extend it.** That table holds exactly one
+    row per analysis, enforced by a unique constraint, and that uniqueness is what makes "has
+    this analysis been detected?" a question with a single answer. Squeezing four components
+    into it would have cost that, and widening it with enrichment columns would have put
+    enrichment state on the row the *decision* is tracked by — which is the one adjacency R10
+    exists to remove.
+
+    **The decision axis is not reachable from here.** Nothing on this row names a risk
+    column, a verdict, an analysis status or a review, and the enrichment path that writes it
+    is refused those tables at the persistence boundary rather than merely not asking for
+    them — see `app.enrichment_guard`. A crashed, retried or wholly failed enrichment leaves
+    `analyses` exactly as the fast decision left it, which is invariant I11.
+
+    The component is named as the `(provider, signal_type)` pair `analysis_signals` is keyed
+    by, and deliberately not as a third name of its own. That pair is what the enrichment
+    worker is permitted to write, what the guard checks a write against, and what the
+    contract's §4.1 membership table lists; a separate `component` vocabulary would be a
+    fourth spelling of the same fact and the first thing to drift.
+    """
+
+    __tablename__ = "analysis_enrichment_tasks"
+
+    __table_args__ = (
+        # One task per component per analysis. This is what makes a retry idempotent
+        # (§7.3): re-running a component updates its row rather than adding a second one,
+        # so an analysis can never carry two conflicting accounts of how LipForensics went.
+        # It mirrors the `(analysis_id, provider, signal_type)` uniqueness on the signal
+        # rows this task writes, and for the same reason.
+        UniqueConstraint(
+            "analysis_id",
+            "provider",
+            "signal_type",
+            name=ENRICHMENT_TASK_COMPONENT_CONSTRAINT,
+        ),
+        CheckConstraint(
+            "status IN ('%s')" % "', '".join(ENRICHMENT_TASK_STATUSES),
+            name=ENRICHMENT_TASK_STATUS_CONSTRAINT,
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    analysis_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("analyses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Which evidence-only detector this row is the execution record of, named exactly as the
+    # signal it will write is named. Membership is derived from the ruleset the analysis was
+    # decided under rather than from a list held here — see `app.enrichment`, and §3.2 of the
+    # contract, which requires that a ruleset promoting a detector to decision-eligible move
+    # it out of enrichment without this table being edited.
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    signal_type: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    # Which ruleset version's role assignment put this component in Deep Evidence, frozen on
+    # the row at the moment it was written. Recorded rather than resolved at read time
+    # because the roles are a property of the frozen ruleset (§2) and a later ruleset may
+    # assign them differently: a row that said only "LipForensics was enrichment" would
+    # become unreadable the moment a version existed under which it was not.
+    rules_version: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    # When the claim on this task stops being believed, for exactly the reason
+    # `analysis_jobs` has one: a worker that dies mid-component would otherwise leave the row
+    # `processing` forever and the enrichment axis would never reach a terminal state. Null
+    # on every task nobody is holding — `not_requested` and `queued` never had a lease, and a
+    # terminal task's is cleared when it ends.
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Why this component failed, as a class name rather than the exception's own text, which
+    # can quote credentials or SQL — the rule `app.worker.fail_job` and `app.shadow` already
+    # follow. Null on every task that has not failed.
+    #
+    # Per component and not per analysis, because §7.4 requires that an enrichment failure be
+    # readable by an operator as *which* component failed and why. One error column on a
+    # summary row would have had to pick one of them.
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
