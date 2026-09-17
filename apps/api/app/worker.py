@@ -110,6 +110,7 @@ Run it with `python -m app.worker`.
 import asyncio
 import contextvars
 import logging
+import os
 import signal
 import tempfile
 import threading
@@ -203,6 +204,45 @@ HEARTBEAT_SECONDS = 30
 # Nobody caught an exception to produce it — the worker that would have is gone — so it is
 # written literally.
 STALE_LEASE_ERROR = "StaleWorkerLease"
+
+# Which kinds of work this process is allowed to take (R10-T5).
+#
+# R10-T4 measured the problem this exists to solve. The loop already gives the Fast Decision
+# Path strict priority *at claim time* — a queued job is taken on every pass before enrichment
+# is looked for — but a worker already inside a Deep Evidence component cannot put it down, and
+# components run for minutes. So when every replica happens to be enriching, the next upload
+# waits for one of them to finish: measured at up to 1876 s against a decision that costs 20-30 s
+# of actual work. Nothing was wrong with any verdict; the capacity to produce one was simply all
+# spoken for.
+#
+# The fix is capacity, not scheduling, and deliberately not preemption: a role decides which
+# queues a process may read, and a deployment runs at least one process whose role is decisions.
+# That lane is then structurally unreachable by enrichment — not prioritised over it — so the
+# starvation cannot recur however long a component runs or however many of them are queued.
+WORKER_ROLE_VARIABLE = "DEEPGUARD_WORKER_ROLE"
+
+# Decision jobs only. Never enrichment, never shadow. This is the reserved lane.
+WORKER_ROLE_DECISION = "decision"
+
+# Deep Evidence and shadow experiments only. Never a decision job — a process that could take
+# one would be a process that can be busy with a component when it arrives, which is the whole
+# of what R10-T4 found.
+WORKER_ROLE_ENRICHMENT = "enrichment"
+
+# Everything, which is what every worker did before this variable existed and what a single
+# worker on a laptop still does. Kept as the default so an existing deployment, a developer's
+# stack and every test that drives `run` behave exactly as they did: the compose file names the
+# roles for production, and nothing silently changes underneath a stack that has not been
+# updated. It carries the starvation R10-T4 measured, and that is acceptable in a one-process
+# deployment where the alternative is a process that refuses half the work and no other to do it.
+WORKER_ROLE_BOTH = "both"
+
+WORKER_ROLES = (WORKER_ROLE_DECISION, WORKER_ROLE_ENRICHMENT, WORKER_ROLE_BOTH)
+
+
+class InvalidWorkerRole(ValueError):
+    """A configured worker role is not one this process knows how to be."""
+
 
 # How long to wait between asking the database again whether it is at the schema this image
 # expects (R1-T3). Longer than the idle poll: a migration is a deployment step measured in
@@ -1581,6 +1621,40 @@ def wait_for_schema(stopping: Stopping, sleep=time.sleep) -> bool:
     return False
 
 
+def worker_role() -> str:
+    """Which queues this process may read, from the environment (R10-T5).
+
+    Unset is `both`, which is what every worker was before the variable existed. Case and
+    surrounding space are forgiven; nothing else is — see `validate_worker_role`.
+    """
+    return os.getenv(WORKER_ROLE_VARIABLE, WORKER_ROLE_BOTH).strip().lower() or WORKER_ROLE_BOTH
+
+
+def validate_worker_role() -> str:
+    """The configured role, or an exception naming what was wrong with it.
+
+    **Refused rather than defaulted, which is the opposite of how `enrichment.policy` treats
+    an unreadable value.** The two fail in opposite directions because their failure modes are
+    opposite. A misspelled enrichment policy produces a report carrying all of its evidence —
+    the behaviour this system had before R10 — so falling through to `immediate` costs nothing.
+    A misspelled role would fall through to `both`, and a deployment whose decision lane had
+    quietly become a `both` worker is a deployment with the R10-T4 starvation back and no sign
+    of it: every verdict still correct, every test still green, and the queue wait returning
+    the first time two components run at once. That is precisely the class of thing
+    `validate_limits` already refuses to start over, and it is refused here for the same
+    stated reason — nothing about a typo in a compose file resolves by waiting.
+    """
+    configured = worker_role()
+
+    if configured not in WORKER_ROLES:
+        raise InvalidWorkerRole(
+            f"{WORKER_ROLE_VARIABLE} is {configured!r}, which is not one of "
+            f"{', '.join(WORKER_ROLES)}."
+        )
+
+    return configured
+
+
 def run(stopping: Stopping, sleep=time.sleep) -> None:
     """Poll for work until asked to stop.
 
@@ -1592,13 +1666,23 @@ def run(stopping: Stopping, sleep=time.sleep) -> None:
     run in this process because it is the process that already polls PostgreSQL on a timer,
     and they run strictly behind production work because nothing about an experiment is
     allowed to be in front of a customer's analysis.
+
+    Since R10-T5 the role decides which of those three questions this process asks at all. The
+    ordering below is unchanged and still does its job within a `both` worker; what the role
+    adds is that a `decision` worker never reaches the second and third questions, so no
+    component and no experiment can ever be what it is busy with. Read the two together: the
+    ordering is the priority, and the role is the capacity that makes the priority reachable.
     """
+    role = worker_role()
+    decides = role in (WORKER_ROLE_DECISION, WORKER_ROLE_BOTH)
+    enriches = role in (WORKER_ROLE_ENRICHMENT, WORKER_ROLE_BOTH)
+
     while not stopping.requested:
         try:
             with SessionLocal() as session:
-                worked = process_one(session)
+                worked = process_one(session) if decides else False
 
-                if not worked:
+                if not worked and enriches:
                     # Deep Evidence only on a poll that found no decision job (R10-T2). That
                     # ordering is the Fast Decision Path's strict resource priority, and it is
                     # structural rather than a scheduling hint: a queued job is claimed on
@@ -1614,7 +1698,7 @@ def run(stopping: Stopping, sleep=time.sleep) -> None:
                     # crashed out of would have destroyed the next one.
                     worked = enrichment.process_one(session)
 
-                if not worked:
+                if not worked and enriches:
                     # Production work first, always, and shadow work only on a poll that found
                     # none (R6-T1). That ordering is what makes shadow mode structurally
                     # incapable of delaying an analysis: an experiment is never claimed while a
@@ -1658,9 +1742,15 @@ def main() -> int:
 
     try:
         logger.info("Operation limits: %s.", validate_limits())
-    except InvalidTimeout as error:
+        role = validate_worker_role()
+    except (InvalidTimeout, InvalidWorkerRole) as error:
         logger.error("The worker is misconfigured and will not start: %s", error)
         return 1
+
+    # Said at start-up because it is the one fact about this process an operator reading the
+    # logs cannot otherwise recover: two workers with the same image and the same command
+    # differ only here, and "why did that upload wait" is answered by which roles were running.
+    logger.info("Worker role: %s.", role)
 
     stopping = Stopping()
     stopping.install()

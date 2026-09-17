@@ -188,6 +188,16 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env — see .env.example}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
+      # This process takes decision jobs and nothing else (R10-T5). It is the reserved lane:
+      # the `api-worker-enrichment` service below runs Deep Evidence, and because that is a
+      # different process this one can never be inside a component when an upload arrives.
+      #
+      # R10-T4 measured what this replaces. With every replica running the full mixture, a
+      # verdict waited up to 1876 s behind enrichment that had already claimed the capacity —
+      # while the decision itself still cost 20-30 s. The ordering inside `app.worker.run`
+      # was already correct and could not help: it prioritises at claim time, and a component
+      # in flight cannot be put down. Scaling this service scales decision capacity only.
+      DEEPGUARD_WORKER_ROLE: decision
       # Which deployment this is. Read by the API for the session cookie and by both
       # processes for the log format (R1-T4): a development stack gets readable lines, and
       # anything else — unset included — gets JSON. Passed through with no default for the
@@ -336,6 +346,42 @@ services:
         limits:
           cpus: "4.0"
           memory: 6G
+
+  # Deep Evidence and shadow experiments, in a process of their own (R10-T5).
+  #
+  # `extends` rather than a copy: this service is the `api-worker` above in every respect —
+  # same image, same command, same credentials, same detector configuration, same resource
+  # ceiling — and differs in exactly one environment variable. Restating a hundred and sixty
+  # lines of configuration to change one of them would guarantee the two drift, and the
+  # drift would be silent: a detector key added to one lane and not the other fails only the
+  # signals that lane happens to run.
+  #
+  # `depends_on` is restated because Compose's `extends` deliberately does not copy it — it
+  # names other services, and a copied dependency would be a claim about this file's shape
+  # rather than about this service's needs. The needs are the same: PostgreSQL to read the
+  # task rows, MinIO to fetch the artifact each component reads.
+  #
+  # **Scale this independently of the decision lane, and that is the point of the split.**
+  # Deep Evidence is the expensive half — R10-T4 measured a median of 560 s per analysis
+  # against 23 s for a decision — so this is the service that wants replicas. However many
+  # it gets, and however long its components run, it cannot delay a verdict: it holds no
+  # decision capacity, because it is refused decision work by its role rather than merely
+  # scheduled behind it.
+  #
+  # Note R10-T4's other measurement before adding replicas here: enrichment is CPU-bound on
+  # this host, not GPU-bound (GPU at 0% and 750 MiB of 5754 MiB in use while two components
+  # ran). Two of these contending for the same cores roughly doubled each one's wall time.
+  # Cores are what this scales on.
+  api-worker-enrichment:
+    extends:
+      service: api-worker
+    environment:
+      DEEPGUARD_WORKER_ROLE: enrichment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
   web:
     build:

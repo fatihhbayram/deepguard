@@ -3898,3 +3898,173 @@ def test_provenance_never_holds_up_the_verdict(queue, fake_storage, fake_c2pa, o
     assert provenance.score is None
     assert provenance.risk_level is None
 
+
+
+# --------------------------------------------------------------------------------------
+# Worker roles — the reserved decision lane (R10-T5)
+# --------------------------------------------------------------------------------------
+#
+# R10-T4 found that the ordering inside `run` — decision first, then enrichment, then shadow —
+# is a correct priority and an insufficient one. It decides what a worker takes *next*, and a
+# worker already inside a Deep Evidence component is not choosing anything: it is busy, for
+# minutes, and the ordering has no say over that. With every replica in that state a verdict
+# waited up to 1876 s, against a decision that costs 20-30 s of actual work.
+#
+# The role is capacity rather than scheduling. A `decision` worker cannot be holding a
+# component when an upload arrives, because it is refused components outright — not placed
+# behind them. These tests hold that refusal, in both directions, and hold that an unreadable
+# role stops the process rather than quietly becoming `both`.
+
+
+def test_a_worker_with_no_role_configured_does_everything(monkeypatch):
+    """The default is what every worker was before the variable existed.
+
+    An existing deployment, a developer running one process, and every test in this suite that
+    drives `run` without setting anything: all of them keep the behaviour they had. The compose
+    file names the roles for production; nothing changes underneath a stack that has not been
+    updated to.
+    """
+    monkeypatch.delenv(worker.WORKER_ROLE_VARIABLE, raising=False)
+
+    assert worker.worker_role() == worker.WORKER_ROLE_BOTH
+    assert worker.validate_worker_role() == worker.WORKER_ROLE_BOTH
+
+
+@pytest.mark.parametrize(
+    "configured, expected",
+    [
+        ("decision", worker.WORKER_ROLE_DECISION),
+        ("  DECISION  ", worker.WORKER_ROLE_DECISION),
+        ("Enrichment", worker.WORKER_ROLE_ENRICHMENT),
+        ("both", worker.WORKER_ROLE_BOTH),
+        # A variable a compose file lists but never sets arrives as the empty string, which is
+        # the same thing as unset and must not be a configuration error.
+        ("", worker.WORKER_ROLE_BOTH),
+        ("   ", worker.WORKER_ROLE_BOTH),
+    ],
+)
+def test_a_role_is_read_forgivingly(monkeypatch, configured, expected):
+    monkeypatch.setenv(worker.WORKER_ROLE_VARIABLE, configured)
+
+    assert worker.validate_worker_role() == expected
+
+
+@pytest.mark.parametrize("configured", ["decisions", "enrich", "none", "all", "deciding"])
+def test_a_role_nobody_declared_is_refused_rather_than_defaulted(monkeypatch, configured):
+    """The fail-safe direction, and the reason it differs from the enrichment policy's.
+
+    `enrichment.policy` falls through to `immediate` on anything it cannot read, because the
+    cost of being wrong there is a report carrying all of its evidence. The cost of being wrong
+    here is a decision lane that has silently become a `both` worker: every verdict still
+    correct, every test still green, and the R10-T4 starvation back the first time two
+    components run at once. Nothing about that announces itself, so it is refused at start-up.
+    """
+    monkeypatch.setenv(worker.WORKER_ROLE_VARIABLE, configured)
+
+    with pytest.raises(worker.InvalidWorkerRole) as refused:
+        worker.validate_worker_role()
+
+    # The message names the variable and what it would have accepted, so an operator reading a
+    # crash-looping container's log can fix it without reading this file.
+    assert worker.WORKER_ROLE_VARIABLE in str(refused.value)
+    assert "decision, enrichment, both" in str(refused.value)
+
+
+def test_a_misconfigured_role_stops_the_worker_starting(monkeypatch):
+    """And it stops it the way a bad timeout does: non-zero, before any work is claimed."""
+    monkeypatch.setenv(worker.WORKER_ROLE_VARIABLE, "decisoin")
+    monkeypatch.setattr(worker, "configure_logging", lambda: None)
+
+    def unreachable(*_args, **_kwargs):
+        raise AssertionError("the worker started with an unreadable role")
+
+    monkeypatch.setattr(worker, "wait_for_schema", unreachable)
+    monkeypatch.setattr(worker, "run", unreachable)
+
+    assert worker.main() == 1
+
+
+def _roles_polled(monkeypatch, role, polls=3):
+    """Which of the three queues `run` actually asks about, under one role.
+
+    Drives the real loop rather than restating it, exactly as the ordering test above does.
+    Every question is recorded and every answer is "nothing here", so the loop keeps polling
+    until it is told to stop and the record is of what it was willing to ask.
+    """
+    monkeypatch.setenv(worker.WORKER_ROLE_VARIABLE, role)
+
+    stopping = worker.Stopping()
+    asked = []
+    remaining = {"polls": polls}
+
+    def decision(_session):
+        asked.append("decision")
+        return False
+
+    def deep_evidence(_session):
+        asked.append("enrichment")
+        return False
+
+    def experiment(_session):
+        asked.append("shadow")
+        return False
+
+    def clock(_seconds):
+        remaining["polls"] -= 1
+        if remaining["polls"] <= 0:
+            stopping.requested = True
+
+    monkeypatch.setattr(worker, "process_one", decision)
+    monkeypatch.setattr(worker.enrichment, "process_one", deep_evidence)
+    monkeypatch.setattr(worker.shadow, "process_one", experiment)
+    monkeypatch.setattr(worker.shadow, "abandon_pending", lambda: None)
+    monkeypatch.setattr(worker, "SessionLocal", lambda: _NullSession())
+
+    worker.run(stopping, sleep=clock)
+
+    return asked
+
+
+def test_a_decision_worker_never_asks_for_enrichment_or_shadow(monkeypatch):
+    """The reserved lane, held at the loop.
+
+    This is the whole corrective measure. A process that never asks for a component can never
+    be running one, so the capacity it represents is available to a verdict at every instant —
+    not prioritised for a verdict, which is what the ordering already gave and what R10-T4
+    showed to be insufficient.
+    """
+    asked = _roles_polled(monkeypatch, "decision")
+
+    assert set(asked) == {"decision"}, asked
+    assert "enrichment" not in asked
+    assert "shadow" not in asked
+
+
+def test_an_enrichment_worker_never_claims_a_decision_job(monkeypatch):
+    """The other direction, which matters for a different reason.
+
+    Not starvation — an enrichment worker taking a decision job would *help* a verdict — but
+    capacity accounting. If this process could take decisions, then scaling enrichment would
+    silently scale decisions too, and the reserved lane would stop being a quantity an operator
+    can reason about. The split is only useful if it is a split.
+
+    Shadow rides with enrichment rather than with decisions, for the reason it has always sat
+    behind production work: an experiment must never be what a worker is busy with when a
+    customer's analysis arrives.
+    """
+    asked = _roles_polled(monkeypatch, "enrichment")
+
+    assert "decision" not in asked, asked
+    assert set(asked) == {"enrichment", "shadow"}, asked
+
+
+def test_a_both_worker_still_asks_all_three_in_the_old_order(monkeypatch):
+    """The default path is unchanged, including the ordering R10-T2 put there.
+
+    The ordering test above already holds the priority; what this adds is that introducing
+    roles did not quietly drop a question from the loop for a worker that was configured to ask
+    all three.
+    """
+    asked = _roles_polled(monkeypatch, "both", polls=1)
+
+    assert asked == ["decision", "enrichment", "shadow"]
