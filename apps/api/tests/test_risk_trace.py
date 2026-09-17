@@ -2386,3 +2386,79 @@ def _risk_note(source: str) -> str:
     """
     start = source.index('<Note term="Risk">')
     return source[start : source.index("</Note>", start)]
+
+
+# --------------------------------------------------------------------------------------
+# The report names the bytes its SHA-256 actually identifies (post-R10 integrity fix)
+# --------------------------------------------------------------------------------------
+#
+# The column has only ever held `original_sha256`, and the report labelled it "SHA-256 of the
+# analysed media" with the sentence "This is the hash of the media that was analysed". On an
+# analysis where `was_normalized` is true that is false: the detectors read a transcoded
+# derivative, and the hash shown identifies the file that was submitted.
+#
+# The value is right and was always right — it is what a reader can check against the file they
+# sent — so what these hold is the *claim* made about it, in both branches, and the footer that
+# repeats the claim at the bottom of the page.
+
+
+@requires_web
+def test_the_hash_is_labelled_as_the_submitted_media():
+    """The label names the bytes the value identifies, not the ones that were scored."""
+    source = WEB_REPORT.read_text(encoding="utf-8")
+
+    assert "SHA-256 of the submitted media" in source
+    assert "SHA-256 of the analysed media" not in source
+    # And the old claim is gone rather than merely qualified further down.
+    assert "This is the hash of the media that was analysed." not in source
+
+
+@requires_web
+def test_a_normalized_analysis_says_the_detectors_read_other_bytes():
+    """The branch the fix exists for, and it has to be explicit rather than hedged.
+
+    A reader checking this hash against their file gets a match, and would otherwise be
+    entitled to conclude the detectors scored those bytes. On a normalized analysis they did
+    not, so the page says so in the same paragraph as the hash rather than leaving it to be
+    inferred from the `Normalized for detection` field a few lines above.
+    """
+    source = WEB_REPORT.read_text(encoding="utf-8")
+    branch = source.split("{analysis.was_normalized", 1)[1].split("{analysis.was_assembled", 1)[0]
+
+    assert "The detectors did not read these bytes." in branch
+    assert "transcoded derivative" in branch
+    # It does not offer a hash it has not got: the derivative identity is not in this payload.
+    assert "derivative's own content identity is not shown" in branch
+    assert "derivative_sha256" not in source
+
+
+@requires_web
+def test_an_unnormalized_analysis_still_states_what_the_hash_covers():
+    """The other branch has to stay true too, and it is the stronger claim of the two."""
+    source = WEB_REPORT.read_text(encoding="utf-8")
+    branch = source.split("{analysis.was_normalized", 1)[1].split("{analysis.was_assembled", 1)[0]
+
+    assert "required no normalization" in branch
+    assert "these are also the bytes every detector on this report read" in branch
+
+
+@requires_web
+def test_the_footer_makes_the_same_claim_as_the_field():
+    """A footer repeating the old sentence would reinstate the defect at the bottom of the page."""
+    source = WEB_REPORT.read_text(encoding="utf-8")
+    footer = source.split("<footer", 1)[1]
+
+    assert "hash of the\n            submitted media" in footer
+    assert "not of the derivative the detectors read" in footer
+    assert "analysed\n            media" not in footer
+
+
+@requires_web
+def test_the_hash_wording_claims_nothing_about_the_media():
+    """The correction may not smuggle in a finding, in either branch."""
+    source = WEB_REPORT.read_text(encoding="utf-8")
+    start = source.index("SHA-256 of the submitted media")
+    block = source[start : source.index("</div>", start)]
+
+    for claim in ("authentic", "genuine", "unaltered", "verified", "Fake", "Real"):
+        assert claim not in block, claim

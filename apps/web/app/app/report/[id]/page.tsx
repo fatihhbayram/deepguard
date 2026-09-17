@@ -245,8 +245,18 @@ function MediaSection({
         <Field label="Acquisition" value={acquisitionStatement(analysis)} />
       </dl>
       <div className="mt-4 break-inside-avoid">
+        {/* Named for the bytes it actually identifies, which are the submitted ones.
+            
+            It said "of the analysed media" until this was corrected, and on a normalized
+            analysis that was untrue: the detectors read a transcoded derivative, and this
+            column has only ever held `original_sha256`. The value is right and was always
+            right — it is what a reader can check against the file they sent — so what changes
+            here is the claim made about it, and the normalization sentence below says plainly
+            which bytes were scored. The derivative's own content identity is deliberately not
+            carried by this payload (`AnalysisSummary` is narrower than the upload response),
+            so the page says that rather than showing a hash it does not have. */}
         <dt className="text-xs uppercase tracking-wide opacity-60">
-          SHA-256 of the analysed media
+          SHA-256 of the submitted media
         </dt>
         {/* Printed in full, never abbreviated: an abbreviated hash cannot be checked, and
             checking it against the source file is the whole reason it is here. */}
@@ -254,8 +264,11 @@ function MediaSection({
           {analysis.original_sha256 ?? ABSENT}
         </dd>
         <p className="mt-1 text-xs opacity-70">
-          This is the hash of the media that was analysed. It is not a hash or a signature of
-          this report.
+          This is the hash of the media as it reached InspectRoot. It is not a hash or a
+          signature of this report.
+          {analysis.was_normalized
+            ? " The detectors did not read these bytes. This media required normalization, so every reading on this report was taken on a transcoded derivative of it, and this hash identifies the submitted file rather than the derivative that was scored. The derivative's own content identity is not shown on this report."
+            : " This media required no normalization, so these are also the bytes every detector on this report read."}
           {analysis.was_assembled
             ? " Because this acquisition was assembled from separate video and audio streams, it hashes the artifact DeepGuard built and stored, not a file the source published — the source published no single file to compare it against."
             : ""}
@@ -1797,7 +1810,8 @@ export default async function Report({ params }: { params: Promise<{ id: string 
             This report is a rendering of forensic evidence persisted by InspectRoot for the
             analysis named above. It is not cryptographically signed, and reproducing it does
             not establish that its contents are unaltered. The SHA-256 shown is the hash of the
-            analysed media, not of this report.
+            submitted media, not of this report — and, where the media was normalized for
+            detection, not of the derivative the detectors read.
           </p>
           <p className="mt-2 max-w-[76ch] font-medium">
             Nothing in this document states that the analysed media is genuine or manipulated.
