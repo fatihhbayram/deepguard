@@ -2039,3 +2039,350 @@ def test_the_api_trace_states_no_coverage_for_a_legacy_decision():
 
     assert rendered.model_dump()["decision_coverage"] is None
     assert [c.signal for c in rendered.supplementary_evidence] == ["lip_forensics"]
+
+
+# --------------------------------------------------------------------------------------
+# The analysis list resolves a v5 verdict through the shared resolver (post-R10 UI fix)
+# --------------------------------------------------------------------------------------
+#
+# The same defect R9-T5 removed from the admin card, found again on the third surface. The
+# list column knew `HIGH`, `MEDIUM` and `UNKNOWN`, so every analysis decided under
+# `r9-v5.0.0` — which is every analysis this system now takes — rendered as `Unsupported`
+# beside a report that read `No calibrated manipulation signal detected` for the same row.
+#
+# Nothing was wrong with the stored decision and nothing about the failure was unsafe: refusing
+# to name a vocabulary it does not know is the direction the allowlist is supposed to fail in.
+# What it cost was a dashboard that called every current verdict unsupported, and an operator
+# with two screens disagreeing about one row and no way to tell which to believe.
+
+import json  # noqa: E402 — beside the tests that need it, not the file's imports
+import subprocess  # noqa: E402
+from functools import lru_cache  # noqa: E402
+from shutil import which  # noqa: E402
+
+WEB_LISTING = WEB_ROOT / "app" / "app" / "page.tsx"
+
+NODE = "node"
+TYPESCRIPT = WEB_ROOT / "node_modules" / "typescript"
+
+requires_resolver = pytest.mark.skipif(
+    not (WEB_ANALYSIS.exists() and TYPESCRIPT.exists() and which(NODE) is not None),
+    reason="node and the web application's TypeScript are needed to run the resolvers",
+)
+
+# Every level the resolvers are asked about, with the ruleset it is stored under. Written out
+# rather than derived from the module under test: a case list built from `V5_VERDICTS` would
+# agree with any change to it, including one that dropped a verdict.
+RESOLVER_CASES = [
+    # The three v5 verdicts, under the version that takes them.
+    ("MANIPULATION_DETECTED", "r9-v5.0.0"),
+    ("NO_CALIBRATED_MANIPULATION_SIGNAL", "r9-v5.0.0"),
+    ("INCONCLUSIVE", "r9-v5.0.0"),
+    # The legacy levels, under a version that takes those.
+    ("HIGH", "r7-v4.0.0"),
+    ("MEDIUM", "r7-v4.0.0"),
+    ("UNKNOWN", "r7-v4.0.0"),
+    # A level no build has a calibrated meaning for.
+    ("FAKE", "r9-v5.0.0"),
+    ("LOW", "r7-v4.0.0"),
+    ("CRITICAL", None),
+    # Each vocabulary read under the other's version. Neither may borrow the other's word:
+    # a stored `MEDIUM` is not an `INCONCLUSIVE` and is never shown as one (R9-T1 invariant 4).
+    ("MEDIUM", "r9-v5.0.0"),
+    ("MANIPULATION_DETECTED", "r7-v4.0.0"),
+    # A decision taken under a ruleset this build has never heard of.
+    ("MANIPULATION_DETECTED", "r99-v9.0.0"),
+]
+
+
+@lru_cache(maxsize=1)
+def _resolved() -> dict[tuple[str, str | None], dict[str, str]]:
+    """Run the real resolvers over every case, in one node process.
+
+    The whole of `analysis.ts` is transpiled and executed rather than a block sliced out of it,
+    because what is under test is the resolution *and* the tables it reads — a copy of either
+    would be a copy that can agree with a broken original. Its two imports are stubbed: neither
+    `observability` nor `session` is reachable from a resolver, and loading them would drag the
+    application's fetch layer into a test about a lookup.
+
+    Executed rather than pattern-matched for the reason `test_acquisition_source.py` executes
+    its sentences: the failure being guarded against is the right label on the wrong branch, and
+    a source-text assertion would pass just as happily with the branches swapped.
+
+    The driver reads the module from disk rather than carrying it in `node -e`. `analysis.ts` is
+    tens of kilobytes and the inline form exceeded the argument limit — a detail of this
+    machine, not of the code, but one that made the tests fail for a reason that had nothing to
+    do with what they check. Cached because the transpile is the expensive part and every case
+    is answered by the same run.
+    """
+    driver = """
+        const fs = require("fs");
+        const ts = require(process.argv[1]);
+        const compiled = ts.transpileModule(
+            fs.readFileSync(process.argv[2], "utf8"),
+            { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }
+        ).outputText;
+        const module_ = { exports: {} };
+        const stub = new Proxy({}, { get: () => () => undefined });
+        new Function("exports", "module", "require", compiled)(
+            module_.exports, module_, () => stub
+        );
+        const cases = JSON.parse(process.argv[3]);
+        console.log(JSON.stringify(cases.map(([level, rulesVersion]) => ({
+            label: module_.exports.classificationLabel(level, rulesVersion),
+            style: module_.exports.classificationStyle(level, rulesVersion),
+        }))));
+    """
+
+    result = subprocess.run(
+        [
+            NODE,
+            "-e",
+            driver,
+            "--",
+            str(TYPESCRIPT),
+            str(WEB_ANALYSIS),
+            json.dumps([list(case) for case in RESOLVER_CASES]),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"node exited {result.returncode}:\n{result.stderr.strip()}")
+
+    return dict(zip(RESOLVER_CASES, json.loads(result.stdout)))
+
+
+@requires_resolver
+@pytest.mark.parametrize(
+    "verdict, title",
+    [
+        ("MANIPULATION_DETECTED", "Manipulation detected"),
+        ("NO_CALIBRATED_MANIPULATION_SIGNAL", "No calibrated manipulation signal detected"),
+        ("INCONCLUSIVE", "Inconclusive"),
+    ],
+)
+def test_a_v5_verdict_resolves_to_the_title_the_report_gives_it(verdict, title):
+    """The three verdicts, in the exact words the report says them in.
+
+    Asserted against the literal strings rather than against `V5_VERDICT_WORDING`, so the table
+    and this test cannot agree with each other about a word neither should have changed.
+    """
+    resolved = _resolved()[(verdict, "r9-v5.0.0")]
+
+    assert resolved["label"] == title
+    assert resolved["style"] != "" and "Unsupported" not in resolved["label"]
+
+
+@requires_resolver
+@pytest.mark.parametrize(
+    "level, label",
+    [("HIGH", "High risk"), ("MEDIUM", "Medium risk"), ("UNKNOWN", "Unknown")],
+)
+def test_a_legacy_level_still_resolves_exactly_as_it_did(level, label):
+    """The v4 vocabulary is untouched by the fix: this column did these three correctly."""
+    resolved = _resolved()[(level, "r7-v4.0.0")]
+
+    assert resolved["label"] == label
+
+
+@requires_resolver
+@pytest.mark.parametrize(
+    "level, rules_version",
+    [("FAKE", "r9-v5.0.0"), ("LOW", "r7-v4.0.0"), ("CRITICAL", None)],
+)
+def test_a_level_outside_every_vocabulary_is_still_unsupported(level, rules_version):
+    """The guard the allowlists exist for, which the fix must not have widened.
+
+    `FAKE` is the case that matters most: a row carrying it must never reach the column as an
+    official classification, because the certainty it claims is exactly the one this product
+    refuses to make.
+    """
+    resolved = _resolved()[(level, rules_version)]
+
+    assert resolved["label"] == "Unsupported"
+
+
+@requires_resolver
+@pytest.mark.parametrize(
+    "level, rules_version",
+    [
+        ("MEDIUM", "r9-v5.0.0"),
+        ("MANIPULATION_DETECTED", "r7-v4.0.0"),
+        ("MANIPULATION_DETECTED", "r99-v9.0.0"),
+    ],
+)
+def test_neither_vocabulary_is_read_through_the_other(level, rules_version):
+    """R9-T1 invariant 4, from the rendering side.
+
+    `rules_version` picks the vocabulary and nothing else does — not the shape of the string and
+    not a "looks like a verdict" test. A `MEDIUM` titled from the v5 table, or a
+    `MANIPULATION_DETECTED` titled from the legacy one, would name a decision nobody took, so
+    both fall through to `Unsupported` instead. The third case is the same rule for a ruleset
+    this build has never heard of.
+    """
+    assert _resolved()[(level, rules_version)]["label"] == "Unsupported"
+
+
+@requires_resolver
+def test_the_word_and_the_band_agree_about_what_is_supported():
+    """The two resolvers are mirrors, and this is what holds them to it.
+
+    They are separate functions because not every surface asks both — the admin card shows the
+    word with no band. Separate functions can drift, and a drift here is a row rendered
+    `Manipulation detected` in the neutral band, or `Unsupported` in the rose one: the page
+    contradicting itself about one analysis.
+    """
+    unsupported_style = "bg-slate-500/10 text-slate-700 dark:text-slate-300"
+
+    for case, resolved in _resolved().items():
+        if resolved["label"] == "Unsupported":
+            assert resolved["style"] == unsupported_style, case
+
+
+@requires_resolver
+def test_no_verdict_is_shown_in_a_band_that_reads_as_a_clean_result():
+    """`NO_CALIBRATED_MANIPULATION_SIGNAL` in particular is not green.
+
+    That verdict says the deciding detectors produced no threshold-reaching signal, and the
+    wording beside it spends a sentence refusing to call the media authentic. A green band hands
+    the reader that reassurance back through the one channel the words cannot reach, and a
+    reader who takes the colour as the finding is precisely who this vocabulary was written for.
+    """
+    for case, resolved in _resolved().items():
+        for reassuring in ("green", "emerald", "teal", "lime"):
+            assert reassuring not in resolved["style"], (case, resolved["style"])
+
+
+@requires_web
+def test_the_listing_titles_a_v5_verdict_through_the_same_resolver_as_the_report():
+    """The fix itself, in the shape R9-T5 applied to the admin card.
+
+    The column asks the shared resolvers and holds no table of its own. The private lookups it
+    used to make are gone rather than merely bypassed — a second copy of the vocabulary is a
+    copy that can disagree, and two screens disagreeing about one row is worse than either being
+    wrong alone.
+    """
+    source = WEB_LISTING.read_text(encoding="utf-8")
+
+    assert "classificationLabel(level, analysis.risk_rules_version)" in source
+    assert "classificationStyle(level, analysis.risk_rules_version)" in source
+
+    # The private lookups are gone, not bypassed.
+    assert "RISK_LABELS[level]" not in source
+    assert "RISK_STYLES[level]" not in source
+    assert "isSupportedRiskLevel" not in source
+
+    # And the column still says its own sentences for the two states that are not a level.
+    assert "level === null" in source
+    assert "PENDING" in source
+    assert "UNSUPPORTED" in source
+
+
+@requires_web
+def test_the_listing_derives_no_classification_of_its_own():
+    """It resolves a stored level to a word; it does not decide anything.
+
+    The same refusal the report and the admin card are held to: no score is compared against a
+    threshold here, and no coverage is counted, so the column cannot contradict the decision the
+    engine committed.
+    """
+    source = WEB_LISTING.read_text(encoding="utf-8")
+    risk_column = source.split("function Risk(", 1)[1].split("\nfunction ", 1)[0]
+
+    for derived in ("threshold", "score >", "score <", ">= 0.", "<= 0.", "usable ==="):
+        assert derived not in risk_column, derived
+
+
+# --------------------------------------------------------------------------------------
+# The listing's Risk note describes the vocabulary the column actually shows
+# --------------------------------------------------------------------------------------
+#
+# The note went stale the way explanatory copy does: it was written for `r5-v3.0.0`, it
+# described three deciding detectors, and it named only `HIGH`, `MEDIUM` and `UNKNOWN`. By
+# `r9-v5.0.0` two detectors decide, LipForensics is evidence-only, and the column shows a
+# vocabulary the note did not mention at all — so a reader was being explained a table that no
+# longer existed. These hold it to the table beside it.
+
+
+@requires_web
+def test_the_risk_note_names_every_verdict_the_column_can_show():
+    """All three, and through the shared table rather than as typed-out strings.
+
+    The reuse is the assertion. A note that spelled the verdicts itself would be a second copy
+    of the vocabulary sitting a few centimetres from the badge that reads the first one, free to
+    disagree with it after any wording change — which is the failure mode this whole area has
+    already produced twice, on the admin card and on this column.
+    """
+    note = _risk_note(WEB_LISTING.read_text(encoding="utf-8"))
+
+    for verdict in ("MANIPULATION_DETECTED", "NO_CALIBRATED_MANIPULATION_SIGNAL", "INCONCLUSIVE"):
+        assert f"V5_VERDICT_WORDING.{verdict}.title" in note, verdict
+
+    # The legacy levels stay named: rows decided under an earlier ruleset still show them.
+    for level in ("HIGH", "MEDIUM", "UNKNOWN"):
+        assert f"RISK_LABELS.{level}" in note, level
+
+
+@requires_web
+def test_the_risk_note_types_no_verdict_of_its_own():
+    """The words themselves appear nowhere in this file, only the lookups that produce them."""
+    source = WEB_LISTING.read_text(encoding="utf-8")
+
+    for spelled in (
+        "Manipulation detected",
+        "No calibrated manipulation signal detected",
+        "High risk",
+        "Medium risk",
+    ):
+        assert spelled not in source, spelled
+
+
+@requires_web
+def test_the_risk_note_describes_the_ruleset_that_is_actually_deciding():
+    """It named `r5-v3.0.0` and three deciding detectors long after neither was true."""
+    note = _risk_note(WEB_LISTING.read_text(encoding="utf-8"))
+
+    assert "RULES_VERSION_V5" in note
+    assert "RULES_VERSION_V3" not in note
+    assert "two detectors are read for the" in note
+    # LipForensics is named as evidence-only rather than left in the deciding set.
+    assert "evidence" in note and "mouth-dynamics" in note
+
+
+@requires_web
+def test_the_risk_note_claims_no_authenticity_and_no_fake_real_finding():
+    """The one thing this copy may never drift into.
+
+    `NO_CALIBRATED_MANIPULATION_SIGNAL` is where a reader most wants to be told the media is
+    clean, so the note has to carry the refusal rather than leave it to the report. The
+    assertions are on claim constructs, not on bare words: the refusals themselves contain
+    "authentic" and "genuine", and a test that banned the words would ban the sentence that
+    does the work.
+    """
+    note = _risk_note(WEB_LISTING.read_text(encoding="utf-8"))
+
+    assert "not a Fake/Real determination" in note
+    assert "does not establish that" in note
+    assert "neither evidence of manipulation nor evidence of authenticity" in note
+
+    for claim in (
+        "the media is genuine.",
+        "the media is authentic.",
+        "confirms the media",
+        "proves the media",
+        "is clean",
+    ):
+        assert claim not in note, claim
+
+
+def _risk_note(source: str) -> str:
+    """The Risk note alone, sliced by the term it is filed under.
+
+    By name rather than by line number, so moving it within the file does not break this and
+    removing it fails loudly here instead of passing on an empty string.
+    """
+    start = source.index('<Note term="Risk">')
+    return source[start : source.index("</Note>", start)]

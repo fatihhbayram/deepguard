@@ -27,18 +27,18 @@ import {
   ProvenanceSignal,
   REMOTE_PROVENANCE,
   RISK_LABELS,
-  RISK_STYLES,
-  RULES_VERSION_V3,
-  RISK_UNSUPPORTED_STYLE,
+  RULES_VERSION_V5,
   SIGNAL_STATUS_SUCCESS,
   SPEAKER_UNAVAILABLE,
   SyntheticVideoSignal,
   UNAVAILABLE,
   UNMATCHED_VOICE,
   UNSUPPORTED,
+  V5_VERDICT_WORDING,
+  classificationLabel,
+  classificationStyle,
   fetchAnalyses,
   fetchSession,
-  isSupportedRiskLevel,
   riskRationale,
 } from "../analysis";
 
@@ -652,24 +652,31 @@ function shortCalibration(id: string): string {
 /**
  * The risk DeepGuard classified one analysis at, with the trace that makes it explainable.
  *
- * This is a **risk** classification, not a Fake/Real determination, and the column is
- * worded throughout so it cannot be read as one. `High risk` says the calibrated evidence
- * crossed a threshold measured for that purpose; it does not say the media is a deepfake.
- * `Medium risk` is the indeterminate band — evidence that settles nothing — and emphatically
- * not "probably synthetic". No level here rules anything out either: an analysis that is
- * not HIGH has not been cleared of face manipulation, it has only failed to trip a rule
- * that looks at one calibrated signal.
+ * This is a classification of calibrated forensic evidence, not a Fake/Real determination,
+ * and the column is worded throughout so it cannot be read as one. Under `r9-v5.0.0` a
+ * verdict says whether a deciding detector reached its own operating point; under the earlier
+ * rulesets a level says the same thing in the vocabulary of its day. Neither rules anything
+ * out: an analysis carrying no manipulation verdict has not been cleared of manipulation, it
+ * has only failed to trip a rule reading two calibrated signals.
  *
- * Five states, deliberately never merged into fewer:
+ * **Two vocabularies, and which one a row speaks is `rules_version` and nothing else.** That
+ * resolution is not made here — `classificationLabel` and `classificationStyle` own it, and
+ * they own it for the report and the admin card too, so one analysis cannot read as a verdict
+ * on one screen and as `Unsupported` on another. This column held its own legacy-only lookup
+ * until the post-R10 fix and did exactly that.
  *
- * - a level the engine concluded (`HIGH`, `MEDIUM`, `UNKNOWN`);
+ * Four states, deliberately never merged into fewer:
+ *
+ * - a decision the engine concluded, named through the vocabulary of the ruleset that took
+ *   it — a v5 verdict, or a legacy `HIGH`, `MEDIUM` or `UNKNOWN`. `UNKNOWN` and
+ *   `INCONCLUSIVE` belong here and not below: the engine ran, a rule fired, and the answer
+ *   is that the evidence supports no classification;
  * - no decision on an analysis still working, which is `Pending`;
  * - no decision on an analysis that finished, which is nothing at all — everything stored
  *   before the engine existed;
- * - `UNKNOWN`, which belongs to the first group and not the last two: the engine ran, a
- *   rule fired, and the answer is that the evidence supports no classification;
- * - a non-null level outside the allowlist, which is `Unsupported` — the row holds a state
- *   this build has no calibrated meaning for, and saying so is the whole of what is known.
+ * - a level outside its own version's vocabulary, which is `Unsupported` — the row holds a
+ *   state this build has no calibrated meaning for, and saying so is the whole of what is
+ *   known.
  *
  * The decision is displayed exactly as the API read it off the row. Nothing here derives a
  * level, and in particular nothing looks at the detector scores in the same row to do it:
@@ -680,9 +687,9 @@ function shortCalibration(id: string): string {
  * string in the risk column would let whatever is in the database — a level from a later
  * ruleset, a `LOW` this ruleset disabled, a hand-written `FAKE` — appear as an official
  * DeepGuard classification, and the dashboard has no basis for any of those. So the badge is
- * reserved for the allowlist and everything else is named as unsupported.
+ * reserved for the allowlists and everything else is named as unsupported.
  *
- * The level is stated as a sentence — `RISK — Medium risk` — rather than shown as a lone
+ * The classification is stated as a sentence — `RISK — <name>` — rather than shown as a lone
  * coloured pill. A pill invites the reader to take the colour as the finding; naming the
  * classification and carrying its ruleset directly underneath keeps the level attached to
  * the thing that gives it meaning.
@@ -707,16 +714,28 @@ function Risk({ analysis }: { analysis: AnalysisSummary }) {
     );
   }
 
-  // The stored value is only ever a lookup key, never something to echo. A level that is
-  // not on the allowlist gets the unsupported state and neutral styling; the raw string
-  // stays available for diagnosis on hover, where it reads as the datum it is rather than
-  // as a risk class this product recognizes.
-  if (!isSupportedRiskLevel(level)) {
+  // The stored value is only ever a lookup key, never something to echo, and which vocabulary
+  // it is a key *into* is resolved by `rules_version` alone — by the shared resolvers, not
+  // here. This column knew `HIGH`, `MEDIUM` and `UNKNOWN` and nothing else, so every verdict a
+  // `r9-v5.0.0` analysis was decided under arrived as `Unsupported` while the report for the
+  // same row named the verdict in full. That is the failure R9-T5
+  // already removed from the admin card, and the fix is the one it used: the resolver is asked,
+  // and this file holds no table of its own to disagree with it.
+  //
+  // A level outside its own version's vocabulary still gets the unsupported state and neutral
+  // styling, which is the whole point of the allowlists — a `FAKE` row, or a level from a
+  // ruleset this build predates, must not borrow a supported band's label and colour. The raw
+  // string stays available for diagnosis on hover, where it reads as the datum it is rather
+  // than as a risk class this product recognizes.
+  const label = classificationLabel(level, analysis.risk_rules_version);
+  const style = classificationStyle(level, analysis.risk_rules_version);
+
+  if (label === UNSUPPORTED) {
     return (
       <div className="font-mono text-[11px]">
         <span className="text-muted">RISK — </span>
         <span
-          className={`px-1.5 py-0.5 ${RISK_UNSUPPORTED_STYLE}`}
+          className={`px-1.5 py-0.5 ${style}`}
           title={`Stored risk state ${level} is not a supported InspectRoot risk classification${
             analysis.risk_rules_version ? ` (ruleset ${analysis.risk_rules_version})` : ""
           }.`}
@@ -731,7 +750,7 @@ function Risk({ analysis }: { analysis: AnalysisSummary }) {
     <div className="font-mono text-[11px]">
       <div>
         <span className="text-muted">RISK — </span>
-        <span className={`px-1.5 py-0.5 ${RISK_STYLES[level]}`}>{RISK_LABELS[level]}</span>
+        <span className={`px-1.5 py-0.5 ${style}`}>{label}</span>
       </div>
       {analysis.risk_rules_version && (
         <div className="mt-1.5 text-[10px] tracking-[0.04em] text-muted">
@@ -1272,24 +1291,47 @@ function Methodology() {
           size to the tallest cell — which left a short note like "Synthetic probability"
           sitting above a block of dead space as tall as the Risk note beside it. */}
       <dl className="border-t border-hair px-4 pt-6 pb-0 sm:columns-2 sm:gap-12">
+        {/* The column describes two vocabularies because the table shows two. Every verdict
+            name below is read from `V5_VERDICT_WORDING` rather than typed out, exactly as the
+            legacy levels are read from `RISK_LABELS`: this note and the badge beside it must
+            never be able to say the verdict differently. Nothing here is a forensic statement
+            of its own — it names what the engine committed and what each name does not claim. */}
         <Note term="Risk">
           Risk is a deterministic InspectRoot classification based on calibrated forensic
-          evidence. It is not a Fake/Real determination.{" "}
-          <span className="font-mono">{RISK_LABELS.MEDIUM}</span> is the indeterminate band
-          — evidence that settles nothing either way — and the absence of{" "}
-          <span className="font-mono">{RISK_LABELS.HIGH}</span> does not mean the media is
-          genuine. Under ruleset{" "}
-          <span className="font-mono">{RULES_VERSION_V3}</span> three detectors are read, one
-          calibrated for generated video and two for face swaps — one reading the appearance
-          of sampled face crops, one reading how the mouth moves across consecutive frames —
-          each against its own measured threshold; the scores are never averaged, combined or
-          voted on, and the rule in the trace names which detector reached its threshold.{" "}
-          <span className="font-mono">{RISK_LABELS.UNKNOWN}</span> means the
-          engine ran and could not classify, which is not the same as{" "}
-          <span className="font-mono">{PENDING}</span>, where no decision has been taken
-          yet, or <span className="font-mono">{ABSENT}</span>, where an analysis finished
-          before there was an engine to take one. Each level is shown with the ruleset that
-          produced it, since the same word means something different under a different one.{" "}
+          evidence. It is not a Fake/Real determination. Under ruleset{" "}
+          <span className="font-mono">{RULES_VERSION_V5}</span> two detectors are read for the
+          decision — one calibrated for generated video, one for face swaps — each against its
+          own measured threshold; the scores are never averaged, combined or voted on, and the
+          rule in the trace names which detector reached its threshold. The mouth-dynamics
+          model still runs and is reported on the report, but under this ruleset it is evidence
+          only: it cannot reach the assessment, and a reading it failed to produce removes no
+          decision coverage.{" "}
+          <span className="font-mono">
+            {V5_VERDICT_WORDING.MANIPULATION_DETECTED.title}
+          </span>{" "}
+          means at least one of those two reached its operating point.{" "}
+          <span className="font-mono">
+            {V5_VERDICT_WORDING.NO_CALIBRATED_MANIPULATION_SIGNAL.title}
+          </span>{" "}
+          means both produced usable readings and neither did — which does not establish that
+          the media is authentic, genuine or source-verified, since a detector reports a score
+          below its threshold for a manipulation family it is blind to as readily as for
+          unmanipulated media.{" "}
+          <span className="font-mono">{V5_VERDICT_WORDING.INCONCLUSIVE.title}</span> means a
+          deciding detector produced no usable reading, so the calibrated assessment could not
+          be completed; it is neither evidence of manipulation nor evidence of authenticity.
+          Analyses decided under an earlier ruleset carry that ruleset&apos;s vocabulary
+          instead —{" "}
+          <span className="font-mono">{RISK_LABELS.HIGH}</span>,{" "}
+          <span className="font-mono">{RISK_LABELS.MEDIUM}</span> and{" "}
+          <span className="font-mono">{RISK_LABELS.UNKNOWN}</span>, where{" "}
+          <span className="font-mono">{RISK_LABELS.UNKNOWN}</span> means the engine ran and
+          could not classify. Every decision is shown with the ruleset that produced it, since
+          the same word means something different under a different one, and neither vocabulary
+          is ever read through the other&apos;s. None of this is the same as{" "}
+          <span className="font-mono">{PENDING}</span>, where no decision has been taken yet,
+          or <span className="font-mono">{ABSENT}</span>, where an analysis finished before
+          there was an engine to take one.{" "}
           <span className="font-mono">{UNSUPPORTED}</span> means the stored state is not one
           this build classifies under, so it is reported as unsupported rather than shown as
           a risk class InspectRoot has no calibrated meaning for.

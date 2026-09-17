@@ -823,6 +823,48 @@ export function classificationLabel(level: string, rulesVersion: string | null):
   return isSupportedRiskLevel(level) ? RISK_LABELS[level] : UNSUPPORTED;
 }
 
+// The band a v5 verdict is shown in where a surface shows one, keyed by the union so this table
+// and `V5_VERDICTS` cannot drift apart — the rule `RISK_STYLES` follows against its own
+// allowlist.
+//
+// **Nothing here is green, and `NO_CALIBRATED_MANIPULATION_SIGNAL` in particular is not.** That
+// verdict says the deciding detectors produced no threshold-reaching signal; it does not say the
+// media is clean, and the wording table beside it spends a whole sentence refusing to. A green
+// band would hand the reader that reassurance back in the one channel the words cannot reach,
+// and a reader who takes the colour as the finding is exactly who this vocabulary was written
+// for. It is the same muted treatment as any other non-answer on the page.
+//
+// Colour is supportive only, as it is for the legacy levels: the label carries the meaning and
+// stays legible without it.
+export const V5_VERDICT_STYLES: Record<V5Verdict, string> = {
+  MANIPULATION_DETECTED: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+  NO_CALIBRATED_MANIPULATION_SIGNAL: "bg-slate-500/10 text-slate-700 dark:text-slate-300",
+  INCONCLUSIVE: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+};
+
+/**
+ * The band a stored classification is shown in, resolved through the version that took it.
+ *
+ * `classificationLabel`'s counterpart, and deliberately its mirror image: the same two
+ * vocabularies, chosen between by `rules_version` and by nothing else, falling through to the
+ * unsupported treatment in the same two cases. A surface that resolved the word through one rule
+ * and the colour through another could print `Manipulation detected` in the neutral band, or
+ * `Unsupported` in the rose one, and either would be the page contradicting itself about a row.
+ *
+ * Kept as a second function rather than folded into the first because the two answer different
+ * questions and not every surface asks both — the admin card shows the word with no band at all.
+ * `tests/test_risk_trace.py` holds them to agreeing about which levels are supported.
+ *
+ * Nothing is decided here. This chooses a colour for a level the engine already committed.
+ */
+export function classificationStyle(level: string, rulesVersion: string | null): string {
+  if (rulesVersion === RULES_VERSION_V5) {
+    return isV5Verdict(level) ? V5_VERDICT_STYLES[level] : RISK_UNSUPPORTED_STYLE;
+  }
+
+  return isSupportedRiskLevel(level) ? RISK_STYLES[level] : RISK_UNSUPPORTED_STYLE;
+}
+
 // Compile-time proof that the operational vocabulary excludes the words this summary must never
 // reach for, checked by the frontend's existing `tsc --noEmit`. Widening the union to `string`,
 // or adding a reassuring verdict, breaks the build here rather than shipping quietly.
