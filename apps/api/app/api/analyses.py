@@ -580,6 +580,23 @@ class RiskContribution(BaseModel):
     # such a detector is a reason for the verdict.
     # `considered` otherwise: in scope of the ruleset and read by it, nothing more.
     role: str
+    # Whether the ruleset version this analysis names could take its decisive conclusion from
+    # this detector at all. Read off that frozen version (`app.risk_trace`), never off the
+    # rules in force today: the mouth-dynamics detector is `true` here on a `r5-v3.0.0`
+    # analysis, which could decide from it, and `false` on a `r9-v5.0.0` one, which reads it
+    # as evidence only — the same detector, the same score, two different rulesets.
+    #
+    # Published so that no consumer has to work out why a contribution is `considered`. The two
+    # reasons are not the same fact: a decision-eligible detector that stayed below its
+    # threshold was read *for the decision* and did not reach it, while an evidence-only
+    # detector could not have decided however it scored. `role` alone cannot separate them, and
+    # a consumer separating them itself would be holding a copy of this ruleset's role
+    # assignment — which is the derivation R9-T4 exists to make unnecessary.
+    #
+    # It is presentation metadata about the ruleset and says nothing whatever about the media.
+    # It moves no coverage arithmetic: `decision_coverage` was already computed over exactly
+    # the detectors this flag marks, and publishing the flag changes neither number.
+    decisional: bool
 
 
 class DecisionCoverage(BaseModel):

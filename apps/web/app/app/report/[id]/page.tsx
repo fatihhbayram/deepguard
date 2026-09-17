@@ -30,6 +30,7 @@ import {
   componentDetectorName,
   componentStateText,
   contributionRoleText,
+  lipForensicsRulesetRole,
   credentialsAbsentStatement,
   deepEvidenceWording,
   provenanceWording,
@@ -627,7 +628,7 @@ function TraceContribution({ contribution }: { contribution: RiskContribution })
         · <span className="font-mono break-all">{condition}</span>
       </p>
       <p className="mt-1 text-xs opacity-70 break-words">
-        {contributionRoleText(contribution.role)}
+        {contributionRoleText(contribution.role, contribution.decisional)}
       </p>
 
       <dl className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1480,25 +1481,29 @@ function LipForensicsSection({
   signal: LipForensicsSignal | null;
   analysis: AnalysisSummary;
 }) {
-  // The same ruleset-dependent branch the section above carries, and now for the same reason.
-  // R5-T4 promoted this detector from independent evidence to a calibrated decider once R5-T3
-  // had measured an operating point for it; a report on a decision taken under an earlier
-  // ruleset must keep saying that this score took no part in it, because it did not.
+  // What the ruleset that decided this analysis could do with this model, read from the
+  // decision itself: `decisional` on this model's own contribution, which the API publishes
+  // off the frozen ruleset the analysis names.
   //
-  // v3 is the only ruleset this is ever true of, and deliberately so on both sides. R7-T6
-  // withdrew the detector from the rules after R7-T5 measured what its operating point did to
-  // genuine media, so a `r7-v4.0.0` decision belongs with the earlier ones here: the score
-  // below was read, recorded and shown, and it took no part in the level — including when it
-  // is above the threshold measured for it.
-  const decides = analysis.risk_rules_version === RULES_VERSION_V3;
-  // The two rulesets that had an operating point for this model and chose not to apply it.
-  // "Evidence only" and "not calibrated under this ruleset" are different facts about a score
-  // — one was measured and withheld, the other was never measured — and they are worded apart
-  // so the panel cannot contradict the scope block, which has said since R7-T6 that this model
-  // is calibrated and still cannot decide.
-  const evidenceOnly =
-    analysis.risk_rules_version === RULES_VERSION_V4 ||
-    analysis.risk_rules_version === RULES_VERSION_V5;
+  // It used to be a comparison against `risk_rules_version` here — v3 decides, v4 and v5 read
+  // as evidence only — which was a copy of the ruleset's role assignment kept in the browser.
+  // The panel's wording is a forensic claim about what took part in a decision, so it is read
+  // from the decision and not worked out beside it. The facts it words are unchanged: R5-T4
+  // promoted this detector to a calibrated decider once R5-T3 had measured an operating point
+  // for it, and R7-T6 withdrew it from the rules after R7-T5 measured what that operating
+  // point did to genuine media.
+  //
+  // "Evidence only" and "not calibrated under this ruleset" stay worded apart, because they
+  // are different facts about a score — one was measured and withheld, the other was never
+  // measured — and the scope block has said since R7-T6 that this model is calibrated and
+  // still cannot decide.
+  const rulesetRole = lipForensicsRulesetRole(analysis.risk_trace);
+  const decides = rulesetRole === "decides";
+  const evidenceOnly = rulesetRole === "evidence_only";
+  // Read by this ruleset, with the record not saying what it could do with it — a response
+  // from an API older than the field. Neither of the sentences below is available, because
+  // both are stronger than what this payload states.
+  const roleUnstated = rulesetRole === "unstated";
 
   return (
     <Section
@@ -1506,7 +1511,9 @@ function LipForensicsSection({
       subtitle={
         decides
           ? "Calibrated evidence. The score below is the model's own output, banded against a threshold measured for it in R5-T3."
-          : "Independent evidence. The score below is the model's own output and is not part of the risk classification."
+          : roleUnstated
+            ? "The score below is the model's own output, shown as this analysis recorded it."
+            : "Independent evidence. The score below is the model's own output and is not part of the risk classification."
       }
     >
       {signal === null ? (
@@ -1582,6 +1589,14 @@ function LipForensicsSection({
               change it — including when it stands above that threshold. R7-T6 withdrew it from
               the rules after R7-T5 measured what that operating point did to genuine media.
               This signal is recorded as an independent forensic fact.
+            </p>
+          ) : roleUnstated ? (
+            <p className="mt-2 text-xs opacity-80">
+              This model was within the scope of the ruleset that decided this analysis, and{" "}
+              <strong>this record does not state what that ruleset could do with it</strong> —
+              whether it applied the operating point measured in R5-T3 or read the score as
+              evidence only. The score below is shown as recorded, and nothing further is said
+              here about the part it played, because this record does not say.
             </p>
           ) : (
             <p className="mt-2 text-xs opacity-80">

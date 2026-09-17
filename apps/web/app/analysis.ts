@@ -1437,6 +1437,16 @@ export type RiskContribution = {
   unavailable_reason: string | null;
   // `decisive` or `considered`, as the API judged it against the rule that actually fired.
   role: string;
+  // Whether the ruleset this analysis was decided under could take its decisive conclusion
+  // from this detector at all, as the API read it off that frozen ruleset. Never derived
+  // here: this build does not know which detectors any ruleset version could decide from,
+  // and working it out from `rules_version` and the signal name would put a copy of that
+  // ruleset's role assignment in the browser.
+  //
+  // `null` on a payload that does not carry the field — a response from an API older than
+  // this addition. That is "not stated", not `false`, and the wording falls back to what it
+  // was before the field existed rather than claiming anything about the detector.
+  decisional: boolean | null;
 };
 
 /**
@@ -1562,23 +1572,97 @@ export function unavailableReasonText(reason: string): string {
   }
 }
 
+// Shown for a contribution the persisted ruleset could take no decision from, whatever it
+// scored. It is a statement about that ruleset's reach and not about the detector's quality,
+// and it makes no claim at all about the media: an evidence-only reading is published for a
+// reader to weigh, and weighing it is not the same as the system having decided on it.
+export const CONTRIBUTION_ROLE_EVIDENCE_ONLY =
+  "Evidence only — this ruleset took no decision from it";
+
 /**
- * What the fired rule made of this detector, in the API's own two words.
+ * What the fired rule made of this detector, and whether it could have made anything of it.
  *
  * `decisive` is only ever set by the API on a detector that reached its own threshold under a
- * rule that concluded HIGH. `considered` claims nothing more than that the ruleset read this
- * detector. Neither is derived here, and an unfamiliar role is shown as stored rather than
- * mapped onto one of these two.
+ * rule that concluded at the level that ruleset decides at. `considered` claims nothing more
+ * than that the ruleset read this detector — and it covers two cases a reader cannot otherwise
+ * tell apart: a detector the rules could have decided from that stayed below its threshold,
+ * and one the rules were never able to decide from. `decisional` is what separates them, and
+ * it is the API's reading of the frozen ruleset, passed in rather than worked out here.
+ *
+ * The fallback is the point of the `null` case. A payload that does not carry `decisional` —
+ * an API older than the field — gets exactly the wording it got before the field existed. This
+ * build never fills the gap itself: it does not know which detectors a given ruleset version
+ * could decide from, and guessing from the version string and the signal name would be the
+ * derivation the report is built to keep out of the browser.
+ *
+ * Required rather than defaulted to `null`, although `null` is a legitimate value for it. The
+ * parser produces the field on every contribution, so a caller always has an answer to pass;
+ * a default would only ever be taken by a caller that forgot, and that caller would get the
+ * pre-field wording silently instead of a type error.
+ *
+ * An unfamiliar role is still shown as stored rather than mapped onto one of these words.
  */
-export function contributionRoleText(role: string): string {
+export function contributionRoleText(role: string, decisional: boolean | null): string {
   switch (role) {
     case "decisive":
+      // `decisive` and `decisional: false` is a combination this API cannot produce — it sets
+      // the role only on a detector its ruleset could decide from. Were one ever to arrive,
+      // the API's own word for what happened is shown rather than a sentence contradicting it.
       return "Decisive — a reason for this level";
     case "considered":
-      return "Considered — read by this ruleset";
+      return decisional === false
+        ? CONTRIBUTION_ROLE_EVIDENCE_ONLY
+        : "Considered — read by this ruleset";
     default:
       return role;
   }
+}
+
+// The signal name the API gives the mouth-dynamics model, in the spelling every panel and
+// state row on the report is already keyed by.
+export const SIGNAL_LIP_FORENSICS = "lip_forensics";
+
+/**
+ * What the ruleset that decided this analysis was able to do with the mouth-dynamics model.
+ *
+ * `decides` — the ruleset applied an operating point to it and could conclude from it.
+ * `evidence_only` — the ruleset read it and could conclude nothing from it, however it scored.
+ * `out_of_scope` — the ruleset did not read it at all, so no threshold was applied to it.
+ * `unstated` — it was read, and this record does not say which of the first two it was.
+ *
+ * Read off `decisional`, which the API publishes per contribution from the frozen ruleset the
+ * analysis names. This is deliberately *not* a comparison against `rules_version`: this model
+ * was a decider under `r5-v3.0.0` and is evidence only under `r7-v4.0.0` and `r9-v5.0.0`, and
+ * a browser holding that table would be holding a second copy of the ruleset's role
+ * assignment — one that can disagree with the record the day a ruleset moves, and one the API
+ * would have no way to correct. The panel's wording is a forensic claim about what took part
+ * in a decision, so it is read from the decision.
+ *
+ * `unstated` exists rather than a guess. A contribution whose `decisional` is null came from an
+ * API older than the field: the detector was in this ruleset's scope — it has a contribution —
+ * but what that ruleset could do with it is not in the record. Wording it as `evidence_only`
+ * would claim the rules withheld it, and as `out_of_scope` would claim they never measured it;
+ * both are stronger than anything this payload says.
+ */
+export function lipForensicsRulesetRole(
+  trace: RiskTrace | null,
+): "decides" | "evidence_only" | "out_of_scope" | "unstated" {
+  const contribution = trace?.contributions.find(
+    (entry) => entry.signal === SIGNAL_LIP_FORENSICS,
+  );
+
+  if (contribution === undefined) {
+    // No contribution means this ruleset's scope did not include the detector — or that the
+    // trace could not be interpreted at all, which this build reports the same way, because
+    // an uninterpretable trace states no threshold for this model either.
+    return "out_of_scope";
+  }
+
+  if (contribution.decisional === null) {
+    return "unstated";
+  }
+
+  return contribution.decisional ? "decides" : "evidence_only";
 }
 
 /**
@@ -1602,12 +1686,17 @@ export function parseRiskContribution(payload: unknown): RiskContribution | unde
     condition,
     unavailable_reason,
     role,
+    decisional,
   } = payload as Record<string, unknown>;
 
   const parsedProviderVersion = parseOptionalString(provider_version);
   const parsedScore = parseOptionalNumber(score);
   const parsedThreshold = parseOptionalNumber(threshold);
   const parsedReason = parseOptionalString(unavailable_reason);
+  // Absentable rather than required: a response from an API that predates this field is not
+  // malformed, and rejecting it would take the whole decision breakdown down over a field
+  // that is additive. Present and not a boolean is still a malformed contribution.
+  const parsedDecisional = parseAbsentableBoolean(decisional);
 
   if (
     typeof signal !== "string" ||
@@ -1617,7 +1706,8 @@ export function parseRiskContribution(payload: unknown): RiskContribution | unde
     parsedProviderVersion === undefined ||
     parsedScore === undefined ||
     parsedThreshold === undefined ||
-    parsedReason === undefined
+    parsedReason === undefined ||
+    parsedDecisional === undefined
   ) {
     return undefined;
   }
@@ -1631,6 +1721,7 @@ export function parseRiskContribution(payload: unknown): RiskContribution | unde
     condition,
     unavailable_reason: parsedReason,
     role,
+    decisional: parsedDecisional,
   };
 }
 
@@ -2111,6 +2202,17 @@ export function parseOptionalBoolean(value: unknown): boolean | null | undefined
   }
 
   return typeof value === "boolean" ? value : undefined;
+}
+
+/**
+ * A boolean a *later* API sends and an earlier one never had, as `parseAbsentableString` is
+ * for strings: an absent key reads as `null` rather than as a malformed payload.
+ *
+ * A present value that is not a boolean is still a rejection. The tolerance here is for the
+ * field not being there at all, and it does not extend to the field being there and wrong.
+ */
+export function parseAbsentableBoolean(value: unknown): boolean | null | undefined {
+  return value === undefined ? null : parseOptionalBoolean(value);
 }
 
 /**

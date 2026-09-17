@@ -743,6 +743,11 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
                         "condition": "threshold_not_reached",
                         "unavailable_reason": None,
                         "role": "considered",
+                        # `p7-v1.0.0` decided on this detector, so the flag its trace carries
+                        # is the ruleset's own `true`. It is the frozen version's answer and
+                        # not today's — the same detector reads `false` on a ruleset that
+                        # withdrew it from deciding.
+                        "decisional": True,
                     }
                 ],
                 "interpreted": True,
@@ -764,6 +769,11 @@ def test_persisted_analysis_is_returned_with_the_dashboard_fields(client, fake_s
                         "condition": "threshold_not_reached",
                         "unavailable_reason": None,
                         "role": "considered",
+                        # `p7-v1.0.0` decided on this detector, so the flag its trace carries
+                        # is the ruleset's own `true`. It is the frozen version's answer and
+                        # not today's — the same detector reads `false` on a ruleset that
+                        # withdrew it from deciding.
+                        "decisional": True,
                     }
                 ],
                 "supplementary_evidence": [],

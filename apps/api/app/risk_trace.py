@@ -589,6 +589,21 @@ class SignalContribution:
     # this detector contributed nothing. Never a finding about the media.
     unavailable_reason: str | None
     role: str
+    # Whether the *persisted* ruleset version could take its decisive conclusion from this
+    # detector at all — `CalibratedSignal.decisional`, carried through unchanged so that the
+    # split `decision_eligible_detectors` and `supplementary_evidence` already make is also
+    # legible on a contribution read on its own. It answers a different question from `role`:
+    # `role` says what this ruleset made of this reading, `decisional` says what this ruleset
+    # was ever able to make of it. A detector can be `considered` because it stayed below its
+    # threshold or because its ruleset withdrew it from deciding, and only this field tells
+    # the two apart. It is deliberately not collapsed into `role` (R9-T1 keeps such pairs
+    # apart), and it is the frozen version's answer and never today's: the mouth-dynamics
+    # detector is `True` here in a `r5-v3.0.0` trace and `False` in a `r9-v5.0.0` one, with
+    # the same score on both sides.
+    #
+    # Required rather than defaulted, so a contribution can never be built without stating
+    # which version's answer it carries.
+    decisional: bool
 
 
 @dataclass(frozen=True)
@@ -761,6 +776,7 @@ def _contribution(
             condition=CONDITION_UNAVAILABLE,
             unavailable_reason=reason,
             role=ROLE_CONSIDERED,
+            decisional=calibrated.decisional,
         )
 
     if persisted is None:
@@ -799,6 +815,7 @@ def _contribution(
             condition=CONDITION_NOT_INTERPRETED,
             unavailable_reason=UNAVAILABLE_THRESHOLD_UNRESOLVED,
             role=ROLE_CONSIDERED,
+            decisional=calibrated.decisional,
         )
 
     reached = persisted.score >= threshold  # type: ignore[operator]
@@ -832,6 +849,7 @@ def _contribution(
             if reached and risk_level == decisive_level and calibrated.decisional
             else ROLE_CONSIDERED
         ),
+        decisional=calibrated.decisional,
     )
 
 

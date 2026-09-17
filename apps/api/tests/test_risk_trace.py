@@ -970,11 +970,17 @@ def test_the_reports_v4_rationales_cover_every_rule_v4_can_fire_and_no_others():
 
 @requires_web
 def test_the_report_treats_the_two_deciding_detectors_as_deciding_under_v4():
-    """Which panels may say they decided, per ruleset, read off the report itself.
+    """Which panels may say they decided, read off the report itself.
 
     The face-manipulation panel decides under v2, v3 and v4 — R7-T6 changed nothing about that
-    detector. The mouth-dynamics panel decides under v3 alone: not under the rulesets that had
-    no threshold for it, and not under v4, which measured one and withdrew it.
+    detector, and it still answers this from the version it was decided under.
+
+    The mouth-dynamics panel no longer answers it here at all. It decided under v3 alone and
+    still does; what changed is where that is read from. The post-R10 badge task published
+    `decisional` on the contribution, and a second copy of the ruleset's role assignment kept
+    in the browser is one that can disagree with the record, so the panel reads the API's
+    answer. That the answer is still v3 and still only v3 is held by the tests that execute the
+    resolver over both rulesets, further down this file — not by the shape of an expression.
     """
     face_decides, lip_decides = _decides_expressions(
         WEB_REPORT.read_text(encoding="utf-8")
@@ -984,9 +990,10 @@ def test_the_report_treats_the_two_deciding_detectors_as_deciding_under_v4():
     assert "RULES_VERSION_V3" in face_decides
     assert "RULES_VERSION_V4" in face_decides
 
-    assert "RULES_VERSION_V3" in lip_decides
-    assert "RULES_VERSION_V4" not in lip_decides
-    assert "RULES_VERSION_V2" not in lip_decides
+    # No ruleset version at all, in either direction. An expression that named even one would
+    # be the copy this panel gave up.
+    assert "RULES_VERSION" not in lip_decides
+    assert "rulesetRole" in lip_decides
 
 
 # --- R9-T5: the operational summary the report opens with ------------------------------------
@@ -1333,14 +1340,17 @@ def test_a_v4_report_never_falls_back_to_the_p7_wording():
     """
     source = WEB_REPORT.read_text(encoding="utf-8")
 
-    # The import, the scope-of-the-model chain, and three `analysis.risk_rules_version` chains:
-    # the face-manipulation panel's `decides`, the mouth-dynamics panel's `evidenceOnly`, and
-    # the independent-evidence introduction. R9 added the second of those three — v4 is one of
-    # the two rulesets under which the mouth-dynamics model is calibrated and still may not
-    # decide — which is why both totals below moved by one and the `ruleset ===` count did not.
-    assert source.count("RULES_VERSION_V4") == 5
+    # The import, the scope-of-the-model chain, and two `analysis.risk_rules_version` chains:
+    # the face-manipulation panel's `decides` and the independent-evidence introduction.
+    #
+    # R9 had added a third — the mouth-dynamics panel's `evidenceOnly`, v4 being one of the two
+    # rulesets under which that model is calibrated and still may not decide — and the post-R10
+    # badge task removed it again, because the API now publishes `decisional` and the panel
+    # reads that instead of naming the versions itself. Both totals moved back by one and the
+    # `ruleset ===` count did not move in either direction.
+    assert source.count("RULES_VERSION_V4") == 4
     assert source.count("ruleset === RULES_VERSION_V4") == 1
-    assert source.count("analysis.risk_rules_version === RULES_VERSION_V4") == 3
+    assert source.count("analysis.risk_rules_version === RULES_VERSION_V4") == 2
 
     # The sentence a v4 decision must never reach. It is still there, and still the last branch
     # for the version it is true of.
@@ -2462,3 +2472,456 @@ def test_the_hash_wording_claims_nothing_about_the_media():
 
     for claim in ("authentic", "genuine", "unaltered", "verified", "Fake", "Real"):
         assert claim not in block, claim
+
+
+# --------------------------------------------------------------------------------------
+# `decisional` is published on the contribution, and the chip is selected from it
+# --------------------------------------------------------------------------------------
+#
+# The report's per-detector rows showed the mouth-dynamics model under `r9-v5.0.0` with the chip
+# `Considered — read by this ruleset`. That chip is also what a decision-eligible detector gets
+# when it stayed below its threshold, and the two are not the same fact: one detector was read
+# for the decision and did not reach its operating point, the other could not have decided
+# whatever it scored. `role` alone cannot separate them.
+#
+# `risk_trace` has always known the difference — `CalibratedSignal.decisional` is frozen per
+# ruleset version — and the partition into `decision_eligible_detectors` and
+# `supplementary_evidence` is built from it. What was missing was the flag on the contribution
+# itself, so a consumer reading one row had to reconstruct the ruleset's role assignment to word
+# it. These hold that the flag is published, that it is the *persisted* version's answer, and
+# that the browser reads it rather than working it out.
+
+
+def test_a_contribution_carries_the_persisted_versions_own_decisional_flag():
+    """v5 lists three detectors and can decide from two of them."""
+    result = by_signal(
+        trace(
+            NO_SIGNAL,
+            "R200",
+            V5_VERSION,
+            V5_CALIBRATION,
+            svd=svd(score=0.1),
+            face=face(score=0.2),
+            lip=lip(score=0.3),
+        )
+    )
+
+    assert result["synthetic_video"].decisional is True
+    assert result["face_manipulation"].decisional is True
+    assert result["lip_forensics"].decisional is False
+
+
+def test_the_same_stored_reading_is_decisional_under_v3_and_not_under_v5():
+    """The historical invariant, in the form the wording fix depends on.
+
+    Identical score, threshold, deployment and calibration on both sides; the ruleset version is
+    the only difference, and it is what decides whether that ruleset could have concluded
+    anything from this detector. A report of a `r5-v3.0.0` analysis must keep saying the
+    mouth-dynamics model took part in the decision, because under v3 it could.
+    """
+    stored = dict(svd=svd(score=0.1), face=face(score=0.2), lip=lip(score=0.3))
+
+    under_v3 = by_signal(trace("MEDIUM", "R200", V3_VERSION, V3_CALIBRATION, **stored))
+    under_v5 = by_signal(trace(NO_SIGNAL, "R200", V5_VERSION, V5_CALIBRATION, **stored))
+
+    assert under_v3["lip_forensics"].score == under_v5["lip_forensics"].score
+    assert under_v3["lip_forensics"].threshold == under_v5["lip_forensics"].threshold
+    assert under_v3["lip_forensics"].role == under_v5["lip_forensics"].role
+
+    assert under_v3["lip_forensics"].decisional is True
+    assert under_v5["lip_forensics"].decisional is False
+
+
+def test_an_unavailable_contribution_still_states_which_side_it_was_on():
+    """A detector that contributed no reading is not thereby evidence-only, or vice versa.
+
+    The two facts are independent: `unavailable` says this detector produced nothing the
+    decision could use, `decisional` says what the ruleset could have done with it had it. A
+    decision-eligible detector that failed is the case coverage is *missing* on, and flattening
+    it into the evidence-only wording would hide exactly that.
+    """
+    result = by_signal(
+        trace(
+            INCONCLUSIVE,
+            "R301",
+            V5_VERSION,
+            V5_CALIBRATION,
+            svd=svd(status="FAILED"),
+            face=face(status="FAILED"),
+            lip=lip(status="FAILED"),
+        )
+    )
+
+    for contribution in result.values():
+        assert contribution.condition == risk_trace.CONDITION_UNAVAILABLE
+
+    assert result["synthetic_video"].decisional is True
+    assert result["lip_forensics"].decisional is False
+
+
+def test_a_contribution_without_a_resolvable_threshold_keeps_the_flag():
+    """The third construction site. An uninterpretable threshold is not an unknown ruleset."""
+    result = by_signal(
+        trace(NO_SIGNAL, "R200", V5_VERSION, "not-the-calibration", lip=lip(score=0.3))
+    )
+
+    assert result["lip_forensics"].condition == risk_trace.CONDITION_NOT_INTERPRETED
+    assert result["lip_forensics"].decisional is False
+
+
+@pytest.mark.parametrize(
+    "version, calibration",
+    [
+        (V1_VERSION, V1_CALIBRATION),
+        (V2_VERSION, V2_CALIBRATION),
+        (V3_VERSION, V3_CALIBRATION),
+        (V4_VERSION, V4_CALIBRATION),
+        (V5_VERSION, V5_CALIBRATION),
+    ],
+)
+def test_the_flag_and_the_partition_can_never_disagree(version, calibration):
+    """Both are read off the same frozen ruleset, and this is what keeps them one fact.
+
+    The partition was the only published form of this information before the flag existed. If
+    the two were ever built from different readings of a version, a consumer that trusted the
+    chip and a consumer that trusted the lists would describe the same analysis differently.
+    """
+    result = trace(
+        "MEDIUM",
+        "R200",
+        version,
+        calibration,
+        svd=svd(score=0.1),
+        face=face(score=0.2),
+        lip=lip(score=0.3),
+    )
+
+    assert [c.signal for c in result.decision_eligible_detectors] == [
+        c.signal for c in result.contributions if c.decisional
+    ]
+    assert [c.signal for c in result.supplementary_evidence] == [
+        c.signal for c in result.contributions if not c.decisional
+    ]
+
+
+def test_publishing_the_flag_moves_no_coverage_arithmetic():
+    """The field is metadata about the ruleset and changes nothing about the decision.
+
+    v5 freezes `D_total` at 2 and the mouth-dynamics detector is outside that denominator
+    however it scored — which is exactly what the new flag now says out loud. Held here so that
+    a later edit which derived coverage from the published flag, rather than from the frozen
+    literal, fails on the analysis where the two would differ.
+    """
+    result = trace(
+        NO_SIGNAL,
+        "R200",
+        V5_VERSION,
+        V5_CALIBRATION,
+        svd=svd(score=0.1),
+        face=face(score=0.2),
+        lip=lip(score=0.99),
+    )
+
+    assert result.decision_coverage is not None
+    assert (result.decision_coverage.usable, result.decision_coverage.total) == (2, 2)
+    assert result.risk_level == NO_SIGNAL
+
+
+# The browser's half of the same fact. Executed rather than pattern-matched, for the reason the
+# verdict resolvers above are: the defect being guarded against is the right sentence on the
+# wrong branch, and a source-text assertion would pass with the branches swapped.
+
+CHIP_DECISIVE = "Decisive — a reason for this level"
+CHIP_CONSIDERED = "Considered — read by this ruleset"
+CHIP_EVIDENCE_ONLY = "Evidence only — this ruleset took no decision from it"
+
+# `role`, `decisional`. The `null` rows are a payload from an API that predates the field, and
+# the string row is a payload that carries it and carries it wrong.
+ROLE_TEXT_CASES = [
+    ("considered", False),
+    ("considered", True),
+    ("considered", None),
+    ("decisive", True),
+    ("decisive", None),
+    ("promoted", False),
+]
+
+# Contribution payloads, keyed by what is being done to `decisional`.
+CONTRIBUTION_CASES = {
+    "false": False,
+    "true": True,
+    "null": None,
+    "absent": "__absent__",
+    "string": "false",
+    "number": 0,
+}
+
+
+@lru_cache(maxsize=1)
+def _rendered_roles() -> dict[str, object]:
+    """Run the real chip resolver and the real contribution parser in one node process."""
+    driver = """
+        const fs = require("fs");
+        const ts = require(process.argv[1]);
+        const compiled = ts.transpileModule(
+            fs.readFileSync(process.argv[2], "utf8"),
+            { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }
+        ).outputText;
+        const module_ = { exports: {} };
+        const stub = new Proxy({}, { get: () => () => undefined });
+        new Function("exports", "module", "require", compiled)(
+            module_.exports, module_, () => stub
+        );
+        const [roleCases, contributionCases] = JSON.parse(process.argv[3]);
+        const base = {
+            signal: "lip_forensics",
+            provider: "lipforensics",
+            provider_version: "v",
+            score: 0.3,
+            threshold: 0.22962537594139576,
+            condition: "threshold_not_reached",
+            unavailable_reason: null,
+            role: "considered",
+        };
+        console.log(JSON.stringify({
+            chips: roleCases.map(([role, decisional]) =>
+                module_.exports.contributionRoleText(role, decisional)),
+            parsed: Object.fromEntries(Object.entries(contributionCases).map(([name, value]) => {
+                const payload = { ...base };
+                if (value !== "__absent__") { payload.decisional = value; }
+                const result = module_.exports.parseRiskContribution(payload);
+                return [name, result === undefined ? "__rejected__" : result.decisional];
+            })),
+        }));
+    """
+
+    result = subprocess.run(
+        [
+            NODE,
+            "-e",
+            driver,
+            "--",
+            str(TYPESCRIPT),
+            str(WEB_ANALYSIS),
+            json.dumps([[list(case) for case in ROLE_TEXT_CASES], CONTRIBUTION_CASES]),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"node exited {result.returncode}:\n{result.stderr.strip()}")
+
+    rendered = json.loads(result.stdout)
+    rendered["chips"] = dict(zip(ROLE_TEXT_CASES, rendered["chips"]))
+    return rendered
+
+
+@requires_resolver
+def test_an_evidence_only_contribution_says_so():
+    """The row this task exists for: `considered` on a detector the ruleset could not decide from."""
+    assert _rendered_roles()["chips"][("considered", False)] == CHIP_EVIDENCE_ONLY
+
+
+@requires_resolver
+def test_a_decision_eligible_detector_below_its_threshold_keeps_its_chip():
+    """The other half of `considered`, and the reason the wording could not simply be changed.
+
+    Under `R9-200` two decision-eligible detectors staying below their thresholds *is* the
+    result. Wording that denied them a part in the decision would be false about them, so this
+    row has to read exactly as it read before the field existed.
+    """
+    assert _rendered_roles()["chips"][("considered", True)] == CHIP_CONSIDERED
+
+
+@requires_resolver
+def test_a_payload_without_the_field_reads_as_it_always_did():
+    """An API older than the field is not an occasion to guess.
+
+    `null` is "not stated", and the browser has no way to turn it into an answer that would not
+    be a copy of the ruleset's role assignment. It says what it said before instead.
+    """
+    assert _rendered_roles()["chips"][("considered", None)] == CHIP_CONSIDERED
+
+
+@requires_resolver
+def test_a_decisive_contribution_is_untouched_by_the_field():
+    """`decisive` is the API's own word for what happened and is never overridden here."""
+    rendered = _rendered_roles()
+
+    assert rendered["chips"][("decisive", True)] == CHIP_DECISIVE
+    assert rendered["chips"][("decisive", None)] == CHIP_DECISIVE
+
+
+@requires_resolver
+def test_an_unfamiliar_role_is_still_shown_as_stored():
+    """A later vocabulary reaching an older build is shown, not mapped onto one of these words."""
+    assert _rendered_roles()["chips"][("promoted", False)] == "promoted"
+
+
+@requires_resolver
+def test_the_parser_carries_the_flag_and_tolerates_only_its_absence():
+    """Absent is `null`; present and not a boolean is a malformed contribution.
+
+    The tolerance is for a response that predates the field. It does not extend to a response
+    that carries it and carries it wrong — a contribution quietly repaired here would be one the
+    report words from a value the API never sent.
+    """
+    parsed = _rendered_roles()["parsed"]
+
+    assert parsed["false"] is False
+    assert parsed["true"] is True
+    assert parsed["null"] is None
+    assert parsed["absent"] is None
+    assert parsed["string"] == "__rejected__"
+    assert parsed["number"] == "__rejected__"
+
+
+@requires_web
+def test_the_report_passes_the_flag_rather_than_working_it_out():
+    """The chip is selected from the API's two fields and from nothing else on the page."""
+    source = WEB_REPORT.read_text(encoding="utf-8")
+
+    assert "contributionRoleText(contribution.role, contribution.decisional)" in source
+
+    # The two derivations that were refused: the ruleset version and the signal name are both
+    # on this page, and either one could be made to produce this answer locally.
+    component = source.split("function TraceContribution", 1)[1].split("\nfunction ", 1)[0]
+    for derived in ("rules_version", "lip_forensics", "r9-v5", "r5-v3"):
+        assert derived not in component, derived
+
+
+# --------------------------------------------------------------------------------------
+# The LipForensics panel reads the same published fact (Architect fix, post-R10)
+# --------------------------------------------------------------------------------------
+#
+# The panel carried its own copy of the role assignment — `rules_version === V3` decides,
+# `=== V4 || === V5` is evidence only — written before the API published anything a consumer
+# could read it from. With `decisional` published, keeping it would leave two truth sources for
+# one forensic claim, and the browser's copy is the one that cannot be corrected when a ruleset
+# moves. These hold that the panel reads the decision, and that the two rulesets in the
+# historical invariant still word exactly as they did.
+
+LIP_ROLE_CASES = {
+    # v3 decided on this model. That must not change, ever, for an analysis stored under it.
+    "v3": [{"signal": "lip_forensics", "decisional": True}],
+    # v5 reads it and can conclude nothing from it.
+    "v5": [{"signal": "lip_forensics", "decisional": False}],
+    # A ruleset whose scope never included it — v1 and v2 — and a trace this build could not
+    # interpret, which states no threshold for this model either.
+    "out_of_scope": [{"signal": "synthetic_video", "decisional": True}],
+    "empty": [],
+    # A contribution from an API older than the field: in scope, role not stated.
+    "unstated": [{"signal": "lip_forensics", "decisional": None}],
+}
+
+
+@lru_cache(maxsize=1)
+def _lip_roles() -> dict[str, str]:
+    """Run the real resolver over each shape of trace, in one node process."""
+    driver = """
+        const fs = require("fs");
+        const ts = require(process.argv[1]);
+        const compiled = ts.transpileModule(
+            fs.readFileSync(process.argv[2], "utf8"),
+            { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }
+        ).outputText;
+        const module_ = { exports: {} };
+        const stub = new Proxy({}, { get: () => () => undefined });
+        new Function("exports", "module", "require", compiled)(
+            module_.exports, module_, () => stub
+        );
+        const cases = JSON.parse(process.argv[3]);
+        const roles = Object.fromEntries(Object.entries(cases).map(([name, contributions]) => [
+            name,
+            module_.exports.lipForensicsRulesetRole({ contributions }),
+        ]));
+        // An analysis with no trace at all — queued, or decided before the trace existed.
+        roles["no_trace"] = module_.exports.lipForensicsRulesetRole(null);
+        console.log(JSON.stringify(roles));
+    """
+
+    result = subprocess.run(
+        [
+            NODE,
+            "-e",
+            driver,
+            "--",
+            str(TYPESCRIPT),
+            str(WEB_ANALYSIS),
+            json.dumps(LIP_ROLE_CASES),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"node exited {result.returncode}:\n{result.stderr.strip()}")
+
+    return json.loads(result.stdout)
+
+
+@requires_resolver
+def test_the_panel_reads_v3_as_a_ruleset_that_decided_on_this_model():
+    """The historical invariant, on the panel's side of it.
+
+    A `r5-v3.0.0` report has always said this model was banded against a threshold and took
+    part in the level. It did, and the flag the API publishes for that analysis says so.
+    """
+    assert _lip_roles()["v3"] == "decides"
+
+
+@requires_resolver
+def test_the_panel_reads_v5_as_evidence_only():
+    assert _lip_roles()["v5"] == "evidence_only"
+
+
+@requires_resolver
+def test_a_ruleset_that_never_read_this_model_is_not_called_evidence_only():
+    """v1 and v2 had no operating point for it at all, which is a different sentence.
+
+    An uninterpretable trace is reported the same way and deliberately so: it states no
+    threshold for this model either, and the panel's third branch claims nothing beyond that.
+    """
+    roles = _lip_roles()
+
+    assert roles["out_of_scope"] == "out_of_scope"
+    assert roles["empty"] == "out_of_scope"
+    assert roles["no_trace"] == "out_of_scope"
+
+
+@requires_resolver
+def test_a_record_that_does_not_state_the_role_is_not_given_one():
+    """The case that cannot be guessed at, and the reason the panel has a fourth wording.
+
+    The contribution exists, so this ruleset read the model; what it could do with it is not in
+    the payload. `evidence_only` would claim the rules withheld an operating point and
+    `out_of_scope` would claim none was ever measured — both stronger than the record.
+    """
+    assert _lip_roles()["unstated"] == "unstated"
+
+
+@requires_web
+def test_the_panel_no_longer_holds_its_own_copy_of_the_role_assignment():
+    """The derivation that was removed, asserted as an absence in the component that had it."""
+    source = WEB_REPORT.read_text(encoding="utf-8")
+    # To the next top-level declaration, which for this panel is the page component rather than
+    # another `function` — slicing on `function` alone would run to the end of the file and pick
+    # up the scope block's legitimate version names.
+    panel = source.split("function LipForensicsSection", 1)[1]
+    panel = min(
+        (panel.split(boundary, 1)[0] for boundary in ("\nfunction ", "\nexport default")),
+        key=len,
+    )
+
+    assert "lipForensicsRulesetRole(analysis.risk_trace)" in panel
+
+    # Comments stripped first. The comment above the resolver call names the derivation it
+    # replaced, which is exactly the prose a reader of this panel needs and exactly what this
+    # guard must not read as code.
+    code = re.sub(r"^\s*//.*$", "", panel, flags=re.MULTILINE)
+
+    for derived in ("RULES_VERSION_V3", "RULES_VERSION_V4", "RULES_VERSION_V5", "rules_version"):
+        assert derived not in code, derived
