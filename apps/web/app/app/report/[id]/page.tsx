@@ -26,13 +26,16 @@ import {
   RiskRationale,
   RiskTrace,
   SyntheticVideoSignal,
+  absentSignalDetail,
   acquisitionStatement,
   componentDetectorName,
+  componentReadingPresence,
   componentStateText,
   contributionRoleText,
   lipForensicsRulesetRole,
   credentialsAbsentStatement,
   deepEvidenceWording,
+  enrichmentSnapshotNotice,
   provenanceWording,
   fetchAnalysis,
   classificationLabel,
@@ -137,9 +140,12 @@ function Section({
 }) {
   return (
     // An evidence block: a hairline, a half-step of tone off the page, and no shadow. The
-    // tint is dropped for print — a filled block costs toner on every section and separates
-    // nothing the rule does not already separate.
-    <section className="mt-5 break-inside-avoid rounded-lg border border-black/12 bg-paper-2 px-5 py-4 dark:border-white/20 print:bg-transparent print:px-4">
+    // screen hairline is tuned for the light document surface and all but disappears on
+    // paper, where it is what separates one piece of evidence from the next, so it is
+    // darkened for print rather than dropped — nothing on this page is hidden to shorten the
+    // printed report. The tint is dropped for print too: a filled block costs toner on every
+    // section and separates nothing that the darkened rule does not already separate.
+    <section className="mt-5 break-inside-avoid rounded-lg border border-black/12 bg-paper-2 px-5 py-4 dark:border-white/20 print:border-black/40 print:bg-transparent print:px-4">
       <h2 className="text-[15px] font-semibold tracking-[-0.01em]">{title}</h2>
       {subtitle && (
         <p className="mt-1 max-w-[72ch] text-xs leading-relaxed opacity-70">{subtitle}</p>
@@ -160,11 +166,31 @@ function SignalState({ status }: { status: string }) {
   return <span className="font-mono text-xs">{status}</span>;
 }
 
-function NoSignal({ what }: { what: string }) {
+/**
+ * An empty detector panel (M1).
+ *
+ * The first sentence is a fact about the record and is the same either way: no such signal is
+ * stored. What follows it is what the record *means*, and that depends on whether anything is
+ * still owed for this detector — which only the API can say, and which it says in
+ * `per_component_state`. The panel asks for that sentence rather than choosing one: `detail`
+ * is the shared vocabulary's answer, and no component state is named here.
+ *
+ * `signalType` is the key the API names this detector's component by, and null for a panel
+ * that is not an enrichment component at all — the decisional detectors, whose reading is
+ * either on the record by the time a verdict exists or was never coming.
+ */
+function NoSignal({
+  what,
+  analysis,
+  signalType = null,
+}: {
+  what: string;
+  analysis: AnalysisSummary;
+  signalType?: string | null;
+}) {
   return (
     <p className="text-xs opacity-70">
-      No {what} signal is stored for this analysis. That is not a failed reading — nothing
-      recorded one, so there is no evidence from this source either way.
+      No {what} signal is stored for this analysis. {absentSignalDetail(analysis, signalType)}
     </p>
   );
 }
@@ -903,6 +929,46 @@ function ScopeDisclosure({ analysis }: { analysis: AnalysisSummary }) {
 }
 
 /**
+ * The snapshot notice, drawn only while supplementary enrichment is still running (M1).
+ *
+ * **It marks the report, not the decision.** Live testing of a quick scan beside a deep
+ * analysis showed the failure this exists to close: a report can hold a final stored verdict
+ * while enrichment is mid-flight, and a reader meeting empty detector panels under a finished
+ * assessment has no way to tell "this detector found nothing" from "this detector has not
+ * answered yet". The notice answers that before the panels are reached, and it is explicit
+ * that the assessment above is already final — an intermediate *report* of a decided
+ * analysis, and not a provisional decision.
+ *
+ * It renders a sentence and does not choose one. Which state earns the notice is decided by
+ * `enrichmentSnapshotNotice` in the shared vocabulary, so no enrichment state name is written
+ * into this renderer and there is nothing here to branch on. Null aggregate — an API from
+ * before the axes existed — draws nothing, exactly as every other enrichment presentation on
+ * this page does.
+ *
+ * Printed with everything else. A PDF taken mid-enrichment is truthful only if what was
+ * outstanding when it was rendered is on the paper.
+ */
+function EnrichmentSnapshotNotice({ analysis }: { analysis: AnalysisSummary }) {
+  const state = analysis.aggregate_enrichment_state;
+
+  if (state === null) {
+    return null;
+  }
+
+  const notice = enrichmentSnapshotNotice(state);
+
+  if (notice === null) {
+    return null;
+  }
+
+  return (
+    <p className="mt-5 max-w-[76ch] break-inside-avoid rounded-lg border border-black/25 px-4 py-3 text-xs leading-relaxed dark:border-white/30 print:border-black/40">
+      <span className="font-semibold">Snapshot.</span> {notice}
+    </p>
+  );
+}
+
+/**
  * What has become of the supplementary Deep Evidence, in the API's words (R10-T3).
  *
  * **This component renders a state; it does not compute one.** It reads
@@ -962,7 +1028,10 @@ function DeepEvidenceSection({ analysis }: { analysis: AnalysisSummary }) {
               label={componentDetectorName(component)}
               value={
                 <>
-                  {componentStateText(component.state)}
+                  {componentStateText(
+                    component.state,
+                    componentReadingPresence(analysis, component),
+                  )}
                   {/* The raw state beside the sentence, for the same reason the aggregate
                       is shown raw above: the sentence is this build's wording and the state
                       is the record. */}
@@ -989,14 +1058,20 @@ function DeepEvidenceSection({ analysis }: { analysis: AnalysisSummary }) {
   );
 }
 
-function SyntheticVideoSection({ signal }: { signal: SyntheticVideoSignal | null }) {
+function SyntheticVideoSection({
+  signal,
+  analysis,
+}: {
+  signal: SyntheticVideoSignal | null;
+  analysis: AnalysisSummary;
+}) {
   return (
     <Section
       title="NVIDIA synthetic-video detector"
       subtitle="Direct-risk evidence. The figures below are NVIDIA's own output on NVIDIA's own scale."
     >
       {signal === null ? (
-        <NoSignal what="synthetic-video" />
+        <NoSignal what="synthetic-video" analysis={analysis} />
       ) : (
         <>
           <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1137,7 +1212,7 @@ function ProvenanceSection({
       }
     >
       {signal === null ? (
-        <NoSignal what="provenance" />
+        <NoSignal what="provenance" analysis={analysis} />
       ) : (
         <>
           {/* The state first, then the evidence it was read from. */}
@@ -1191,14 +1266,20 @@ function ProvenanceSection({
   );
 }
 
-function ActiveSpeakerSection({ signal }: { signal: ActiveSpeakerSignal | null }) {
+function ActiveSpeakerSection({
+  signal,
+  analysis,
+}: {
+  signal: ActiveSpeakerSignal | null;
+  analysis: AnalysisSummary;
+}) {
   return (
     <Section
       title="Active speaker (cross-modal speaking evidence)"
       subtitle="Where a tracked face was observed speaking. This is not a deepfake detector."
     >
       {signal === null ? (
-        <NoSignal what="active-speaker" />
+        <NoSignal what="active-speaker" analysis={analysis} signalType="active_speaker" />
       ) : (
         <>
           <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1276,14 +1357,20 @@ function ActiveSpeakerSection({ signal }: { signal: ActiveSpeakerSignal | null }
   );
 }
 
-function AudioSection({ signal }: { signal: AudioAuthenticitySignal | null }) {
+function AudioSection({
+  signal,
+  analysis,
+}: {
+  signal: AudioAuthenticitySignal | null;
+  analysis: AnalysisSummary;
+}) {
   return (
     <Section
       title="AASIST audio evidence"
       subtitle="Raw model output per preprocessing window. No threshold, no calibration, no classes."
     >
       {signal === null ? (
-        <NoSignal what="audio-authenticity" />
+        <NoSignal what="audio-authenticity" analysis={analysis} signalType="audio_authenticity" />
       ) : (
         <>
           <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1405,7 +1492,7 @@ function FaceManipulationSection({
       }
     >
       {signal === null ? (
-        <NoSignal what="face-manipulation" />
+        <NoSignal what="face-manipulation" analysis={analysis} />
       ) : (
         <>
           <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1517,7 +1604,7 @@ function LipForensicsSection({
       }
     >
       {signal === null ? (
-        <NoSignal what="mouth-dynamics" />
+        <NoSignal what="mouth-dynamics" analysis={analysis} signalType="lip_forensics" />
       ) : (
         <>
           <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1736,6 +1823,11 @@ export default async function Report({ params }: { params: Promise<{ id: string 
             the assessment has still read the scope. */}
         <ScopeDisclosure analysis={analysis} />
 
+        {/* Whether what follows is still changing. Placed under the assessment and its scope
+            and above every panel it is about, so a reader meets it before the first empty
+            detector panel rather than after. Absent unless enrichment is actually running. */}
+        <EnrichmentSnapshotNotice analysis={analysis} />
+
         {/* 2 — Authenticity and provenance, on its own and above the technical evidence (R9-T6,
             R9-T8). It was the last section on the page until now, after every detector panel,
             and position on a page is an argument: a provenance state printed at the foot of a
@@ -1814,11 +1906,11 @@ export default async function Report({ params }: { params: Promise<{ id: string 
             three apart. Absent entirely for a legacy analysis and for one with no verdict. */}
         <DeepEvidenceSection analysis={analysis} />
 
-        <SyntheticVideoSection signal={analysis.synthetic_video} />
+        <SyntheticVideoSection signal={analysis.synthetic_video} analysis={analysis} />
         <FaceManipulationSection signal={analysis.face_manipulation} analysis={analysis} />
         <LipForensicsSection signal={analysis.lip_forensics} analysis={analysis} />
-        <ActiveSpeakerSection signal={analysis.active_speaker} />
-        <AudioSection signal={analysis.audio_authenticity} />
+        <ActiveSpeakerSection signal={analysis.active_speaker} analysis={analysis} />
+        <AudioSection signal={analysis.audio_authenticity} analysis={analysis} />
 
         <footer className="mt-10 break-inside-avoid border-t border-black/15 pt-4 text-xs leading-relaxed opacity-70 dark:border-white/20 print:border-black/40">
           <p className="max-w-[76ch]">
@@ -1828,8 +1920,22 @@ export default async function Report({ params }: { params: Promise<{ id: string 
             submitted media, not of this report — and, where the media was normalized for
             detection, not of the derivative the detectors read.
           </p>
+          {/* The closing guarantee, and the one sentence on this page that had to be
+              rewritten rather than softened (M1). It used to read "nothing in this document
+              states that the analysed media is genuine or manipulated", which a report
+              carrying a calibrated manipulation assessment flatly contradicts — the document
+              plainly does state something about manipulation, and a reader who noticed the
+              contradiction had no way to tell which of the two to believe. What is actually
+              true is narrower and survives both kinds of report: InspectRoot does not decide
+              Fake or Real. It reports calibrated manipulation evidence under a named ruleset,
+              which is a bounded measurement and not an authenticity verdict, and it reports
+              provenance as a separate question that reaches neither. All three are stated
+              here, and none of them is weakened to make the sentence shorter. */}
           <p className="mt-2 max-w-[76ch] font-medium">
-            Nothing in this document states that the analysed media is genuine or manipulated.
+            Nothing in this document makes a binary Fake/Real authenticity determination.
+            Where applicable, the assessment above reports calibrated manipulation evidence
+            under the stated ruleset. Provenance is reported separately and does not determine
+            that assessment.
           </p>
         </footer>
       </main>

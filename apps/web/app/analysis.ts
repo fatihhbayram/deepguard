@@ -51,7 +51,7 @@ export function apiUrl(): string {
   if (!configured.trim()) {
     throw new Error(
       "Neither API_INTERNAL_URL nor NEXT_PUBLIC_API_URL is set. This server has no API to " +
-        "call: set one of them in the environment or in the repository's .env file.",
+      "call: set one of them in the environment or in the repository's .env file.",
     );
   }
 
@@ -2016,8 +2016,51 @@ export function deepEvidenceWording(state: string): DeepEvidenceWording | null {
     : DEEP_EVIDENCE_UNINTERPRETABLE;
 }
 
+/* -------------------------------------------------------------------------------------
+ * M1 — the snapshot notice, and the one thing it is careful not to say
+ *
+ * A report opened while enrichment is running is a truthful document about a decided
+ * analysis with evidence still arriving. The notice exists so a reader knows which of those
+ * two they are looking at, and its whole difficulty is that it must mark the *report* as
+ * intermediate without marking the *decision* as provisional. The decision is not
+ * provisional: it was taken, persisted, and no supplementary detector can reach it under
+ * this ruleset. What is incomplete is the evidence printed beneath it.
+ *
+ * So the sentence separates the two explicitly rather than leaving a reader to infer which
+ * one "still processing" applies to, and no word in it — draft, preliminary, pending,
+ * subject to change — is available to be read as a hedge on the assessment.
+ * ---------------------------------------------------------------------------------- */
+
+export const ENRICHMENT_SNAPSHOT_NOTICE =
+  "This report is a snapshot. Deep analysis enrichment is currently processing, and the " +
+  "detectors below may not have produced a reading yet. The assessment above is already " +
+  "final and is not provisional: what is still running is supplementary evidence, and " +
+  "nothing it produces can change the assessment, the rule that was applied, or the " +
+  "decision coverage stated with it.";
+
 /**
- * What each component state is shown as.
+ * The snapshot notice for one aggregate enrichment state, or `null` for a state that draws
+ * none.
+ *
+ * A comparison against one state, kept here rather than in the report for the reason every
+ * other sentence on that page is kept here: the renderer holds no state vocabulary, so a
+ * state name in it could only be there to branch on. `ENRICHMENT_PROCESSING` is the only
+ * state that earns the notice — it is the only one under which the panels below are still
+ * changing. A queued enrichment has produced nothing yet and says so in its own section, and
+ * every terminal state is already accurate on the page.
+ */
+export function enrichmentSnapshotNotice(state: string): string | null {
+  return state === ENRICHMENT_PROCESSING ? ENRICHMENT_SNAPSHOT_NOTICE : null;
+}
+
+/**
+ * What each component state is shown as, before the record is consulted for a reading.
+ *
+ * Six terminal-or-running sentences, and they are grouped by what they say about *execution*.
+ * `completed` and `abstained` both open with "Completed" because both are successes on the
+ * enrichment axis — the API writes `abstained` only where a detector was asked and answered
+ * that there was nothing here to score — and a reader comparing two components should be able
+ * to see that from the sentence rather than having to know the vocabulary.
  *
  * `abstained` is the entry this table exists for. A detector that abstains for a documented
  * forensic reason — no trackable face, no audio stream — was asked, and answered, and its
@@ -2027,23 +2070,294 @@ export function deepEvidenceWording(state: string): DeepEvidenceWording | null {
  * `not_requested` is the second. A component nobody asked is not a component that failed,
  * and the difference between those two is the whole reason the API reports a state per
  * component instead of leaving a renderer to notice which evidence panels came back empty.
+ *
+ * Two of these six are overridden when the record is consulted — see
+ * `COMPONENT_STATE_READING_LABELS` — because `processing` and `completed` are the two states
+ * whose honest sentence depends on whether a reading is on the record yet. The other four are
+ * the same sentence either way: what a queued, not-requested, abstained or failed component
+ * has on the record follows from its state and nothing is added by saying so twice.
  */
 export const COMPONENT_STATE_LABELS: Record<ComponentState, string> = {
   [COMPONENT_NOT_REQUESTED]: "Not requested",
-  [COMPONENT_QUEUED]: "Queued",
-  [COMPONENT_PROCESSING]: "Running",
-  [COMPONENT_COMPLETED]: "Reading recorded",
-  [COMPONENT_ABSTAINED]: "Not applicable — detector abstained",
-  [COMPONENT_FAILED]: "No reading — detector failed",
+  [COMPONENT_QUEUED]: "Pending",
+  [COMPONENT_PROCESSING]: "Processing",
+  [COMPONENT_COMPLETED]: "Completed with reading",
+  [COMPONENT_ABSTAINED]: "Completed with abstention",
+  [COMPONENT_FAILED]: "Failed",
 };
 
 // Shown for a component state outside the vocabulary above, for the same reason and with the
 // same refusal to guess as `DEEP_EVIDENCE_UNINTERPRETABLE`.
 export const COMPONENT_STATE_UNINTERPRETABLE = "State not interpretable by this build";
 
-export function componentStateText(state: string): string {
-  return (COMPONENT_STATE_LABELS as Record<string, string>)[state] ??
-    COMPONENT_STATE_UNINTERPRETABLE;
+/* -------------------------------------------------------------------------------------
+ * M1 — reading presence, which is not an execution state and never becomes one
+ *
+ * A component's state says what its detector *did*. Whether a reading for it is on this
+ * payload is a different question, and the report needs both: a `processing` component with
+ * nothing on the record yet must not be worded like a component that finished and found
+ * nothing, because the first is a sentence about a job still running and the second is a
+ * terminal statement about the evidence.
+ *
+ * **This is a presentation question and nothing here derives an execution state from it.**
+ * No component's state is overridden by what is or is not on the record, no aggregate is
+ * assembled, and `ENRICHMENT_PARTIAL` above all is never reached — the reading is read for
+ * one component at a time, to choose between two sentences the API's own state already
+ * permits, and it is never counted, compared across components or folded into a summary.
+ *
+ * Three answers rather than two, and the third is the one this has to have. Only three of the
+ * four Deep Evidence components have a signal on `AnalysisSummary` at all: `face_forgery` is
+ * EFFORT's own signal type, the API projects no field for it, and `face_manipulation` is a
+ * different model's score on a different scale and is not a stand-in for it. A boolean would
+ * have to answer `false` there — "no reading" — about a component whose reading this build
+ * simply cannot see, which is the exact confusion between absence of evidence and evidence of
+ * absence that the whole per-component contract exists to prevent. So a component this
+ * payload exposes no panel for is reported as unobservable, and its sentence says only what
+ * its state says.
+ * ---------------------------------------------------------------------------------- */
+
+/**
+ * Whether a component's reading is on this payload — three answers, and never two.
+ *
+ * Written as an explicit literal union rather than derived from the array below it, so the
+ * three answers are the type. A union derived from a `string`-typed constant widens to
+ * `string`, which type-checks every misuse this vocabulary exists to prevent: a fourth answer
+ * invented at a call site, a raw string passed where an answer belongs, or a `Record` keyed by
+ * it silently accepting keys that mean nothing. Spelled out, `tsc` refuses all three.
+ *
+ * **Deliberately not named for a state.** `state` in this file means an execution state — what
+ * the API established a detector or an enrichment *did* — and reading presence is not one and
+ * must never become one. It is a property of this payload, read by this renderer, to choose
+ * between two sentences an execution state already permits. Naming it a state would invite
+ * exactly the move the whole per-component contract forbids: a renderer deciding for itself
+ * what a detector did from what it can see on the page.
+ */
+export type ComponentReadingPresence =
+  | "READING_PRESENT"
+  | "READING_ABSENT"
+  | "READING_UNOBSERVABLE";
+
+/** A reading is on the record and the signal that carries it succeeded. */
+export const READING_PRESENT: ComponentReadingPresence = "READING_PRESENT";
+/** This payload exposes the signal for this component, and it carries no usable reading. */
+export const READING_ABSENT: ComponentReadingPresence = "READING_ABSENT";
+/** This build has no field for this component's signal, so it cannot answer either way. */
+export const READING_UNOBSERVABLE: ComponentReadingPresence = "READING_UNOBSERVABLE";
+
+export const COMPONENT_READING_PRESENCES = [
+  READING_PRESENT,
+  READING_ABSENT,
+  READING_UNOBSERVABLE,
+] as const;
+
+/** The shape every component signal shares, and the whole of what reading presence reads. */
+type ReadableSignal = { status: string };
+
+/**
+ * The signal one component's reading would be on, or `undefined` for a component this build
+ * has no field for.
+ *
+ * Keyed by `signal_type`, which is the spelling the API names the component by and the same
+ * spelling `componentDetectorName` is keyed by, so one vocabulary answers both questions.
+ * `null` and `undefined` are kept apart on purpose: `null` is a field this payload has and
+ * did not fill, `undefined` is a field this payload does not have.
+ *
+ * `face_forgery` falls to the default deliberately and is not routed to `face_manipulation`.
+ * They are two different models — EFFORT and EfficientNet-B7 — writing two different signal
+ * types on two different scales, and reading one as the other would report a detector's
+ * reading as another detector's.
+ */
+function componentSignal(
+  analysis: AnalysisSummary,
+  component: EnrichmentComponent,
+): ReadableSignal | null | undefined {
+  switch (component.signal_type) {
+    case "lip_forensics":
+      return analysis.lip_forensics;
+    case "active_speaker":
+      return analysis.active_speaker;
+    case "audio_authenticity":
+      return analysis.audio_authenticity;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Whether this component has a usable persisted reading on this payload — present, absent, or
+ * not observable by this build.
+ *
+ * **Three answers, and the name says so.** This is not a predicate and must not be used as
+ * one: `READING_UNOBSERVABLE` is truthy, so an `if (componentReadingPresence(...))` would read
+ * "this component has a reading" about the one case where this build cannot tell. Every caller
+ * compares against one of the three constants.
+ *
+ * A reading is a persisted signal whose own `status` is `SUCCESS`, and it is that and nothing
+ * more. The presence of the object is not enough — a signal row that failed is on the payload
+ * and carries no reading — and the *contents* of a successful one are deliberately not
+ * inspected. A successful active-speaker signal with no segments and a successful
+ * audio-authenticity signal with no windows are readings: the detector ran, answered, and its
+ * answer was that it saw nobody speaking or stored no windows. Scoring those as "no reading"
+ * would turn a terminal zero-result into a missing one, which are different facts.
+ */
+export function componentReadingPresence(
+  analysis: AnalysisSummary,
+  component: EnrichmentComponent,
+): ComponentReadingPresence {
+  const signal = componentSignal(analysis, component);
+
+  if (signal === undefined) {
+    return READING_UNOBSERVABLE;
+  }
+
+  if (signal === null) {
+    return READING_ABSENT;
+  }
+
+  return signal.status === SIGNAL_STATUS_SUCCESS ? READING_PRESENT : READING_ABSENT;
+}
+
+/**
+ * The two states whose sentence the record can change, and what it changes them to.
+ *
+ * `processing` with nothing on the record yet is the sentence M1 exists for. A detector that
+ * is still running has produced no reading *yet*, and every wording that could be read as
+ * terminal — no stored signal, no evidence, nothing recorded — is a false statement about a
+ * job that has not finished. The sentence says so in the word the state itself uses, and ends
+ * in "yet".
+ *
+ * `completed` with nothing on the record is the opposite problem and is not normalised into a
+ * harmless terminal sentence. Under the API's contract `completed` means the detector produced
+ * a reading; a detector that was asked and found nothing to score is written `abstained`, and
+ * one that broke is written `failed`. So a `completed` component with no successful signal on
+ * the payload is an inconsistency between the task row and the signal row, not a quiet way of
+ * saying the detector found nothing, and the sentence describes the record rather than the
+ * media: the reading is not in this record. Nothing here invents a state for it.
+ *
+ * An unobservable component is not told it is missing a reading, and is not told it has one
+ * either. `face_forgery` is the case: the API's `completed` establishes that EFFORT's task
+ * finished, and this build has no field to check whether the reading it wrote is exposed
+ * here. "Completed — reading not found in this record" would report this renderer's blind
+ * spot as a defect in the analysis; "Completed with reading" would go the other way and
+ * present an unverifiable reading as a confirmed one, which is the stronger error of the two
+ * — it is this layer vouching for evidence it cannot see. So the sentence retreats to exactly
+ * what the API established and stops there: the component completed. Nothing is added about
+ * the reading in either direction.
+ *
+ * `processing` needs no such entry. Its base sentence is already execution-state-only, and an
+ * unobservable component still running is described by it exactly.
+ */
+export const COMPONENT_STATE_READING_LABELS: Record<
+  string,
+  Partial<Record<ComponentReadingPresence, string>>
+> = {
+  [COMPONENT_PROCESSING]: {
+    [READING_ABSENT]: "Processing — no reading available yet",
+  },
+  [COMPONENT_COMPLETED]: {
+    [READING_ABSENT]: "Completed — reading not found in this record",
+    // Execution state alone. This build cannot see the reading, so it claims nothing about
+    // one — see the paragraph above, and the regression guard that pins this exact pair.
+    [READING_UNOBSERVABLE]: "Completed",
+  },
+};
+
+/**
+ * One component's sentence, from its state and what the record holds for it.
+ *
+ * Two lookups and a fallback, and deliberately nothing else. The reading chooses between
+ * sentences the state already permits; it never chooses a state, and a state outside the
+ * vocabulary is reported as uninterpretable whatever the record holds — an unfamiliar state
+ * is not one this build may describe the evidence for.
+ */
+export function componentStateText(
+  state: string,
+  reading: ComponentReadingPresence,
+): string {
+  const base = (COMPONENT_STATE_LABELS as Record<string, string>)[state];
+
+  if (base === undefined) {
+    return COMPONENT_STATE_UNINTERPRETABLE;
+  }
+
+  return COMPONENT_STATE_READING_LABELS[state]?.[reading] ?? base;
+}
+
+/* -------------------------------------------------------------------------------------
+ * M1 — the empty detector panel, which is where a reader actually looks
+ *
+ * The per-component states above are the honest answer to "what has run", but they are one
+ * section, and the panels below them are six. A reader who wants the mouth-dynamics reading
+ * scrolls to the mouth-dynamics panel, and what that panel said about a detector still
+ * running was: *nothing recorded one, so there is no evidence from this source either way.*
+ *
+ * That sentence is true of an analysis nobody asked and false of one mid-flight, and its
+ * second clause is the damaging half — "no evidence from this source either way" is a
+ * terminal statement about the evidence, printed under a final assessment, about a detector
+ * that has not answered yet. It is the exact wording R10-T3 §3 forbids, surviving in the
+ * place the per-component section was written to protect.
+ *
+ * So the panel asks the API what that component is doing before it says the evidence is
+ * settled. Two states mean an answer may still arrive — `queued` and `processing` — and
+ * under either the panel says the reading is outstanding rather than absent. Every other
+ * state keeps the sentence it had: a component nobody asked really did record nothing, and
+ * saying so is not a claim about the media.
+ *
+ * **This reads one component's state and never assembles one.** The lookup is by signal type
+ * — the API's own key, the same one the panels and `componentDetectorName` use — and it
+ * returns that component's state verbatim or nothing at all. No aggregate is computed, no
+ * two components are compared, and a signal type with no component row falls through to the
+ * terminal sentence, which is what a decisional detector like `synthetic_video` is.
+ * ---------------------------------------------------------------------------------- */
+
+// What an absent signal means when nothing more is owed for it. Unchanged wording: for a
+// quick scan, a legacy analysis or a detector that is simply not an enrichment component,
+// this was always the right sentence and still is.
+export const SIGNAL_ABSENT_TERMINAL =
+  "That is not a failed reading — nothing recorded one, so there is no evidence from this " +
+  "source either way.";
+
+// And what it means when the detector has not finished. It states what is outstanding and
+// refuses the conclusion the sentence above would invite — no clause in it can be read as
+// "this source produced nothing", because at this moment nobody knows.
+export const SIGNAL_ABSENT_STILL_TO_ANSWER =
+  "This detector has not produced a reading yet — it is part of the deep analysis that is " +
+  "still running for this report. That is not a finding that there is no evidence from this " +
+  "source; it means this source has not answered yet.";
+
+// The two component states under which a reading is still owed. Both are non-terminal on the
+// enrichment axis, and the difference between them — not started against started — is
+// reported by the per-component section above rather than repeated in every panel.
+const COMPONENT_STATES_STILL_TO_ANSWER: readonly string[] = [
+  COMPONENT_QUEUED,
+  COMPONENT_PROCESSING,
+];
+
+/**
+ * What an empty detector panel says, given what the API reports that detector is doing.
+ *
+ * `signalType` is the key the component is named by, or null for a panel that is not an
+ * enrichment component at all. A null, an unknown type and a component in any terminal state
+ * all resolve to the sentence the panel has always printed; only a component the API reports
+ * as queued or processing changes it.
+ */
+export function absentSignalDetail(
+  analysis: AnalysisSummary,
+  signalType: string | null,
+): string {
+  if (signalType === null) {
+    return SIGNAL_ABSENT_TERMINAL;
+  }
+
+  for (const component of analysis.per_component_state) {
+    if (component.signal_type === signalType) {
+      return COMPONENT_STATES_STILL_TO_ANSWER.includes(component.state)
+        ? SIGNAL_ABSENT_STILL_TO_ANSWER
+        : SIGNAL_ABSENT_TERMINAL;
+    }
+  }
+
+  return SIGNAL_ABSENT_TERMINAL;
 }
 
 /**
