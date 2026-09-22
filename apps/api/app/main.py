@@ -8,6 +8,7 @@ from app.api.admin_analyses import router as admin_analyses_router
 from app.api.admin_analytics import router as admin_analytics_router
 from app.api.admin_api_keys import router as admin_api_keys_router
 from app.api.admin_audit import router as admin_audit_router
+from app.api.admin_ground_truth import router as admin_ground_truth_router
 from app.api.admin_jobs import router as admin_jobs_router
 from app.api.admin_users import router as admin_users_router
 from app.api.analyses import router as analyses_router
@@ -89,6 +90,11 @@ app.include_router(admin_api_keys_router)
 # read-only `admin_jobs`: an opinion about a result and the result itself have to stay legible
 # apart, and a file that can only reach the review is a file that cannot revise the evidence.
 app.include_router(admin_analyses_router)
+# The seventh administrative module (R12-T2): the Ground Truth recorded for a set of bytes. Its
+# own module rather than a route on `admin_analyses`, because what it writes is not an opinion
+# about an analysis but a statement about the media, keyed by hash — and the file that writes it
+# names no verdict, signal, review or provenance column, so it cannot revise any of them.
+app.include_router(admin_ground_truth_router)
 # The external B2B surface. Mounted under its own prefix and carrying its own API-key
 # dependency, so the internal routes above stay exactly as unauthenticated as they were.
 app.include_router(public_analyses_router)

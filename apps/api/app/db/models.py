@@ -1203,6 +1203,26 @@ AUDIT_TARGET_ANALYSIS = "ANALYSIS"
 AUDIT_ACTION_REVIEW_CREATED = "REVIEW_CREATED"
 AUDIT_ACTION_REVIEW_UPDATED = "REVIEW_UPDATED"
 
+# Since R12-T2 an audit row may be about the Ground Truth recorded for a set of bytes. The
+# target is the bytes themselves — `target_id` holds the 64-character `original_sha256`, never
+# an analysis id and never a media row id — because Ground Truth belongs to what the file is,
+# and the same bytes can sit under any number of analyses.
+AUDIT_TARGET_GROUND_TRUTH = "GROUND_TRUTH"
+
+# The two halves of a Ground Truth record's life (R12-T2), written by `admin_ground_truth.py`.
+# Split for the reason the review pair is: the first statement of what the media is and a later
+# revision of it are different events, and "when did this label change" is a question about
+# exactly one of them.
+#
+# **Unlike the review events, these carry every field, old and new, including the notes.** A
+# Ground Truth record is what detectors are scored against, so the history of what it said at
+# each moment has to be reconstructable from the log alone — a row saying only that the label
+# moved would leave "what was the truth when this evaluation ran" unanswerable. All three of
+# `source_class`, `label` and `notes` are written on every event, unchanged ones included, and
+# a creation writes `old: null` for each, because before it there was no statement at all.
+AUDIT_ACTION_GROUND_TRUTH_CREATED = "GROUND_TRUTH_CREATED"
+AUDIT_ACTION_GROUND_TRUTH_UPDATED = "GROUND_TRUTH_UPDATED"
+
 
 class AdminAuditEvent(Base):
     """One privileged change an administrator made, recorded as it happened (R8-T5).
@@ -1509,6 +1529,62 @@ class AnalysisReview(Base):
     # endpoint returns before writing when nothing changed, a request that altered nothing
     # leaves this alone. "Last reviewed" therefore means the last time somebody changed their
     # answer, not the last time somebody opened the form.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class GroundTruth(Base):
+    """What a set of bytes actually is, as recorded by an administrator (R12-T2).
+
+    The persistence of `app.ground_truth.GroundTruthContract`, and nothing more than that
+    contract plus who recorded it and when. The vocabulary, and why Ground Truth must stay
+    independent of verdicts, reviews and provenance, is stated in `app/ground_truth.py`.
+
+    **Keyed by the bytes, not by a row.** `media_sha256` is `MediaFile.original_sha256` and is
+    the primary key. It is deliberately not a foreign key to `media_files`: a `MediaFile` belongs
+    to one analysis, and the same bytes can be uploaded and analysed any number of times — so a
+    reference to one media row would attach the truth about the file to one of its uploads, and
+    the next upload of the same bytes would have none. The endpoint refuses a hash no media row
+    carries; the table does not, because there is no single row to point at.
+
+    **No `manipulation_family` column.** The family is derived from `label` by
+    `derive_manipulation_family` on every read. A stored copy could disagree with the label it
+    was derived from, and then the record would say two things at once.
+
+    **Separate from everything it is used to measure.** Nothing here references `analyses`,
+    `analysis_signals`, `analysis_reviews` or any provenance value, and nothing in the verdict,
+    review or provenance path reads this table. A revision overwrites; the history of what it
+    said is in `admin_audit_events`, written in the same transaction, with every field.
+    """
+
+    __tablename__ = "ground_truth"
+
+    # Byte identity: lowercase, 64 hex characters, exactly as `MediaFile.original_sha256` is
+    # written. Canonicalized by the endpoint before it gets here, so the same bytes cannot hold
+    # two records under two spellings of one hash.
+    media_sha256: Mapped[str] = mapped_column(
+        String(SHA256_HEX_LENGTH), primary_key=True
+    )
+
+    # One of `SourceClass` and one of `GroundTruthLabel` from `app.ground_truth`.
+    source_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    label: Mapped[str] = mapped_column(String(32), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Who last recorded it — the administrator's session, never the body. Not a foreign key,
+    # for the reason `AdminAuditEvent.actor_id` gives: the record must outlive the account.
+    actor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    actor_email_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
