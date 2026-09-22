@@ -41,6 +41,14 @@
  * the record it exists to show. Nor is anything scored: an assessment is not tallied, not
  * compared with the verdict to produce a judgement about it, and never presented as accuracy.
  *
+ * **Ground Truth is a fourth card and a fourth kind of statement (R12-T3).** What the media
+ * actually is, recorded against the original's SHA-256 by somebody in a position to know it. It
+ * has its own form, its own route and its own endpoint, and it starts from the stored record or
+ * from nothing — never from the verdict, the provenance reading or the review above it, because
+ * Ground Truth filled in from any of those would mark them correct by construction. This screen
+ * does not compare it with the verdict either: that comparison is evaluation, and belongs
+ * elsewhere.
+ *
  * A Server Component with no client-side code at all. The controls are plain HTML forms, the
  * same as the account controls, so the page works with JavaScript disabled and the outcome of
  * a save arrives as a redirect carrying it in the query string.
@@ -80,6 +88,19 @@ import {
   REVIEW_STATUS_UNREVIEWED,
   fetchReview,
 } from "../../reviews";
+import {
+  GROUND_TRUTH_LABEL_LABELS,
+  GROUND_TRUTH_SOURCE_CLASS_LABELS,
+  GroundTruth,
+  GroundTruthResult,
+  fetchGroundTruth,
+} from "../../ground-truth";
+
+// The sentence the Ground Truth card shows in place of its form when the analysis carries no
+// hash of its original. Ground Truth is keyed by those bytes; without them there is nothing to
+// attach it to, and the card says so rather than disappearing.
+const NO_SHA256_FOR_GROUND_TRUTH =
+  "Ground Truth cannot be recorded because this analysis has no original media SHA-256 identity.";
 
 // What the risk column says when no decision was ever taken. Distinct from `UNKNOWN`, which is
 // a decision, and phrased as a statement about the record rather than about the media — the
@@ -632,6 +653,228 @@ function HumanReview({ review }: { review: AnalysisReview }) {
 }
 
 /* ------------------------------------------------------------------ *
+ * The Ground Truth half — what the media is, not what anybody concluded
+ * ------------------------------------------------------------------ */
+
+/** What is stored for these bytes, or that nothing is. Notes print as text, like the review note. */
+function GroundTruthRecord({ groundTruth }: { groundTruth: GroundTruth | null }) {
+  if (groundTruth === null) {
+    return (
+      <p className="mt-4 max-w-[74ch] text-[13px] leading-relaxed text-muted">
+        No Ground Truth has been recorded for this file. That is not a statement that its origin
+        is unknown — nobody has made a statement about it at all.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-4">
+      <dl className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+        <Fact label="Label">
+          {/* Unknown values print as the API spelled them, as the review badges do. */}
+          {GROUND_TRUTH_LABEL_LABELS[groundTruth.label] ?? groundTruth.label}
+        </Fact>
+        <Fact label="How it is known">
+          {GROUND_TRUTH_SOURCE_CLASS_LABELS[groundTruth.source_class] ??
+            groundTruth.source_class}
+        </Fact>
+        <Fact label="Recorded by">
+          {groundTruth.actor_email_snapshot ?? <span className="text-muted">not recorded</span>}
+          <div className="mt-1">
+            <AdminValue className="break-all">{groundTruth.actor_id}</AdminValue>
+          </div>
+        </Fact>
+        <Fact label="Last changed">
+          <AdminValue className="break-all">{groundTruth.updated_at}</AdminValue>
+          <div className="mt-1">
+            <AdminValue className="break-all">{`first written ${groundTruth.created_at}`}</AdminValue>
+          </div>
+        </Fact>
+      </dl>
+
+      <div className="mt-5">
+        <dt className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase">Notes</dt>
+        <div className="mt-2">
+          {groundTruth.notes === null || groundTruth.notes === "" ? (
+            <p className="text-[13px] text-muted">No notes were recorded.</p>
+          ) : (
+            <p className="max-w-[74ch] text-[13px] leading-relaxed whitespace-pre-wrap text-bone">
+              {groundTruth.notes}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The form: how the label is known, what the media is, optional notes.
+ *
+ * **Seeded from the stored Ground Truth and from nothing else.** Not from the verdict, the
+ * provenance reading or the review — their values are not passed to this component at all. With
+ * no record, both selects open on an empty option and are `required`: a first option preselected
+ * by default would be the form stating what the media is on somebody's behalf, and `GENUINE`
+ * happens to be first.
+ *
+ * There is no family control. `manipulation_family` is derived from the label by the API and
+ * refused if sent.
+ *
+ * Notes are optional and carry no `required`; an empty textarea is forwarded as no notes.
+ */
+function GroundTruthForm({
+  analysisId,
+  sha256,
+  groundTruth,
+}: {
+  analysisId: string;
+  sha256: string;
+  groundTruth: GroundTruth | null;
+}) {
+  const selectClass =
+    "rounded-md border border-line bg-ink px-2.5 py-1.5 text-[12px] text-bone transition-colors duration-150 hover:border-rule";
+
+  return (
+    <form
+      action="/admin/update-ground-truth"
+      method="post"
+      className="mt-6 border-t border-hair pt-6"
+    >
+      <input type="hidden" name="analysis_id" value={analysisId} />
+      <input type="hidden" name="sha256" value={sha256} />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="text-[13px] text-muted" htmlFor="ground-truth-label">
+          Label
+        </label>
+        <select
+          id="ground-truth-label"
+          name="label"
+          required
+          defaultValue={groundTruth?.label ?? ""}
+          className={selectClass}
+        >
+          <option value="" disabled>
+            Choose…
+          </option>
+          {Object.entries(GROUND_TRUTH_LABEL_LABELS).map(([value, text]) => (
+            <option key={value} value={value}>
+              {text}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <label className="text-[13px] text-muted" htmlFor="ground-truth-source-class">
+          How it is known
+        </label>
+        <select
+          id="ground-truth-source-class"
+          name="source_class"
+          required
+          defaultValue={groundTruth?.source_class ?? ""}
+          className={selectClass}
+        >
+          <option value="" disabled>
+            Choose…
+          </option>
+          {Object.entries(GROUND_TRUTH_SOURCE_CLASS_LABELS).map(([value, text]) => (
+            <option key={value} value={value}>
+              {text}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="mt-4">
+        <label className="text-[13px] text-muted" htmlFor="ground-truth-notes">
+          Notes <span className="text-muted">(optional)</span>
+        </label>
+        <textarea
+          id="ground-truth-notes"
+          name="notes"
+          rows={3}
+          defaultValue={groundTruth?.notes ?? ""}
+          className="mt-2 block w-full rounded-md border border-line bg-ink px-3 py-2 text-[13px] leading-relaxed text-bone transition-colors duration-150 hover:border-rule focus:border-rule focus:outline-none"
+        />
+        <p className="mt-2 text-[12px] text-muted">
+          Plain text, stored exactly as typed and shown as text. Leave empty for no notes.
+        </p>
+      </div>
+
+      <button
+        type="submit"
+        className="mt-4 rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+      >
+        Save Ground Truth
+      </button>
+    </form>
+  );
+}
+
+/**
+ * The Ground Truth card: its own plate, below the review, with its own outcome messages.
+ *
+ * With no hash the card still renders, read-only, with the one sentence that says why — hiding
+ * it would leave an operator unable to tell "not recorded" from "cannot be recorded".
+ */
+function GroundTruthSection({
+  analysisId,
+  sha256,
+  result,
+  saved,
+  error,
+}: {
+  analysisId: string;
+  sha256: string | null;
+  result: GroundTruthResult | null;
+  saved: boolean;
+  error: string | null;
+}) {
+  return (
+    <AdminSection
+      title="Ground Truth"
+      description="What this media actually is, stated by somebody in a position to know it and recorded against the original file's SHA-256 — so it applies to every analysis of the same bytes. It is independent of the automated assessment, the provenance reading and the human review above: it is not filled in from them and saving it changes none of them."
+    >
+      {error && (
+        <div className="mt-4">
+          <AdminAlert tone="error">{error}</AdminAlert>
+        </div>
+      )}
+      {saved && !error && (
+        <div className="mt-4">
+          <AdminAlert tone="success">
+            Ground Truth saved. The automated assessment and the human review were not changed.
+          </AdminAlert>
+        </div>
+      )}
+
+      {sha256 === null ? (
+        <p className="mt-4 max-w-[74ch] text-[13px] leading-relaxed text-muted">
+          {NO_SHA256_FOR_GROUND_TRUTH}
+        </p>
+      ) : result === null || !result.ok ? (
+        <div className="mt-4">
+          <AdminAlert tone="error">
+            {result === null ? "Ground Truth could not be read." : result.error}
+          </AdminAlert>
+        </div>
+      ) : (
+        <>
+          <GroundTruthRecord groundTruth={result.groundTruth} />
+          <GroundTruthForm
+            analysisId={analysisId}
+            sha256={sha256}
+            groundTruth={result.groundTruth}
+          />
+        </>
+      )}
+    </AdminSection>
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * Page
  * ------------------------------------------------------------------ */
 
@@ -650,10 +893,21 @@ export default async function AdminAnalysisReview({
   const { id } = await params;
   const query = await searchParams;
 
-  const [user, analysisResult, reviewResult] = await Promise.all([
+  // Ground Truth is keyed by the original's hash, which only the analysis knows, so its read is
+  // chained onto the analysis read — and runs alongside the session and review reads rather than
+  // after them. No hash, or no analysis, means no read at all.
+  const analysisRead = fetchAnalysis(id);
+  const groundTruthRead = analysisRead.then((result) =>
+    result.ok && result.analysis.original_sha256 !== null
+      ? fetchGroundTruth(result.analysis.original_sha256)
+      : null,
+  );
+
+  const [user, analysisResult, reviewResult, groundTruthResult] = await Promise.all([
     fetchSession(),
-    fetchAnalysis(id),
+    analysisRead,
     fetchReview(id),
+    groundTruthRead,
   ]);
 
   // The session the API would not accept. `admin/layout.tsx` has already turned away a reader
@@ -663,7 +917,8 @@ export default async function AdminAnalysisReview({
   if (
     user === null ||
     (!analysisResult.ok && analysisResult.unauthenticated) ||
-    (!reviewResult.ok && reviewResult.unauthenticated)
+    (!reviewResult.ok && reviewResult.unauthenticated) ||
+    (groundTruthResult !== null && !groundTruthResult.ok && groundTruthResult.unauthenticated)
   ) {
     redirect(LOGIN_PATH);
   }
@@ -680,6 +935,8 @@ export default async function AdminAnalysisReview({
 
   const error = singleParam(query.error);
   const saved = singleParam(query.saved);
+  const groundTruthError = singleParam(query.gt_error);
+  const groundTruthSaved = singleParam(query.gt_saved) !== null;
 
   return (
     <>
@@ -748,6 +1005,19 @@ export default async function AdminAnalysisReview({
           <AdminAlert tone="error">{reviewResult.error}</AdminAlert>
         ) : (
           <HumanReview review={reviewResult.review} />
+        )}
+
+        {/* Last, and its own plate: what the media is, after everything that was concluded about
+            it. Only drawn when the analysis was read — without it there is no knowing whether
+            a hash exists, and the no-hash sentence would be a claim this page cannot make. */}
+        {analysisResult.ok && (
+          <GroundTruthSection
+            analysisId={id}
+            sha256={analysisResult.analysis.original_sha256}
+            result={groundTruthResult}
+            saved={groundTruthSaved}
+            error={groundTruthError}
+          />
         )}
       </div>
     </>
