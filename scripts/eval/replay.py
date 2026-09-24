@@ -68,16 +68,44 @@ def read_run(path: Path | None) -> dict:
 
     A detector that was not run is silent, which is a state the rules already handle. It is not
     the same as a detector that ran and abstained, and the output keeps them apart.
+
+    A run exported from the database (R12-T6) states its `provider_version` at the top level, as
+    the stored signal recorded it, and carries no `model_provenance` at all. That value is kept
+    exactly and used as is. Its per-clip counts arrive in an explicit top-level
+    `evidence_counts` (`{"total_clips": {clip_id: n}}`) rather than under provenance. A
+    benchmark run without these keys is read as it always was.
     """
     if path is None:
         return {"clips": {}, "provenance": {}, "ran": False}
     payload = json.loads(path.read_text(encoding="utf-8"))
-    return {
+    run = {
         "clips": {clip["clip_id"]: clip for clip in payload["clips"]},
         "provenance": payload["run"].get("model_provenance") or {},
         "ran": True,
         "results_path": str(path),
     }
+    if "provider_version" in payload:
+        explicit = payload["provider_version"]
+        if explicit is not None and not isinstance(explicit, str):
+            raise ValueError(f"{path}: provider_version must be a string or null")
+        run["explicit_provider_version"] = explicit
+    if "evidence_counts" in payload:
+        run["evidence_counts"] = payload["evidence_counts"]
+    return run
+
+
+def clip_count(run: dict, name: str, clip_id: str):
+    """A clip's count: from `evidence_counts` when the run states it, else `<name>_by_clip_id`."""
+    if "evidence_counts" in run:
+        return (run["evidence_counts"].get(name) or {}).get(clip_id)
+    return (run["provenance"].get(f"{name}_by_clip_id") or {}).get(clip_id)
+
+
+def run_provider_version(run: dict, derive) -> str | None:
+    """The run's explicit `provider_version` when it states one, else `derive`d from provenance."""
+    if "explicit_provider_version" in run:
+        return run["explicit_provider_version"]
+    return derive(run["provenance"])
 
 
 def lip_provider_version(provenance: dict) -> str | None:
@@ -135,9 +163,7 @@ def build_evidence(
             status=_status(svd_record, engine),
             provider_version=versions["svd"],
             score=svd_record.get("score"),
-            total_clips=(svd_run["provenance"].get("total_clips_by_clip_id") or {}).get(
-                clip_id
-            ),
+            total_clips=clip_count(svd_run, "total_clips", clip_id),
         )
         if svd_record is not None
         else None
@@ -149,9 +175,7 @@ def build_evidence(
             status=_status(face_record, engine),
             provider_version=versions["face"],
             score=face_record.get("score"),
-            frames_scored=(face_run["provenance"].get("frames_scored_by_clip_id") or {}).get(
-                clip_id
-            ),
+            frames_scored=clip_count(face_run, "frames_scored", clip_id),
         )
         if face_record is not None
         else None
@@ -163,9 +187,7 @@ def build_evidence(
             status=_status(lip_record, engine),
             provider_version=versions["lip"],
             score=lip_record.get("score"),
-            windows_scored=(lip_run["provenance"].get("windows_scored_by_clip_id") or {}).get(
-                clip_id
-            ),
+            windows_scored=clip_count(lip_run, "windows_scored", clip_id),
         )
         if lip_record is not None
         else None
@@ -208,9 +230,9 @@ def replay(
 ) -> dict:
     """Classify every clip in the corpus under the current rules and record the trace."""
     versions = {
-        "svd": svd_provider_version(svd_run["provenance"]),
-        "face": face_provider_version(face_run["provenance"]),
-        "lip": lip_provider_version(lip_run["provenance"]),
+        "svd": run_provider_version(svd_run, svd_provider_version),
+        "face": run_provider_version(face_run, face_provider_version),
+        "lip": run_provider_version(lip_run, lip_provider_version),
     }
     expected = {
         "svd": engine.SVD_PROVIDER_VERSION,

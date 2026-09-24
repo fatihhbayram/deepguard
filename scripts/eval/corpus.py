@@ -43,6 +43,13 @@ CORPUS_SCHEMA = "r7-t5-corpus-1"
 SPLIT_CALIBRATION = "calibration"
 SPLIT_EVALUATION = "evaluation"
 
+# The four operational splits (R12-T5, `app.dataset_governance.DatasetSplit`), which an export of
+# governed production media carries (R12-T6). Restated rather than imported so this module stays
+# free of the api package. A corpus uses one vocabulary or the other; the leakage gate treats any
+# lineage seen under two split values as shared, whichever vocabulary they come from.
+OPERATIONAL_SPLITS = ("CALIBRATION", "VALIDATION", "TEST", "HOLDOUT")
+KNOWN_SPLITS = (SPLIT_CALIBRATION, SPLIT_EVALUATION, *OPERATIONAL_SPLITS)
+
 # The benchmark harness's ground-truth vocabulary, unchanged (scripts/benchmark/README.md).
 # `real` is the negative class; everything else is a manipulation family.
 LABEL_REAL = "real"
@@ -143,7 +150,7 @@ def split_by_lineage(
                 f"lineage {item.source_lineage_id!r} (clip {item.clip_id!r}) has no split "
                 "assignment; every lineage must be assigned explicitly"
             )
-        if split not in (SPLIT_CALIBRATION, SPLIT_EVALUATION):
+        if split not in KNOWN_SPLITS:
             raise CorpusError(
                 f"lineage {item.source_lineage_id!r} assigned to unknown split {split!r}"
             )
@@ -151,8 +158,11 @@ def split_by_lineage(
     return stamped
 
 
-def leakage_findings(items: list[CorpusItem]) -> dict:
-    """Everything that would make the two splits not independent, as data rather than prose.
+def leakage_findings(
+    items: list[CorpusItem],
+    missing_exported_parents: frozenset[str] = frozenset(),
+) -> dict:
+    """Everything that would make the splits not independent, as data rather than prose.
 
     Four questions are asked, and all four are asked every time so the artifact records the
     ones that came back empty as well:
@@ -166,22 +176,35 @@ def leakage_findings(items: list[CorpusItem]) -> dict:
       leak across the boundary but does inflate that split's n;
     - is any derivative separated from its base, or pointing at a base that does not exist?
 
+    With the two benchmark splits the first question is the one it always was. With the four
+    operational splits it asks whether a lineage appears under more than one of them.
+
+    `missing_exported_parents` names bases the caller knows exist but deliberately left out (an
+    operational export excludes a parent whose Ground Truth or corpus metadata is not usable).
+    A derivative pointing at one of those is listed under `missing_exported_parent` and does not
+    set `leaked`: nothing crossed a split, the base was only not exported. A derivative pointing
+    at any other absent base is still `derivatives_without_base` and still leaks.
+
     Returns a report rather than raising, so the caller can write the artifact before deciding
     what to do about it. `leaked` is the single boolean a gate should read.
     """
     by_split: dict[str, set[str]] = {SPLIT_CALIBRATION: set(), SPLIT_EVALUATION: set()}
+    splits_by_lineage: dict[str, set[str]] = {}
     digests: dict[str, dict[str, list[str]]] = {}
     by_id = {item.clip_id: item for item in items}
     unassigned = [item.clip_id for item in items if item.split is None]
 
     for item in items:
-        if item.split in by_split:
-            by_split[item.split].add(item.source_lineage_id)
+        if item.split in KNOWN_SPLITS:
+            by_split.setdefault(item.split, set()).add(item.source_lineage_id)
+            splits_by_lineage.setdefault(item.source_lineage_id, set()).add(item.split)
         digests.setdefault(item.sha256, {}).setdefault(item.split or "unassigned", []).append(
             item.clip_id
         )
 
-    shared_lineages = sorted(by_split[SPLIT_CALIBRATION] & by_split[SPLIT_EVALUATION])
+    shared_lineages = sorted(
+        lineage for lineage, splits in splits_by_lineage.items() if len(splits) > 1
+    )
 
     cross_split_digests = sorted(
         digest for digest, splits in digests.items() if len(splits) > 1
@@ -193,13 +216,17 @@ def leakage_findings(items: list[CorpusItem]) -> dict:
     )
 
     orphans = []
+    missing_parent = []
     straddling = []
     for item in items:
         if item.derivative_of is None:
             continue
         base = by_id.get(item.derivative_of)
         if base is None:
-            orphans.append(item.clip_id)
+            if item.derivative_of in missing_exported_parents:
+                missing_parent.append(item.clip_id)
+            else:
+                orphans.append(item.clip_id)
             continue
         if base.split != item.split or base.source_lineage_id != item.source_lineage_id:
             straddling.append(item.clip_id)
@@ -209,6 +236,15 @@ def leakage_findings(items: list[CorpusItem]) -> dict:
         "unassigned_clips": unassigned,
         "lineages_calibration": len(by_split[SPLIT_CALIBRATION]),
         "lineages_evaluation": len(by_split[SPLIT_EVALUATION]),
+        **(
+            {
+                "lineages_by_operational_split": {
+                    split: len(by_split.get(split, ())) for split in OPERATIONAL_SPLITS
+                }
+            }
+            if any(split in by_split for split in OPERATIONAL_SPLITS)
+            else {}
+        ),
         "shared_lineage_ids": shared_lineages,
         "cross_split_sha256": [
             {"sha256": digest, "clips": digests[digest]} for digest in cross_split_digests
@@ -218,6 +254,7 @@ def leakage_findings(items: list[CorpusItem]) -> dict:
         ],
         "derivatives_without_base": orphans,
         "derivatives_split_from_base": straddling,
+        "missing_exported_parent": missing_parent,
         "leaked": bool(
             shared_lineages
             or cross_split_digests
@@ -313,10 +350,16 @@ def summarise(items: list[CorpusItem]) -> dict:
             "by_family": _counted(item.family for item in subset),
         }
 
+    present = {item.split for item in items}
     return {
         "all": tally(items),
         SPLIT_CALIBRATION: tally([i for i in items if i.split == SPLIT_CALIBRATION]),
         SPLIT_EVALUATION: tally([i for i in items if i.split == SPLIT_EVALUATION]),
+        **{
+            split: tally([i for i in items if i.split == split])
+            for split in OPERATIONAL_SPLITS
+            if split in present
+        },
         "private_clips": sum(1 for item in items if item.private),
         "non_redistributable_clips": sum(1 for item in items if not item.redistributable),
     }
