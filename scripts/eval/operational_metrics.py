@@ -26,10 +26,10 @@ ruleset, not five: the latest analysis (by `created_at`, then `id`) represents t
 the others are counted as `duplicate_analyses`, never added to `n`. The same bytes under two
 calibration ids are two units, because they are two different measurements.
 
-**Metrics are never pooled across rulesets or calibrations.** Each `(rules_version,
-calibration_id)` pair is its own group with its own confusion matrix. A verdict only means what
-its ruleset says it means, and adding a v4 `HIGH` to a v5 `MANIPULATION_DETECTED` would count
-two different claims as one.
+**Metrics are never pooled across rulesets, calibrations or splits.** Each `(rules_version,
+calibration_id, dataset_split)` triple is its own group with its own confusion matrix. A verdict
+only means what its ruleset says it means, and adding a v4 `HIGH` to a v5
+`MANIPULATION_DETECTED` would count two different claims as one.
 
 **What a unit may be scored against** is decided in this order, and the first rule that applies
 is the unit's outcome:
@@ -52,9 +52,16 @@ A Ground Truth value outside the R12-T1 vocabulary, or a verdict outside its rul
 vocabulary, raises rather than being bucketed: either one means the contract below is wrong,
 and a count would hide that.
 
-**Dataset split** is not recorded anywhere yet (R12-T5). Every unit carries
-`dataset_split: null` and every group `dataset_split_status: "unavailable"`; no schema change
-is made to invent one.
+**Dataset split** (R12-T5) is read, not inferred. The split belongs to a source lineage
+(`lineage_splits`), and a file reaches it through its governance record:
+
+    media_files ⟶ media_governance ON media_governance.media_sha256 = media_files.original_sha256
+                ⟶ lineage_splits   ON lineage_splits.source_lineage_id = media_governance.source_lineage_id
+
+both as outer joins. Groups are keyed by `(risk_rules_version, risk_calibration_id,
+dataset_split)`, so a calibration split and a holdout split are never pooled into one matrix.
+Bytes with no governance record carry `dataset_split: "unavailable"` and form their own group;
+they are never assigned a split by default.
 """
 
 from __future__ import annotations
@@ -74,12 +81,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval import stats
 
-SCHEMA_VERSION = "deepguard/r12-t4-operational-metrics/1"
+SCHEMA_VERSION = "deepguard/r12-t4-operational-metrics/2"
 TASK = "R12-T4"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-DATASET_SPLIT_STATUS = "unavailable"
+# The R12-T5 split vocabulary (`app.dataset_governance.DatasetSplit`), restated for the same
+# reason as the Ground Truth vocabulary below, and the value a unit with no governance carries.
+DATASET_SPLITS = ("CALIBRATION", "VALIDATION", "TEST", "HOLDOUT")
+SPLIT_UNAVAILABLE = "unavailable"
 
 # The R12-T1 vocabulary (`app.ground_truth`), restated so this module runs without pydantic.
 # `tests/test_operational_metrics.py` checks it against the source.
@@ -215,6 +225,7 @@ class EvaluationRow:
     gt_source_class: str | None = None
     gt_label: str | None = None
     gt_updated_at: str | None = None
+    dataset_split: str | None = None
 
     @property
     def unit_key(self) -> tuple[str, str | None, str | None]:
@@ -223,6 +234,17 @@ class EvaluationRow:
     @property
     def has_ground_truth(self) -> bool:
         return self.gt_source_class is not None
+
+    @property
+    def split(self) -> str:
+        """The recorded split, or `unavailable`; a value outside the vocabulary raises."""
+        if self.dataset_split is None:
+            return SPLIT_UNAVAILABLE
+        if self.dataset_split not in DATASET_SPLITS:
+            raise ValueError(
+                f"unknown dataset_split {self.dataset_split!r} for {self.media_sha256}"
+            )
+        return self.dataset_split
 
 
 @dataclass
@@ -312,7 +334,7 @@ def _unit_snapshot(unit: EvaluationUnit) -> dict:
         "ground_truth_updated_at": row.gt_updated_at,
         "outcome": unit.outcome,
         "duplicate_analysis_ids": [d.analysis_id for d in unit.duplicates],
-        "dataset_split": None,
+        "dataset_split": row.split,
     }
 
 
@@ -327,13 +349,13 @@ def evaluate(
     groups: dict[tuple, list[EvaluationUnit]] = defaultdict(list)
     for unit in units:
         row = unit.representative
-        groups[(row.risk_rules_version, row.risk_calibration_id)].append(unit)
+        groups[(row.risk_rules_version, row.risk_calibration_id, row.split)].append(unit)
 
     group_reports = []
-    for (rules_version, calibration_id) in sorted(
+    for (rules_version, calibration_id, split) in sorted(
         groups, key=lambda k: tuple("" if part is None else part for part in k)
     ):
-        members = groups[(rules_version, calibration_id)]
+        members = groups[(rules_version, calibration_id, split)]
         counts = Counter(unit.outcome for unit in members)
         by_label: dict[str, Counter] = defaultdict(Counter)
         for unit in members:
@@ -345,7 +367,7 @@ def evaluate(
                 "risk_rules_version": rules_version,
                 "risk_calibration_id": calibration_id,
                 "scope_contract": rules_version in contracts,
-                "dataset_split_status": DATASET_SPLIT_STATUS,
+                "dataset_split": split,
                 "units": len(members),
                 "analyses": sum(1 + len(unit.duplicates) for unit in members),
                 "duplicate_analyses": sum(len(unit.duplicates) for unit in members),
@@ -394,7 +416,7 @@ def load_rows(session) -> tuple[list[EvaluationRow], dict]:
     """Read every analysis with its media hash and any Ground Truth for those bytes."""
     from sqlalchemy import func, select
 
-    from app.db.models import Analysis, GroundTruth, MediaFile
+    from app.db.models import Analysis, GroundTruth, LineageSplit, MediaFile, MediaGovernance
 
     statement = (
         select(
@@ -409,9 +431,14 @@ def load_rows(session) -> tuple[list[EvaluationRow], dict]:
             GroundTruth.source_class,
             GroundTruth.label,
             GroundTruth.updated_at,
+            LineageSplit.dataset_split,
         )
         .join(MediaFile, MediaFile.analysis_id == Analysis.id)
         .outerjoin(GroundTruth, GroundTruth.media_sha256 == MediaFile.original_sha256)
+        .outerjoin(MediaGovernance, MediaGovernance.media_sha256 == MediaFile.original_sha256)
+        .outerjoin(
+            LineageSplit, LineageSplit.source_lineage_id == MediaGovernance.source_lineage_id
+        )
         .order_by(Analysis.created_at, Analysis.id)
     )
     raw = session.execute(statement).all()
@@ -445,6 +472,7 @@ def load_rows(session) -> tuple[list[EvaluationRow], dict]:
                 gt_source_class=r.source_class,
                 gt_label=r.label,
                 gt_updated_at=_iso(r.updated_at),
+                dataset_split=r.dataset_split,
             )
         )
 
@@ -452,13 +480,20 @@ def load_rows(session) -> tuple[list[EvaluationRow], dict]:
         "join": (
             "analyses JOIN media_files ON media_files.analysis_id = analyses.id "
             "LEFT OUTER JOIN ground_truth ON ground_truth.media_sha256 = "
-            "media_files.original_sha256"
+            "media_files.original_sha256 "
+            "LEFT OUTER JOIN media_governance ON media_governance.media_sha256 = "
+            "media_files.original_sha256 "
+            "LEFT OUTER JOIN lineage_splits ON lineage_splits.source_lineage_id = "
+            "media_governance.source_lineage_id"
         ),
         "analyses_total": analyses_total,
         "analyses_without_media": analyses_total - len(analyses_with_media),
         "analyses_with_ambiguous_media_identity": sorted(str(a) for a in ambiguous),
         "ground_truth_records_total": session.execute(
             select(func.count()).select_from(GroundTruth)
+        ).scalar_one(),
+        "media_governance_records_total": session.execute(
+            select(func.count()).select_from(MediaGovernance)
         ).scalar_one(),
     }
     return rows, query_facts
@@ -497,8 +532,14 @@ def build_report(rows: list[EvaluationRow], query_facts: dict, database: dict) -
         "query": query_facts,
         "evaluation_unit": ["media_sha256", "risk_rules_version", "risk_calibration_id"],
         "representative_selection": "latest analysis by (created_at, id); others are duplicates",
-        "pooling": "none: one confusion matrix per (risk_rules_version, risk_calibration_id)",
-        "dataset_split_status": DATASET_SPLIT_STATUS,
+        "pooling": (
+            "none: one confusion matrix per "
+            "(risk_rules_version, risk_calibration_id, dataset_split)"
+        ),
+        "dataset_split_source": (
+            "lineage_splits.dataset_split via media_governance.source_lineage_id; "
+            f"{SPLIT_UNAVAILABLE!r} where no governance is recorded"
+        ),
         "confidence_bounds": "exact one-sided 95% Clopper-Pearson (scripts/eval/stats.py)",
         "scope_contracts": {k: c.as_dict() for k, c in sorted(SCOPE_CONTRACTS.items())},
         **result,

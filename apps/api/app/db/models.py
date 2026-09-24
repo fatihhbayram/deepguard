@@ -48,6 +48,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     String,
     Text,
@@ -1223,6 +1224,18 @@ AUDIT_TARGET_GROUND_TRUTH = "GROUND_TRUTH"
 AUDIT_ACTION_GROUND_TRUTH_CREATED = "GROUND_TRUTH_CREATED"
 AUDIT_ACTION_GROUND_TRUTH_UPDATED = "GROUND_TRUTH_UPDATED"
 
+# Since R12-T5 an audit row may be about the dataset governance recorded for a set of bytes:
+# its source lineage, split and derivation. `target_id` holds the 64-character
+# `original_sha256`, as it does for Ground Truth, and for the same reason.
+AUDIT_TARGET_DATASET_GOVERNANCE = "DATASET_GOVERNANCE"
+
+# Written by `admin_dataset_governance.py`. Like the Ground Truth events, these carry every
+# field, old and new, moved or not — and `dataset_split` among them, although it is stored on
+# `LineageSplit` rather than on the governance row. "Which split was this file in when that
+# evaluation ran" has to be answerable from the log alone.
+AUDIT_ACTION_DATASET_GOVERNANCE_CREATED = "DATASET_GOVERNANCE_CREATED"
+AUDIT_ACTION_DATASET_GOVERNANCE_UPDATED = "DATASET_GOVERNANCE_UPDATED"
+
 
 class AdminAuditEvent(Base):
     """One privileged change an administrator made, recorded as it happened (R8-T5).
@@ -1577,6 +1590,138 @@ class GroundTruth(Base):
 
     # Who last recorded it — the administrator's session, never the body. Not a foreign key,
     # for the reason `AdminAuditEvent.actor_id` gives: the record must outlive the account.
+    actor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    actor_email_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+# The four evaluation splits (R12-T5), restated from `app.dataset_governance.DatasetSplit` for
+# the check constraint, as `REVIEW_STATUSES` is for its own.
+DATASET_SPLITS = ("CALIBRATION", "VALIDATION", "TEST", "HOLDOUT")
+DATASET_SPLIT_CONSTRAINT = "ck_lineage_splits_dataset_split"
+MEDIA_GOVERNANCE_SHA256_CONSTRAINT = "ck_media_governance_media_sha256"
+MEDIA_GOVERNANCE_PARENT_SHA256_CONSTRAINT = "ck_media_governance_derived_from_sha256"
+MEDIA_GOVERNANCE_NOT_SELF_DERIVED_CONSTRAINT = "ck_media_governance_not_self_derived"
+MEDIA_GOVERNANCE_PARENT_LINEAGE_FOREIGN_KEY = "fk_media_governance_parent_same_lineage"
+
+
+class LineageSplit(Base):
+    """The one split a source lineage belongs to (R12-T5).
+
+    The split lives here and nowhere else. A governance record names a lineage, never a split,
+    so every file of one lineage is in the lineage's split by construction: two files of one
+    lineage in two splits would need two rows with one primary key.
+
+    Written once, when the first file of a lineage is governed, and never moved — see
+    `app/dataset_governance.py`. The audit events on the files carry the split, so the history
+    of what split a file was in is in `admin_audit_events`.
+    """
+
+    __tablename__ = "lineage_splits"
+
+    __table_args__ = (
+        CheckConstraint(
+            "dataset_split IN ('%s')" % "', '".join(DATASET_SPLITS),
+            name=DATASET_SPLIT_CONSTRAINT,
+        ),
+    )
+
+    source_lineage_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    dataset_split: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class MediaGovernance(Base):
+    """Where a set of bytes came from, recorded by an administrator (R12-T5).
+
+    The persistence of `app.dataset_governance.MediaGovernanceContract`, minus the split, plus
+    who recorded it and when.
+
+    **Keyed by the bytes**, as `GroundTruth` is and for the same reason: `media_sha256` is
+    `MediaFile.original_sha256`, deliberately not a foreign key to one upload of the file.
+
+    **The split is reached through the lineage.** `source_lineage_id` is a foreign key to
+    `LineageSplit`; there is no split column here to disagree with it.
+
+    **A derived file is in its parent's lineage — in the database, not only in the route.**
+    `(derived_from_sha256, source_lineage_id)` is a foreign key to this table's own
+    `(media_sha256, source_lineage_id)`, so a child can only name a parent that is governed and
+    only in the parent's lineage. `media_sha256` is the primary key, so that pair is unique and
+    the reference is well formed. Cycles are refused by the route, which walks the chain; a
+    constraint cannot see a loop longer than one step, and a one-step loop (self-derivation) is
+    refused here as well.
+    """
+
+    __tablename__ = "media_governance"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "media_sha256",
+            "source_lineage_id",
+            name="uq_media_governance_sha256_lineage",
+        ),
+        ForeignKeyConstraint(
+            ["derived_from_sha256", "source_lineage_id"],
+            ["media_governance.media_sha256", "media_governance.source_lineage_id"],
+            name=MEDIA_GOVERNANCE_PARENT_LINEAGE_FOREIGN_KEY,
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "media_sha256 ~ '^[0-9a-f]{64}$'",
+            name=MEDIA_GOVERNANCE_SHA256_CONSTRAINT,
+        ),
+        CheckConstraint(
+            "derived_from_sha256 IS NULL OR derived_from_sha256 ~ '^[0-9a-f]{64}$'",
+            name=MEDIA_GOVERNANCE_PARENT_SHA256_CONSTRAINT,
+        ),
+        CheckConstraint(
+            "derived_from_sha256 IS NULL OR derived_from_sha256 <> media_sha256",
+            name=MEDIA_GOVERNANCE_NOT_SELF_DERIVED_CONSTRAINT,
+        ),
+    )
+
+    media_sha256: Mapped[str] = mapped_column(
+        String(SHA256_HEX_LENGTH), primary_key=True
+    )
+
+    source_lineage_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("lineage_splits.source_lineage_id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    # Groups captures or cuts of one recording. Every record naming it is in one lineage.
+    recording_identity: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True
+    )
+
+    # An ordered list of step names, e.g. `["reencode", "resize"]`. Null is "not recorded".
+    transformations: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+
+    derived_from_sha256: Mapped[str | None] = mapped_column(
+        String(SHA256_HEX_LENGTH), nullable=True, index=True
+    )
+
+    # What produced the media, where somebody knows it. Recorded, never inferred.
+    generation_pipeline: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # Who last recorded it — the administrator's session. Not a foreign key, for the reason
+    # `AdminAuditEvent.actor_id` gives.
     actor_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True
     )

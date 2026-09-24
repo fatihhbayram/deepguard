@@ -8,6 +8,7 @@ from app.api.admin_analyses import router as admin_analyses_router
 from app.api.admin_analytics import router as admin_analytics_router
 from app.api.admin_api_keys import router as admin_api_keys_router
 from app.api.admin_audit import router as admin_audit_router
+from app.api.admin_dataset_governance import router as admin_dataset_governance_router
 from app.api.admin_ground_truth import router as admin_ground_truth_router
 from app.api.admin_jobs import router as admin_jobs_router
 from app.api.admin_users import router as admin_users_router
@@ -95,6 +96,10 @@ app.include_router(admin_analyses_router)
 # about an analysis but a statement about the media, keyed by hash — and the file that writes it
 # names no verdict, signal, review or provenance column, so it cannot revise any of them.
 app.include_router(admin_ground_truth_router)
+# The eighth (R12-T5): the source lineage and evaluation split recorded for a set of bytes. Its
+# own module, beside Ground Truth rather than inside it: what a file is and where it came from
+# are revised independently, and neither file names a verdict, signal, review or provenance.
+app.include_router(admin_dataset_governance_router)
 # The external B2B surface. Mounted under its own prefix and carrying its own API-key
 # dependency, so the internal routes above stay exactly as unauthenticated as they were.
 app.include_router(public_analyses_router)

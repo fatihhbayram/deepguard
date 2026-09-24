@@ -27,6 +27,7 @@ def row(
     source_class="CONTROLLED_TEST",
     label="AI_GENERATED",
     created_at="2026-09-22T10:00:00+00:00",
+    split=None,
 ):
     return om.EvaluationRow(
         analysis_id=analysis_id,
@@ -39,6 +40,7 @@ def row(
         risk_rule_id=None,
         gt_source_class=source_class,
         gt_label=label,
+        dataset_split=split,
     )
 
 
@@ -276,7 +278,7 @@ def test_an_empty_denominator_is_undefined_not_zero():
     assert group["rates"]["false_positive_rate"]["upper_95_one_sided"] > 0.0
 
 
-def test_snapshot_carries_the_inputs_and_no_dataset_split():
+def test_snapshot_carries_the_inputs_and_unavailable_split_without_governance():
     report = om.evaluate([row("id-1", verdict="INCONCLUSIVE")])
     [unit] = report["snapshot"]
     assert {
@@ -291,8 +293,40 @@ def test_snapshot_carries_the_inputs_and_no_dataset_split():
         "outcome",
         "dataset_split",
     } <= set(unit)
-    assert unit["dataset_split"] is None
-    assert only_group(report)["dataset_split_status"] == "unavailable"
+    assert unit["dataset_split"] == "unavailable"
+    assert only_group(report)["dataset_split"] == "unavailable"
+
+
+# --- dataset split (R12-T5) ----------------------------------------------------------------
+
+
+def test_the_recorded_split_reaches_the_snapshot_and_the_group():
+    report = om.evaluate([row("id-1", split="HOLDOUT")])
+    [unit] = report["snapshot"]
+    assert unit["dataset_split"] == "HOLDOUT"
+    assert only_group(report)["dataset_split"] == "HOLDOUT"
+
+
+def test_splits_are_never_pooled_into_one_matrix():
+    rows = [
+        row("id-1", sha=SHA_A, split="CALIBRATION", verdict="MANIPULATION_DETECTED"),
+        row("id-2", sha=SHA_B, split="HOLDOUT", verdict="NO_CALIBRATED_MANIPULATION_SIGNAL"),
+        row("id-3", sha="c" * 64, split=None, verdict="MANIPULATION_DETECTED"),
+    ]
+    report = om.evaluate(rows)
+    by_split = {group["dataset_split"]: group for group in report["groups"]}
+
+    assert set(by_split) == {"CALIBRATION", "HOLDOUT", "unavailable"}
+    assert by_split["CALIBRATION"]["confusion"] == {"TP": 1, "FP": 0, "TN": 0, "FN": 0}
+    assert by_split["HOLDOUT"]["confusion"] == {"TP": 0, "FP": 0, "TN": 0, "FN": 1}
+    assert by_split["unavailable"]["confusion"] == {"TP": 1, "FP": 0, "TN": 0, "FN": 0}
+    for group in report["groups"]:
+        assert group["units"] == 1
+
+
+def test_a_split_outside_the_vocabulary_raises():
+    with pytest.raises(ValueError, match="dataset_split"):
+        om.evaluate([row(split="TRAINING")])
 
 
 # --- the contract against the production sources -------------------------------------------
@@ -312,6 +346,11 @@ def test_ground_truth_vocabulary_matches_the_r12_t1_contract():
     source = API_APP / "ground_truth.py"
     assert _literal_values(source, "SourceClass") == om.SOURCE_CLASSES
     assert _literal_values(source, "GroundTruthLabel") == om.GROUND_TRUTH_LABELS
+
+
+def test_split_vocabulary_matches_the_r12_t5_contract():
+    source = API_APP / "dataset_governance.py"
+    assert _literal_values(source, "DatasetSplit") == om.DATASET_SPLITS
 
 
 def test_v5_contract_uses_the_risk_engine_verdict_strings():
