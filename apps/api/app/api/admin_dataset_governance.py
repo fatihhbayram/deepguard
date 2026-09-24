@@ -20,9 +20,9 @@ or one new lineage created with two splits). Governance writes are rare administ
 actions; serializing all of them costs nothing that matters.
 
 **Every change is audited with every field.** One `AdminAuditEvent` per mutation, carrying
-`old` and `new` for all six semantic fields — `dataset_split` included, though it is stored on
-the lineage — moved or not, with `old: null` for each on creation. A request that changes
-nothing writes nothing.
+`old` and `new` for every semantic field — the six lineage fields, `dataset_split` included
+though it is stored on the lineage, and the eight corpus metadata fields (R12-T5A) — moved or
+not, with `old: null` for each on creation. A request that changes nothing writes nothing.
 """
 
 import logging
@@ -63,6 +63,29 @@ logger = logging.getLogger(__name__)
 # by the commit or rollback that ends the transaction.
 GOVERNANCE_WRITE_LOCK = 0x52313254_35  # "R12T5"
 
+# Every field an administrator states, in the order the audit event lists them. The same tuple
+# drives the snapshot, the no-op comparison and the audit changes, so a field cannot be written
+# without also being audited.
+SEMANTIC_FIELDS = (
+    "source_lineage_id",
+    "dataset_split",
+    "recording_identity",
+    "transformations",
+    "derived_from_sha256",
+    "generation_pipeline",
+    "license",
+    "permission_status",
+    "redistributable",
+    "private",
+    "stratum_primary",
+    "source",
+    "acquisition_type",
+    "benchmark_family",
+)
+
+# The fields stored on the governance row itself; `dataset_split` is stored on the lineage.
+RECORD_FIELDS = tuple(name for name in SEMANTIC_FIELDS if name != "dataset_split")
+
 router = APIRouter(
     prefix="/api/v1/admin",
     tags=["admin"],
@@ -86,6 +109,15 @@ class DatasetGovernanceState(BaseModel):
     derived_from_sha256: str | None
     generation_pipeline: str | None
 
+    license: str | None
+    permission_status: str | None
+    redistributable: bool | None
+    private: bool | None
+    stratum_primary: str | None
+    source: str | None
+    acquisition_type: str | None
+    benchmark_family: str | None
+
     actor_id: uuid.UUID
     actor_email_snapshot: str | None
 
@@ -104,6 +136,14 @@ def visible_governance(
         transformations=record.transformations,
         derived_from_sha256=record.derived_from_sha256,
         generation_pipeline=record.generation_pipeline,
+        license=record.license,
+        permission_status=record.permission_status,
+        redistributable=record.redistributable,
+        private=record.private,
+        stratum_primary=record.stratum_primary,
+        source=record.source,
+        acquisition_type=record.acquisition_type,
+        benchmark_family=record.benchmark_family,
         actor_id=record.actor_id,
         actor_email_snapshot=record.actor_email_snapshot,
         created_at=record.created_at,
@@ -114,18 +154,14 @@ def visible_governance(
 def governance_snapshot(
     record: MediaGovernance | None, lineage: LineageSplit | None
 ) -> dict | None:
-    """The six semantic fields as stored, or None before the first record."""
+    """Every semantic field as stored, or None before the first record."""
     if record is None:
         return None
 
-    return {
-        "source_lineage_id": record.source_lineage_id,
-        "dataset_split": None if lineage is None else lineage.dataset_split,
-        "recording_identity": record.recording_identity,
-        "transformations": record.transformations,
-        "derived_from_sha256": record.derived_from_sha256,
-        "generation_pipeline": record.generation_pipeline,
-    }
+    snapshot = {name: getattr(record, name) for name in RECORD_FIELDS}
+    snapshot["dataset_split"] = None if lineage is None else lineage.dataset_split
+
+    return {name: snapshot[name] for name in SEMANTIC_FIELDS}
 
 
 def governance_changes(previous: dict | None, statement: MediaGovernanceContract) -> dict:
@@ -134,14 +170,7 @@ def governance_changes(previous: dict | None, statement: MediaGovernanceContract
 
     return {
         name: {"old": None if previous is None else previous[name], "new": new[name]}
-        for name in (
-            "source_lineage_id",
-            "dataset_split",
-            "recording_identity",
-            "transformations",
-            "derived_from_sha256",
-            "generation_pipeline",
-        )
+        for name in SEMANTIC_FIELDS
     }
 
 
@@ -224,11 +253,8 @@ def set_dataset_governance(
         record = MediaGovernance(media_sha256=sha256)
         session.add(record)
 
-    record.source_lineage_id = statement.source_lineage_id
-    record.recording_identity = statement.recording_identity
-    record.transformations = statement.transformations
-    record.derived_from_sha256 = statement.derived_from_sha256
-    record.generation_pipeline = statement.generation_pipeline
+    for name in RECORD_FIELDS:
+        setattr(record, name, getattr(statement, name))
     record.actor_id = administrator.id
     record.actor_email_snapshot = administrator.email
 

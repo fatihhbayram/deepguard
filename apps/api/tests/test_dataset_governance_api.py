@@ -20,17 +20,27 @@ derivation graph never gains a cycle — including one closed by updating an old
 included.
 
 *The evaluator.* `scripts/eval/operational_metrics.py` reads the split through the real join.
+
+*Corpus metadata (R12-T5A).* The eight fields a benchmark corpus record needs are written and
+read back unchanged, default to "not recorded" — the booleans included, which have three states
+— are refused when they would need converting, are audited with every other field, and `benchmark_family` is
+independent of Ground Truth. The migration adds them without touching an existing row's
+meaning, forwards and back.
 """
 
+import ast
 import hashlib
 import importlib.util
+import os
+import subprocess
 import sys
 import uuid
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.db.models import (
@@ -43,6 +53,7 @@ from app.db.models import (
     AdminAuditEvent,
     Analysis,
     AuthSession,
+    GroundTruth,
     LineageSplit,
     MediaFile,
     MediaGovernance,
@@ -52,7 +63,7 @@ from app.dataset_governance import chain_reaches
 from app.db.session import SessionLocal, engine
 from app.main import app
 from app.web_auth import ENVIRONMENT_VARIABLE, SESSION_COOKIE_NAME, hash_password
-from tests.conftest import DASHBOARD_ORIGIN
+from tests.conftest import DASHBOARD_ORIGIN, TEST_DATABASE_URL
 
 pytestmark = pytest.mark.integration
 
@@ -68,9 +79,37 @@ SEMANTIC_FIELDS = (
     "transformations",
     "derived_from_sha256",
     "generation_pipeline",
+    *(
+        "license",
+        "permission_status",
+        "redistributable",
+        "private",
+        "stratum_primary",
+        "source",
+        "acquisition_type",
+        "benchmark_family",
+    ),
 )
 
+# The eight corpus metadata fields R12-T5A adds, with values shaped like the ones real corpora
+# carry (`deepguard-corpus/r7t9/corpus.json`), including the longest kind of `source` line.
+CORPUS_METADATA = {
+    "license": "MAVOS-DD dataset terms (research use)",
+    "permission_status": "private; local evaluation only",
+    "redistributable": True,
+    "private": False,
+    "stratum_primary": "face_manipulation_in_the_wild_social_transcode_shorts",
+    "source": (
+        "34data/social-media-deepfakes-fake@f4b76fc47eb9e5bff66eceaa89185e51821f943d"
+        "#v22-fake-social-media-deepfakes_001.zip:smd_fake_00a7fdb4.mp4"
+    ),
+    "acquisition_type": "platform_transcode_download",
+    "benchmark_family": "inswapper",
+}
+CORPUS_METADATA_FIELDS = tuple(CORPUS_METADATA)
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
+API_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(autouse=True)
@@ -644,3 +683,329 @@ def test_the_evaluator_reads_the_recorded_split_and_unavailable_without_one(sess
     assert by_sha[ungoverned_sha].split == "unavailable"
     assert "lineage_splits" in facts["join"]
     assert facts["media_governance_records_total"] >= 1
+
+
+# --- corpus metadata (R12-T5A) --------------------------------------------------------------
+
+
+def test_corpus_metadata_is_written_and_read_back_unchanged(session, admin):
+    lineage = new_lineage(session)
+    sha256 = make_media(session)
+
+    response = put(admin, sha256, statement(lineage, "TEST", **CORPUS_METADATA))
+
+    assert response.status_code == 200, response.text
+    for name, value in CORPUS_METADATA.items():
+        assert response.json()[name] == value
+    record = stored(session, sha256)
+    for name, value in CORPUS_METADATA.items():
+        assert getattr(record, name) == value
+    fetched = admin.get(f"{GOVERNANCE_URL}/{sha256}").json()
+    assert {name: fetched[name] for name in CORPUS_METADATA} == CORPUS_METADATA
+
+
+def test_unstated_corpus_metadata_is_not_recorded(session, admin):
+    """Nothing is filled in: every field, booleans included, stays null."""
+    sha256 = governed(session, admin, new_lineage(session))
+
+    record = stored(session, sha256)
+    fetched = admin.get(f"{GOVERNANCE_URL}/{sha256}").json()
+
+    for name in CORPUS_METADATA_FIELDS:
+        assert getattr(record, name) is None
+        assert fetched[name] is None
+
+
+@pytest.mark.parametrize("value", [True, False, None])
+def test_the_booleans_have_three_states(session, admin, value):
+    """True and false are statements; null is the absence of one, and all three round-trip."""
+    lineage = new_lineage(session)
+    sha256 = governed(session, admin, lineage, redistributable=value, private=value)
+
+    record = stored(session, sha256)
+    fetched = admin.get(f"{GOVERNANCE_URL}/{sha256}").json()
+
+    assert record.redistributable is value and fetched["redistributable"] is value
+    assert record.private is value and fetched["private"] is value
+    assert events_for(session, sha256)[0].changes["private"] == {"old": None, "new": value}
+
+
+def test_a_put_is_the_whole_statement_for_corpus_metadata_too(session, admin):
+    """An omitted field means "not recorded", not "leave as it was" — the T5 PUT semantics."""
+    lineage = new_lineage(session)
+    sha256 = governed(session, admin, lineage, **CORPUS_METADATA)
+
+    assert put(admin, sha256, statement(lineage, license="CC-BY-4.0")).status_code == 200
+
+    record = stored(session, sha256)
+    assert record.license == "CC-BY-4.0"
+    assert record.benchmark_family is None
+    assert record.redistributable is None
+    assert record.private is None
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("redistributable", "true"),
+        ("redistributable", 1),
+        ("private", "false"),
+        ("private", 0),
+        ("license", ""),
+        ("license", "x" * 256),
+        ("source", "x" * 513),
+        ("stratum_primary", "two\nlines"),
+        ("benchmark_family", 7),
+    ],
+    ids=[
+        "bool-from-string", "bool-from-int", "private-from-string", "private-from-int",
+        "empty-string", "license-too-long", "source-too-long",
+        "control-character", "family-from-int",
+    ],
+)
+def test_corpus_metadata_that_would_need_converting_is_refused(session, admin, field, value):
+    sha256 = make_media(session)
+
+    response = put(admin, sha256, statement(new_lineage(session), **{field: value}))
+
+    assert response.status_code == 422
+    assert stored(session, sha256) is None
+    assert events_for(session, sha256) == []
+
+
+def test_corpus_metadata_changes_are_audited_old_and_new(session, admin):
+    lineage = new_lineage(session)
+    sha256 = governed(session, admin, lineage, **CORPUS_METADATA)
+    revised = {**CORPUS_METADATA, "private": True, "benchmark_family": "blendface"}
+
+    assert put(admin, sha256, statement(lineage, **revised)).status_code == 200
+    # Unchanged: nothing is written.
+    assert put(admin, sha256, statement(lineage, **revised)).status_code == 200
+
+    created, updated = events_for(session, sha256)
+
+    assert set(created.changes) == set(SEMANTIC_FIELDS)
+    for name in CORPUS_METADATA_FIELDS:
+        assert created.changes[name] == {"old": None, "new": CORPUS_METADATA[name]}
+
+    assert updated.action == AUDIT_ACTION_DATASET_GOVERNANCE_UPDATED
+    assert set(updated.changes) == set(SEMANTIC_FIELDS)
+    for name in CORPUS_METADATA_FIELDS:
+        assert updated.changes[name] == {"old": CORPUS_METADATA[name], "new": revised[name]}
+    assert updated.changes["private"] == {"old": False, "new": True}
+    assert updated.changes["benchmark_family"] == {"old": "inswapper", "new": "blendface"}
+
+
+def test_corpus_metadata_leaves_the_split_rules_as_they_were(session, admin):
+    """Metadata rides on the statement; it opens no way around a T5 guard."""
+    lineage = new_lineage(session)
+    sha256 = governed(session, admin, lineage, "CALIBRATION")
+
+    response = put(admin, sha256, statement(lineage, "HOLDOUT", **CORPUS_METADATA))
+
+    assert response.status_code == 409
+    assert stored(session, sha256).license is None
+    assert session[0].get(LineageSplit, lineage).dataset_split == "CALIBRATION"
+
+
+def test_benchmark_family_is_independent_of_ground_truth(session, admin):
+    """Stated by hand and stored as stated, whatever Ground Truth says or later says."""
+    db = session[0]
+    lineage = new_lineage(session)
+    sha256 = make_media(session)
+    db.add(
+        GroundTruth(
+            media_sha256=sha256,
+            source_class="CONTROLLED_TEST",
+            label="GENUINE",
+            actor_id=uuid.uuid4(),
+        )
+    )
+    db.commit()
+
+    try:
+        # A face-swap family on bytes Ground Truth calls genuine is accepted, not corrected.
+        response = put(admin, sha256, statement(lineage, benchmark_family="inswapper"))
+        assert response.status_code == 200, response.text
+        assert stored(session, sha256).benchmark_family == "inswapper"
+
+        # Revising the Ground Truth does not touch the governance record.
+        truth = db.get(GroundTruth, sha256)
+        truth.label = "AI_GENERATED"
+        db.commit()
+        assert stored(session, sha256).benchmark_family == "inswapper"
+        assert len(events_for(session, sha256)) == 1
+
+        # And the family is never offered from Ground Truth when none is stated.
+        other = make_media(session)
+        db.add(
+            GroundTruth(
+                media_sha256=other,
+                source_class="CONTROLLED_TEST",
+                label="FACE_SWAP",
+                actor_id=uuid.uuid4(),
+            )
+        )
+        db.commit()
+        assert put(admin, other, statement(lineage)).status_code == 200
+        assert stored(session, other).benchmark_family is None
+        assert admin.get(f"{GOVERNANCE_URL}/{other}").json()["benchmark_family"] is None
+    finally:
+        db.rollback()
+        db.query(GroundTruth).filter(
+            GroundTruth.media_sha256.in_(session[3])
+        ).delete(synchronize_session=False)
+        db.commit()
+
+
+def test_the_governance_module_does_not_read_ground_truth():
+    """The structural half of independence: no import path from a label to a family."""
+    for module in ("dataset_governance.py", "api/admin_dataset_governance.py"):
+        tree = ast.parse((API_ROOT / "app" / module).read_text(encoding="utf-8"))
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported |= {alias.name for alias in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                imported.add(node.module or "")
+                imported |= {alias.name for alias in node.names}
+        assert "app.ground_truth" not in imported
+        assert "GroundTruth" not in imported
+        assert "derive_manipulation_family" not in imported
+
+
+# --- the corpus metadata migration, forwards and back ---------------------------------------
+#
+# On a disposable database of its own, for the reason `test_verdict_persistence.py` gives: a
+# downgrade run against the shared test database would leave the rest of the suite on a schema
+# that does not ship.
+
+METADATA_REVISION = "c5e2a7d49f18"
+GOVERNANCE_REVISION = "b4d8e2f61c37"
+
+
+def alembic(command: list[str], url) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *command],
+        cwd=API_ROOT,
+        env={**os.environ, "DATABASE_URL": url.render_as_string(hide_password=False)},
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.fixture
+def database_before_the_metadata(database):
+    """A fresh database migrated to head and wound back to the T5 governance revision."""
+    name = f"deepguard_migration_{uuid.uuid4().hex[:12]}"
+    url = make_url(TEST_DATABASE_URL).set(database=name)
+    server = create_engine(
+        make_url(TEST_DATABASE_URL).set(database="postgres"), isolation_level="AUTOCOMMIT"
+    )
+
+    try:
+        with server.connect() as connection:
+            connection.execute(text(f'CREATE DATABASE "{name}"'))
+
+        upgraded = alembic(["upgrade", "head"], url)
+        assert upgraded.returncode == 0, upgraded.stderr
+        wound_back = alembic(["downgrade", GOVERNANCE_REVISION], url)
+        assert wound_back.returncode == 0, wound_back.stderr
+
+        yield url
+    finally:
+        with server.connect() as connection:
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        server.dispose()
+
+
+def governance_columns(url) -> dict[str, dict]:
+    target = create_engine(url)
+    try:
+        with target.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT column_name, data_type, is_nullable, character_maximum_length, "
+                    "column_default "
+                    "FROM information_schema.columns WHERE table_name = 'media_governance'"
+                )
+            ).all()
+    finally:
+        target.dispose()
+    return {
+        row.column_name: {
+            "type": row.data_type,
+            "nullable": row.is_nullable == "YES",
+            "length": row.character_maximum_length,
+            "default": row.column_default,
+        }
+        for row in rows
+    }
+
+
+def test_the_metadata_migration_leaves_existing_rows_unrecorded(
+    database_before_the_metadata,
+):
+    url = database_before_the_metadata
+    sha256 = hashlib.sha256(uuid.uuid4().bytes).hexdigest()
+    target = create_engine(url)
+
+    try:
+        # A T5-era row, written as that schema allowed — raw SQL, ORM uninvolved, because the
+        # mapped class already carries columns this database does not have yet.
+        with target.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO lineage_splits (source_lineage_id, dataset_split) "
+                    "VALUES ('lineage-pre-t5a', 'CALIBRATION')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO media_governance (media_sha256, source_lineage_id, actor_id) "
+                    "VALUES (:sha, 'lineage-pre-t5a', :actor)"
+                ),
+                {"sha": sha256, "actor": uuid.uuid4()},
+            )
+
+        upgraded = alembic(["upgrade", METADATA_REVISION], url)
+        assert upgraded.returncode == 0, upgraded.stderr
+
+        with target.connect() as connection:
+            row = connection.execute(
+                text("SELECT * FROM media_governance WHERE media_sha256 = :sha"),
+                {"sha": sha256},
+            ).mappings().one()
+    finally:
+        target.dispose()
+
+    # Nothing is stated on the row's behalf — not even a "safe" boolean.
+    for name in CORPUS_METADATA_FIELDS:
+        assert row[name] is None
+    # The T5 half of the row is as it was.
+    assert row["source_lineage_id"] == "lineage-pre-t5a"
+    assert row["derived_from_sha256"] is None
+
+    columns = governance_columns(url)
+    for name in ("redistributable", "private"):
+        assert columns[name] == {
+            "type": "boolean", "nullable": True, "length": None, "default": None
+        }
+    assert columns["license"] == {
+        "type": "character varying", "nullable": True, "length": 255, "default": None
+    }
+    assert columns["source"] == {
+        "type": "character varying", "nullable": True, "length": 512, "default": None
+    }
+
+
+def test_the_metadata_migration_downgrades_to_the_t5_schema(database_before_the_metadata):
+    url = database_before_the_metadata
+    before = set(governance_columns(url))
+
+    assert alembic(["upgrade", METADATA_REVISION], url).returncode == 0
+    assert set(governance_columns(url)) - before == set(CORPUS_METADATA_FIELDS)
+
+    downgraded = alembic(["downgrade", GOVERNANCE_REVISION], url)
+    assert downgraded.returncode == 0, downgraded.stderr
+    assert set(governance_columns(url)) == before

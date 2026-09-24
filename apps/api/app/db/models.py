@@ -1720,6 +1720,24 @@ class MediaGovernance(Base):
     # What produced the media, where somebody knows it. Recorded, never inferred.
     generation_pipeline: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # Corpus metadata (R12-T5A): the fields `scripts/eval/corpus.CorpusItem` requires and no
+    # other table records, one column per field and of the field's own type, so an export maps
+    # each across unchanged. Every one is nullable, and null is "not recorded": an export
+    # excludes the record rather than filling the gap in.
+    license: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    permission_status: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stratum_primary: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    acquisition_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # The benchmark's own family name (`CorpusItem.family`), stated by an administrator. Not the
+    # Ground Truth family, and never derived from a Ground Truth label.
+    benchmark_family: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Three states, not two: true and false are what an administrator stated, null is that
+    # nobody has. No default — a "safe" default would be indistinguishable from a statement, and
+    # null already keeps the record out of any export.
+    redistributable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    private: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
     # Who last recorded it — the administrator's session. Not a foreign key, for the reason
     # `AdminAuditEvent.actor_id` gives.
     actor_id: Mapped[uuid.UUID] = mapped_column(

@@ -29,6 +29,13 @@ Nothing here reads or writes a verdict, a signal, a review, provenance, or Groun
 `manipulation_family` is not accepted: it is derived from the Ground Truth label and nowhere
 else, and a second copy of it here could disagree with the first.
 
+**Corpus metadata** (R12-T5A) is the rest of what a benchmark corpus record
+(`scripts/eval/corpus.CorpusItem`) needs and nothing else records: licence, permission,
+redistributability, privacy, primary stratum, source, acquisition type and the benchmark family.
+Each is stated by an administrator and stored as the type the corpus record holds, so an export
+maps it across unchanged. `benchmark_family` is the benchmark's own family name and is *not* the
+Ground Truth family: it is never derived from a label, and a label is never derived from it.
+
 This module holds the vocabulary, the request contract and the guards. The guards read the
 database through the session they are given; the route (`app/api/admin_dataset_governance.py`)
 owns the transaction, the lock, the write and the audit event.
@@ -37,7 +44,7 @@ owns the transaction, the lock, the write and the audit event.
 from collections.abc import Callable
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -64,6 +71,13 @@ TRANSFORMATION_PATTERN = r"^[a-z0-9][a-z0-9_.-]{0,63}$"
 
 # Free text, but one line of it: printable, no control characters.
 GENERATION_PIPELINE_PATTERN = r"^[^\x00-\x1f\x7f]{1,128}$"
+
+# Corpus metadata text: one printable line, bounded by its column. No vocabulary is imposed,
+# because `CorpusItem` imposes none; an empty string is refused, because it would read as a
+# recorded value where nothing was recorded.
+def corpus_text_pattern(max_length: int) -> str:
+    return r"^[^\x00-\x1f\x7f]{1,%d}$" % max_length
+
 
 Sha256 = Annotated[str, Field(pattern=SHA256_PATTERN)]
 Identifier = Annotated[str, Field(pattern=IDENTIFIER_PATTERN)]
@@ -92,6 +106,19 @@ class MediaGovernanceContract(BaseModel):
     generation_pipeline: Annotated[
         str, Field(pattern=GENERATION_PIPELINE_PATTERN)
     ] | None = None
+
+    # Corpus metadata (R12-T5A). Null is "not recorded", never a value to fill in later.
+    license: Annotated[str, Field(pattern=corpus_text_pattern(255))] | None = None
+    permission_status: Annotated[str, Field(pattern=corpus_text_pattern(255))] | None = None
+    stratum_primary: Annotated[str, Field(pattern=corpus_text_pattern(128))] | None = None
+    source: Annotated[str, Field(pattern=corpus_text_pattern(512))] | None = None
+    acquisition_type: Annotated[str, Field(pattern=corpus_text_pattern(128))] | None = None
+    # Stated, not derived: nothing here reads a Ground Truth label.
+    benchmark_family: Annotated[str, Field(pattern=corpus_text_pattern(128))] | None = None
+    # Strict: `"true"`, `1` or `"yes"` is a 422, not a boolean. Null is "not recorded", and it is
+    # the default: an unstated boolean is not given a value on anybody's behalf.
+    redistributable: StrictBool | None = None
+    private: StrictBool | None = None
 
 
 class GovernanceRejected(Exception):
