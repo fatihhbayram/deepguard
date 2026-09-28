@@ -18,6 +18,9 @@
  * the row it renders, and it never appears as text. It is stated here so the distinction stays
  * explicit rather than becoming precedent for a real ratio later.
  *
+ * The one ratio on the payload, the feedback `disagreement_rate` (R14-T2), is the API's: it is
+ * parsed and drawn as it arrives, and nothing here divides to produce it.
+ *
  * The payload is parsed rather than cast, the convention `users.ts` states in full: a body that
  * is not the expected shape fails the whole read, and the page says the summary could not be
  * read instead of drawing a dashboard with holes in it. That matters more on this screen than
@@ -63,6 +66,27 @@ export type AdminAnalytics = {
   unrecognised: Record<string, number>;
   acquisition: Record<string, number>;
   detectors: Record<string, Record<string, number>>;
+  feedback_total: number;
+  feedback_by_assessment: Record<string, number>;
+  feedback_by_claimed_label: Record<string, number>;
+  feedback_without_claimed_label: number;
+  feedback_by_decision: Record<string, FeedbackBucket>;
+  feedback_by_recorded_risk_level: Record<string, FeedbackBucket>;
+  feedback_by_unrecognised_risk_state: Record<string, FeedbackBucket>;
+};
+
+/**
+ * The user feedback given about one verdict (R14-T2), as the API counted it.
+ *
+ * `assessments` holds every other count on the bucket — `AGREE`, `DISAGREE`, `UNSURE`, and any
+ * assessment the API carried through that this file has never heard of. `disagreement_rate` is
+ * the API's number, never recomputed here: `DISAGREE / total_feedback`, null when there is no
+ * feedback. It is unverified user opinion, not a false-positive or error rate.
+ */
+export type FeedbackBucket = {
+  total_feedback: number;
+  disagreement_rate: number | null;
+  assessments: Record<string, number>;
 };
 
 /**
@@ -130,6 +154,59 @@ function parseDetectors(payload: unknown): Record<string, Record<string, number>
   return detectors;
 }
 
+/**
+ * One feedback bucket, or null for anything that is not one.
+ *
+ * The rate is held to the contract rather than merely typed: null exactly when there is no
+ * feedback, otherwise a number from 0 to 1. A rate beside a zero total, or a null beside a
+ * non-zero one, means the API's definition of it has changed, and the read fails.
+ */
+function parseFeedbackBucket(payload: unknown): FeedbackBucket | null {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    return null;
+  }
+
+  const { total_feedback, disagreement_rate, ...rest } = payload as Record<string, unknown>;
+  const total = count(total_feedback);
+  const assessments = parseCounts(rest);
+
+  if (total === undefined || assessments === null) {
+    return null;
+  }
+
+  if (total === 0 ? disagreement_rate !== null : !isRate(disagreement_rate)) {
+    return null;
+  }
+
+  return {
+    total_feedback: total,
+    disagreement_rate: disagreement_rate as number | null,
+    assessments,
+  };
+}
+
+function isRate(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+/** A map of verdicts to their feedback buckets. */
+function parseFeedbackBuckets(payload: unknown): Record<string, FeedbackBucket> | null {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    return null;
+  }
+
+  const buckets: Record<string, FeedbackBucket> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    const bucket = parseFeedbackBucket(value);
+    if (bucket === null) {
+      return null;
+    }
+    buckets[key] = bucket;
+  }
+
+  return buckets;
+}
+
 /** The summary out of the payload, or null for anything that is not one. */
 export function parseAnalytics(payload: unknown): AdminAnalytics | null {
   if (typeof payload !== "object" || payload === null) {
@@ -146,6 +223,13 @@ export function parseAnalytics(payload: unknown): AdminAnalytics | null {
     unrecognised,
     acquisition,
     detectors,
+    feedback_total,
+    feedback_by_assessment,
+    feedback_by_claimed_label,
+    feedback_without_claimed_label,
+    feedback_by_decision,
+    feedback_by_recorded_risk_level,
+    feedback_by_unrecognised_risk_state,
   } = payload as Record<string, unknown>;
 
   const total = count(analyses_total);
@@ -156,6 +240,25 @@ export function parseAnalytics(payload: unknown): AdminAnalytics | null {
   const unplaced = parseCounts(unrecognised);
   const acquired = parseCounts(acquisition);
   const providers = parseDetectors(detectors);
+  const feedbackTotal = count(feedback_total);
+  const byAssessment = parseCounts(feedback_by_assessment);
+  const byClaimedLabel = parseCounts(feedback_by_claimed_label);
+  const withoutClaimedLabel = count(feedback_without_claimed_label);
+  const byDecision = parseFeedbackBuckets(feedback_by_decision);
+  const byRecordedLevel = parseFeedbackBuckets(feedback_by_recorded_risk_level);
+  const byUnrecognised = parseFeedbackBuckets(feedback_by_unrecognised_risk_state);
+
+  if (
+    feedbackTotal === undefined ||
+    byAssessment === null ||
+    byClaimedLabel === null ||
+    withoutClaimedLabel === undefined ||
+    byDecision === null ||
+    byRecordedLevel === null ||
+    byUnrecognised === null
+  ) {
+    return null;
+  }
 
   if (
     typeof window !== "string" ||
@@ -181,6 +284,13 @@ export function parseAnalytics(payload: unknown): AdminAnalytics | null {
     unrecognised: unplaced,
     acquisition: acquired,
     detectors: providers,
+    feedback_total: feedbackTotal,
+    feedback_by_assessment: byAssessment,
+    feedback_by_claimed_label: byClaimedLabel,
+    feedback_without_claimed_label: withoutClaimedLabel,
+    feedback_by_decision: byDecision,
+    feedback_by_recorded_risk_level: byRecordedLevel,
+    feedback_by_unrecognised_risk_state: byUnrecognised,
   };
 }
 

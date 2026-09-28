@@ -103,6 +103,14 @@ VISIBLE_FIELDS = {
     "unrecognised",
     "acquisition",
     "detectors",
+    # R14-T2: user feedback, asserted in `test_admin_feedback_analytics.py`.
+    "feedback_total",
+    "feedback_by_assessment",
+    "feedback_by_claimed_label",
+    "feedback_without_claimed_label",
+    "feedback_by_decision",
+    "feedback_by_recorded_risk_level",
+    "feedback_by_unrecognised_risk_state",
 }
 
 # The rulesets, written out rather than imported from the module under test, so a version

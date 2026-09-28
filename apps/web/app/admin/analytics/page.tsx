@@ -36,6 +36,11 @@
  * looking for whether anything failed, and making them find it inside a four-row list is making
  * them work for the one number they came for.
  *
+ * **User feedback is its own section, last, under a rule (R14-T2).** It carries the one ratio on
+ * the page — the API's user disagreement rate, formatted here and never computed — and it is
+ * unverified opinion, so it is kept apart from everything the pipeline itself recorded and says
+ * in its own text that it is neither Ground Truth nor an error rate.
+ *
  * Read-only in the strict sense: no form, no route handler behind it, nothing that mutates.
  */
 
@@ -48,7 +53,7 @@ import { ADMIN_ANALYTICS_PATH, LOGIN_PATH } from "../../session";
 import { AdminAlert } from "../components/AdminAlert";
 import { AdminPageHeader } from "../components/AdminPageHeader";
 import { AdminSection } from "../components/AdminSection";
-import { AdminAnalytics, fetchAnalytics } from "../analytics";
+import { AdminAnalytics, FeedbackBucket, fetchAnalytics } from "../analytics";
 import { JOB_STATUS_FAILED } from "../jobs";
 
 /*
@@ -294,6 +299,178 @@ function Detectors({ detectors }: { detectors: Record<string, Record<string, num
 }
 
 /* ------------------------------------------------------------------ *
+ * User feedback activity (R14-T2)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The API's disagreement rate, as text.
+ *
+ * Formatted and nothing more — three decimals of the number the API sent, never re-derived from
+ * the counts beside it and never multiplied into a percentage. Null is a bucket nobody gave
+ * feedback on, drawn as a dash: there is no rate, which is not a rate of zero.
+ */
+function rateText(rate: number | null): string {
+  return rate === null ? "—" : rate.toFixed(3);
+}
+
+/**
+ * Feedback by the verdict on the analysis it is about, one table per list the API placed it in.
+ *
+ * The assessment columns are the union of the buckets' own keys, for the reason the detector
+ * table takes its columns from the providers: the API seeds the vocabulary and carries through
+ * anything else, and a column this file has never heard of must still be drawn.
+ */
+function FeedbackTable({
+  title,
+  buckets,
+}: {
+  title: string;
+  buckets: Record<string, FeedbackBucket>;
+}) {
+  const verdicts = Object.keys(buckets);
+  const assessments = [
+    ...new Set(verdicts.flatMap((verdict) => Object.keys(buckets[verdict].assessments))),
+  ];
+
+  return (
+    <AdminSection bleed scroll>
+      <table className="w-full min-w-[560px] border-collapse text-left">
+        <caption className="px-5 pt-3 text-left text-[11px] font-medium tracking-[0.12em] text-muted uppercase">
+          {title}
+        </caption>
+        <thead>
+          <tr className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
+            <th scope="col" className="px-5 py-3 font-medium">
+              Verdict shown
+            </th>
+            <th scope="col" className="px-5 py-3 text-right font-medium">
+              Feedback
+            </th>
+            {assessments.map((assessment) => (
+              <th key={assessment} scope="col" className="px-5 py-3 text-right font-medium">
+                {assessment}
+              </th>
+            ))}
+            <th scope="col" className="px-5 py-3 text-right font-medium">
+              User disagreement rate
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {verdicts.map((verdict) => (
+            <tr key={verdict} className="border-t border-hair">
+              <th
+                scope="row"
+                className="px-5 py-3 font-mono text-[12px] font-normal text-bone"
+              >
+                {verdict}
+              </th>
+              <td className="px-5 py-3 text-right font-mono text-[13px] text-muted tabular-nums">
+                {buckets[verdict].total_feedback}
+              </td>
+              {assessments.map((assessment) => (
+                <td
+                  key={assessment}
+                  className="px-5 py-3 text-right font-mono text-[13px] text-muted tabular-nums"
+                >
+                  {buckets[verdict].assessments[assessment] ?? "—"}
+                </td>
+              ))}
+              <td className="px-5 py-3 text-right font-mono text-[13px] text-muted tabular-nums">
+                {rateText(buckets[verdict].disagreement_rate)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </AdminSection>
+  );
+}
+
+/**
+ * What the owners of analyses said about the results they were shown.
+ *
+ * **Its own section, last on the page, under a rule.** Everything above is what the pipeline
+ * did; this is what people thought of it, and it is kept visibly apart so a disagreement rate is
+ * never read beside a decision count as though it scored it. Nothing here is Ground Truth, a
+ * Human Review or an evaluation metric, and the two disclaimers say so in the section itself
+ * rather than in a tooltip a reader can miss.
+ */
+function FeedbackActivity({ analytics }: { analytics: AdminAnalytics }) {
+  return (
+    <section
+      aria-labelledby="user-feedback-activity"
+      className="mt-10 border-t border-line pt-6"
+    >
+      <h3
+        id="user-feedback-activity"
+        className="text-[11px] font-medium tracking-[0.12em] text-bone uppercase"
+      >
+        User feedback activity
+      </h3>
+      <div className="mt-2 max-w-[74ch] space-y-1.5 text-[12px] leading-relaxed text-muted">
+        <p>
+          This reflects the current state of user feedback modified in the last 7 days, not a
+          submission count or event log.
+        </p>
+        <p>
+          User feedback represents unverified end-user opinions. Disagreement rate is not a False
+          Positive or Error rate.
+        </p>
+      </div>
+
+      <dl className="mt-4 grid gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-2">
+        <Kpi
+          label="Feedback in window"
+          value={analytics.feedback_total}
+          note="Feedback records created or changed in the last seven days."
+        />
+        <Kpi
+          label="Without a claimed label"
+          value={analytics.feedback_without_claimed_label}
+          note="Feedback where the user did not say what they believe the media is."
+        />
+      </dl>
+
+      <div className="mt-4 grid items-start gap-4 sm:grid-cols-2">
+        <Distribution
+          title="Feedback by assessment"
+          note="What users made of the result they were shown."
+          counts={analytics.feedback_by_assessment}
+        />
+        <Distribution
+          title="Claimed label"
+          note="What users say the media is. A claim, not Ground Truth, and never used to score a detector."
+          counts={analytics.feedback_by_claimed_label}
+        />
+      </div>
+
+      <p className="mt-6 max-w-[74ch] text-[12px] leading-relaxed text-muted">
+        By the verdict on the analysis the feedback is about, placed exactly as the counts above
+        place the analyses. The user disagreement rate is DISAGREE over that verdict&rsquo;s
+        feedback, as the API computed it; a dash means nobody gave feedback on it.
+      </p>
+      <div className="mt-3 space-y-4">
+        <FeedbackTable
+          title="Decisions (r9-v5.0.0)"
+          buckets={analytics.feedback_by_decision}
+        />
+        <FeedbackTable
+          title="Recorded risk levels (p7-v1.0.0 – r7-v4.0.0)"
+          buckets={analytics.feedback_by_recorded_risk_level}
+        />
+        {Object.keys(analytics.feedback_by_unrecognised_risk_state).length > 0 && (
+          <FeedbackTable
+            title="Unrecognised risk values"
+            buckets={analytics.feedback_by_unrecognised_risk_state}
+          />
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * Page
  * ------------------------------------------------------------------ */
 
@@ -366,6 +543,8 @@ function Summary({ analytics }: { analytics: AdminAnalytics }) {
           <Detectors detectors={analytics.detectors} />
         </div>
       </section>
+
+      <FeedbackActivity analytics={analytics} />
     </>
   );
 }

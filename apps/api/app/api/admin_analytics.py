@@ -66,10 +66,13 @@ from app.db.models import (
     SIGNAL_STATUS_FAILED,
     SIGNAL_STATUS_SUCCESS,
     SIGNAL_STATUS_TIMEOUT,
+    FEEDBACK_ASSESSMENTS,
+    FEEDBACK_CLAIMED_LABELS,
     Analysis,
     AnalysisJob,
     AnalysisSignal,
     MediaFile,
+    UserFeedback,
 )
 from app.db.session import get_session
 from app.risk_engine import (
@@ -185,6 +188,10 @@ RECORDED_RISK_LEVELS = (RISK_HIGH, RISK_MEDIUM, RISK_UNKNOWN)
 # How a null half of an unrecognised `(ruleset, value)` pair is spelled in that pair's key.
 UNRECOGNISED_ABSENT = "(none)"
 
+# The assessment `disagreement_rate` counts (R14-T2). One of `FEEDBACK_ASSESSMENTS`, which names
+# no constant per value; the test suite holds this spelling to that tuple.
+FEEDBACK_DISAGREE = "DISAGREE"
+
 
 class AnalyticsWindow(BaseModel):
     """The seven-day picture, as one payload.
@@ -194,6 +201,10 @@ class AnalyticsWindow(BaseModel):
     moment one appears here it becomes this route's interpretation rather than the reader's.
     `failed` and `completed` side by side say everything a failure rate would, and say it
     without deciding whether in-flight work belongs in the denominator.
+
+    One exception, required by R14-T2: `disagreement_rate` in the feedback buckets. It is
+    defined in `feedback_buckets` and computed here, so the browser never divides anything, and
+    its denominator is fixed — the bucket's own feedback — so there is nothing left to decide.
     """
 
     # Which window produced these counts. Present so a payload read on its own — logged,
@@ -233,6 +244,28 @@ class AnalyticsWindow(BaseModel):
     # list here says they should — a detector nobody invoked this week is absent, not zeroed,
     # and the difference is the difference between "asked and silent" and "not asked".
     detectors: dict[str, dict[str, int]]
+
+    # User feedback (R14-T2): what owners said about the results they were shown. Unverified
+    # opinion — not Ground Truth, not a Human Review, not an evaluation of any detector.
+    #
+    # Windowed on `UserFeedback.updated_at`, not on the analysis: this is the current state of
+    # every piece of feedback created or changed in the last seven days, about an analysis of any
+    # age. A revision overwrites the row, so this is not a count of submissions and there is no
+    # event history behind it; a resubmission that changed nothing does not move `updated_at`
+    # and does not bring a stale row back into the window.
+    feedback_total: int
+    feedback_by_assessment: dict[str, int]
+    # The label users claimed, with no null key: feedback that claimed no label is counted in
+    # `feedback_without_claimed_label` instead.
+    feedback_by_claimed_label: dict[str, int]
+    feedback_without_claimed_label: int
+    # Feedback by the verdict on the analysis it is about, placed by `risk_bucket` — the same
+    # three maps as `decisions`, `recorded_risk_levels` and `unrecognised` above. The first two
+    # carry every known key even with no feedback (`total_feedback` 0, `disagreement_rate`
+    # null); the third holds only pairings some feedback was about.
+    feedback_by_decision: dict[str, dict[str, float | int | None]]
+    feedback_by_recorded_risk_level: dict[str, dict[str, float | int | None]]
+    feedback_by_unrecognised_risk_state: dict[str, dict[str, float | int | None]]
 
 
 def within_window(created_at: ColumnElement) -> ColumnElement[bool]:
@@ -300,13 +333,37 @@ def unrecognised_key(rules_version: str | None, risk_level: str | None) -> str:
     )
 
 
+BUCKET_DECISIONS = "decisions"
+BUCKET_RECORDED = "recorded_risk_levels"
+BUCKET_UNRECOGNISED = "unrecognised"
+
+
+def risk_bucket(risk_level: str | None, rules_version: str | None) -> tuple[str, str]:
+    """Which of the three maps one stored `(risk_level, risk_rules_version)` pair belongs in,
+    and under which key: the single place that decision is made.
+
+    `risk_buckets` places the week's analyses with it and `feedback_buckets` places the week's
+    feedback with it (R14-T2), so a pairing cannot be a decision in one list and unrecognised
+    in the other. It decides by exact match on the pair and on nothing else; the rules are
+    listed on `risk_buckets`, which was their only caller before R14-T2.
+    """
+    if rules_version == RULES_VERSION_V5 and risk_level in DECISION_VERDICTS:
+        return BUCKET_DECISIONS, risk_level
+    if risk_level is None and rules_version in (None, RULES_VERSION_V5):
+        return BUCKET_DECISIONS, RISK_UNDECIDED
+    if rules_version in LEGACY_RULES_VERSIONS and risk_level in RECORDED_RISK_LEVELS:
+        return BUCKET_RECORDED, risk_level
+    return BUCKET_UNRECOGNISED, unrecognised_key(rules_version, risk_level)
+
+
 def risk_buckets(
     rows: Sequence[Row],
 ) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
     """`(risk_level, risk_rules_version, count)` groups, placed by both columns together.
 
     The counting already happened in PostgreSQL; this only decides which of three maps each
-    group belongs in, and it decides by exact match on the pair and on nothing else:
+    group belongs in, by `risk_bucket`, which decides by exact match on the pair and on nothing
+    else:
 
     - a `r9-v5.0.0` row holding one of the three verdicts is a **decision**;
     - a row with no level, and either no ruleset or `r9-v5.0.0`, is **`UNDECIDED`** — no
@@ -325,22 +382,92 @@ def risk_buckets(
     Every known key is seeded at zero, for the reason `ANALYSIS_STATUSES` gives. `unrecognised`
     is not seeded: it has no vocabulary, and a key in it is always a count of real rows.
     """
-    decisions = {name: 0 for name in DECISIONS}
-    recorded = {level: 0 for level in RECORDED_RISK_LEVELS}
-    unrecognised: dict[str, int] = {}
+    buckets: dict[str, dict[str, int]] = {
+        BUCKET_DECISIONS: {name: 0 for name in DECISIONS},
+        BUCKET_RECORDED: {level: 0 for level in RECORDED_RISK_LEVELS},
+        BUCKET_UNRECOGNISED: {},
+    }
 
     for risk_level, rules_version, count in rows:
-        if rules_version == RULES_VERSION_V5 and risk_level in DECISION_VERDICTS:
-            decisions[risk_level] += count
-        elif risk_level is None and rules_version in (None, RULES_VERSION_V5):
-            decisions[RISK_UNDECIDED] += count
-        elif rules_version in LEGACY_RULES_VERSIONS and risk_level in RECORDED_RISK_LEVELS:
-            recorded[risk_level] += count
-        else:
-            key = unrecognised_key(rules_version, risk_level)
-            unrecognised[key] = unrecognised.get(key, 0) + count
+        bucket, key = risk_bucket(risk_level, rules_version)
+        buckets[bucket][key] = buckets[bucket].get(key, 0) + count
 
-    return decisions, recorded, unrecognised
+    return buckets[BUCKET_DECISIONS], buckets[BUCKET_RECORDED], buckets[BUCKET_UNRECOGNISED]
+
+
+def feedback_tally() -> dict[str, float | int | None]:
+    """One verdict bucket's feedback, before anything has been counted into it.
+
+    Every assessment is present at zero and the rate is null, so a verdict nobody gave feedback
+    on still has the whole shape — the same floor `ANALYSIS_STATUSES` is, applied one level down.
+    """
+    return {
+        "total_feedback": 0,
+        **{assessment: 0 for assessment in FEEDBACK_ASSESSMENTS},
+        "disagreement_rate": None,
+    }
+
+
+def feedback_buckets(
+    rows: Sequence[Row],
+) -> tuple[
+    dict[str, dict[str, float | int | None]],
+    dict[str, dict[str, float | int | None]],
+    dict[str, dict[str, float | int | None]],
+]:
+    """`(risk_level, risk_rules_version, assessment, count)` groups, placed by `risk_bucket`.
+
+    Each piece of feedback lands in the bucket of the verdict persisted on the analysis it is
+    about, placed exactly as the analysis itself is placed in `risk_buckets` — by the same
+    function, not a copy of its rules. `decisions` and `recorded_risk_levels` are seeded with
+    every known key; `unrecognised` only ever holds pairings some feedback was actually about.
+
+    `disagreement_rate` is `DISAGREE / total_feedback` for that one bucket, and null when the
+    bucket has no feedback: nothing was said, so there is no rate, and a zero would claim that
+    everybody agreed. It is the share of users who pushed back on a verdict they were shown —
+    an unverified opinion. It is not a false-positive rate or an error rate of any kind, and
+    nothing here compares it with Ground Truth.
+    """
+    buckets: dict[str, dict[str, dict[str, float | int | None]]] = {
+        BUCKET_DECISIONS: {name: feedback_tally() for name in DECISIONS},
+        BUCKET_RECORDED: {level: feedback_tally() for level in RECORDED_RISK_LEVELS},
+        BUCKET_UNRECOGNISED: {},
+    }
+
+    for risk_level, rules_version, assessment, count in rows:
+        bucket, key = risk_bucket(risk_level, rules_version)
+        tally = buckets[bucket].setdefault(key, feedback_tally())
+        # `.get`, not `+=` on a seeded key: an assessment outside the vocabulary cannot pass the
+        # table's check constraint, but if one ever did it is carried under its own name — the
+        # rule `tallied` follows — and it is still in `total_feedback`.
+        tally[assessment] = tally.get(assessment, 0) + count
+        tally["total_feedback"] += count
+
+    for bucket in buckets.values():
+        for tally in bucket.values():
+            total = tally["total_feedback"]
+            tally["disagreement_rate"] = tally[FEEDBACK_DISAGREE] / total if total else None
+
+    return buckets[BUCKET_DECISIONS], buckets[BUCKET_RECORDED], buckets[BUCKET_UNRECOGNISED]
+
+
+def claimed_label_counts(rows: Sequence[Row]) -> tuple[dict[str, int], int]:
+    """`(claimed_label, count)` groups, as the labels users claimed and how many claimed none.
+
+    A null claimed label is counted as its own integer rather than under a key. A `"null"` key
+    beside `GENUINE` and `FACE_SWAP` would read as a fifth thing a user could claim; "the user
+    did not say" is a different kind of fact from any label.
+    """
+    labels = {label: 0 for label in FEEDBACK_CLAIMED_LABELS}
+    without_label = 0
+
+    for label, count in rows:
+        if label is None:
+            without_label += count
+        else:
+            labels[label] = labels.get(label, 0) + count
+
+    return labels, without_label
 
 
 def grouped_counts(
@@ -371,7 +498,8 @@ router = APIRouter(
 def read_analytics(session: Session = Depends(get_session)) -> AnalyticsWindow:
     """The deployment's last seven days, counted by the database.
 
-    Six statements, each a `GROUP BY` or a `COUNT`, none of them returning a row of data. They
+    Six statements, each a `GROUP BY` or a `COUNT`, none of them returning a row of data — and
+    since R14-T2 four more of the same kind over `user_feedback`. They
     are issued separately rather than assembled into one query with five joined subselects
     because they answer five unrelated questions over four tables, and a join between them
     would multiply rows against each other — an analysis with three signals would be counted
@@ -447,6 +575,45 @@ def read_analytics(session: Session = Depends(get_session)) -> AnalyticsWindow:
         tally = detectors.setdefault(provider, {name: 0 for name in SIGNAL_STATUSES})
         tally[status] = tally.get(status, 0) + count
 
+    # User feedback, windowed on its own `updated_at` — see the comment on `feedback_total`. The
+    # window predicate is the same `within_window`, applied to a different column on purpose.
+    feedback_total = session.execute(
+        select(func.count())
+        .select_from(UserFeedback)
+        .where(within_window(UserFeedback.updated_at))
+    ).scalar_one()
+
+    feedback_by_assessment = tallied(
+        grouped_counts(session, UserFeedback.assessment, UserFeedback.updated_at),
+        categories=FEEDBACK_ASSESSMENTS,
+    )
+
+    feedback_by_claimed_label, feedback_without_claimed_label = claimed_label_counts(
+        grouped_counts(session, UserFeedback.claimed_label, UserFeedback.updated_at)
+    )
+
+    # Joined to the analysis for the verdict persisted on it, and grouped on both halves of that
+    # verdict so `risk_bucket` can place it. An inner join is exact: `analysis_id` is `NOT NULL`
+    # and cascades, so every feedback row has its analysis. The analysis is not windowed — only
+    # the feedback is.
+    feedback_by_decision, feedback_by_recorded_risk_level, feedback_by_unrecognised = (
+        feedback_buckets(
+            session.execute(
+                select(
+                    Analysis.risk_level,
+                    Analysis.risk_rules_version,
+                    UserFeedback.assessment,
+                    func.count(),
+                )
+                .join(Analysis, Analysis.id == UserFeedback.analysis_id)
+                .where(within_window(UserFeedback.updated_at))
+                .group_by(
+                    Analysis.risk_level, Analysis.risk_rules_version, UserFeedback.assessment
+                )
+            ).all()
+        )
+    )
+
     return AnalyticsWindow(
         window=WINDOW_LABEL,
         analyses_total=analyses_total,
@@ -457,4 +624,11 @@ def read_analytics(session: Session = Depends(get_session)) -> AnalyticsWindow:
         unrecognised=unrecognised,
         acquisition=acquisition,
         detectors=detectors,
+        feedback_total=feedback_total,
+        feedback_by_assessment=feedback_by_assessment,
+        feedback_by_claimed_label=feedback_by_claimed_label,
+        feedback_without_claimed_label=feedback_without_claimed_label,
+        feedback_by_decision=feedback_by_decision,
+        feedback_by_recorded_risk_level=feedback_by_recorded_risk_level,
+        feedback_by_unrecognised_risk_state=feedback_by_unrecognised,
     )

@@ -63,6 +63,14 @@ PAYLOAD = {
     "unrecognised": {"r9-v5.0.0/MEDIUM": 5, "r7-v4.0.0/MANIPULATION_DETECTED": 8},
     "acquisition": {"upload": 30, "url": 1, "unrecorded": 0},
     "detectors": {},
+    # R14-T2: user feedback. `test_admin_feedback_analytics.py` holds its parse.
+    "feedback_total": 0,
+    "feedback_by_assessment": {"AGREE": 0, "DISAGREE": 0, "UNSURE": 0},
+    "feedback_by_claimed_label": {},
+    "feedback_without_claimed_label": 0,
+    "feedback_by_decision": {},
+    "feedback_by_recorded_risk_level": {},
+    "feedback_by_unrecognised_risk_state": {},
 }
 
 RISK_FIELDS = ("decisions", "recorded_risk_levels", "unrecognised")
@@ -83,6 +91,10 @@ CASES = {
 
 @lru_cache(maxsize=1)
 def _parsed() -> dict[str, dict | None]:
+    return parse_with_node(CASES)
+
+
+def parse_with_node(cases: dict[str, dict]) -> dict[str, dict | None]:
     """Run the real `parseAnalytics` over every case, in one node process.
 
     `analytics.ts` is transpiled and executed with every import stubbed: nothing reachable from
@@ -109,7 +121,7 @@ def _parsed() -> dict[str, dict | None]:
     """
 
     result = subprocess.run(
-        [NODE, "-e", driver, "--", str(TYPESCRIPT), str(WEB_ANALYTICS), json.dumps(CASES)],
+        [NODE, "-e", driver, "--", str(TYPESCRIPT), str(WEB_ANALYTICS), json.dumps(cases)],
         capture_output=True,
         text=True,
         timeout=120,
