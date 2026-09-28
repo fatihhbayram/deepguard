@@ -842,9 +842,14 @@ def test_signing_in_again_revokes_the_previous_session(session, client):
     ).one()
     assert revoked.revoked_at is not None
 
+    # Cleared first, each time: the server-set cookie is scoped to `testserver.local`, and a
+    # bare `cookies.set` adds a second one beside it rather than replacing it, so the request
+    # would carry both tokens and the live one would answer for the revoked one.
+    client.cookies.clear()
     client.cookies.set(SESSION_COOKIE_NAME, first_token)
     assert_unauthenticated(client.get("/api/v1/auth/me"))
 
+    client.cookies.clear()
     client.cookies.set(SESSION_COOKIE_NAME, second_token)
     assert client.get("/api/v1/auth/me").status_code == 200
 
