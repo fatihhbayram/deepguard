@@ -199,6 +199,7 @@ function ForensicResult({
     isV5Verdict(level)
       ? V5_VERDICT_WORDING[level]
       : null;
+  const legacyLevel = level !== null && analysis.risk_rules_version !== RULES_VERSION_V5;
 
   return (
     <AdminSection
@@ -210,7 +211,11 @@ function ForensicResult({
           needs the finding and how much of the reading it was taken from before they need the
           identity of the ruleset that took it. */}
       <dl className="mt-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
-        <Fact label="Assessment">
+        {/* One field, labelled by the vocabulary the ruleset wrote it in (R13-T2). A v5 row
+            holds a verdict and is the decision; any earlier ruleset wrote a level, which is
+            labelled as the recorded risk level it is rather than as a verdict. Chosen by the
+            ruleset and never by the string, like the label itself. */}
+        <Fact label={legacyLevel ? "Recorded risk level" : "Decision"}>
           {level === null
             ? NO_DECISION
             : classificationLabel(level, analysis.risk_rules_version)}

@@ -48,7 +48,7 @@ import { ADMIN_ANALYTICS_PATH, LOGIN_PATH } from "../../session";
 import { AdminAlert } from "../components/AdminAlert";
 import { AdminPageHeader } from "../components/AdminPageHeader";
 import { AdminSection } from "../components/AdminSection";
-import { AdminAnalytics, fetchAnalytics } from "../analytics";
+import { AdminAnalytics, fetchAnalytics, splitRiskDistribution } from "../analytics";
 import { JOB_STATUS_FAILED } from "../jobs";
 
 /*
@@ -297,8 +297,10 @@ function Detectors({ detectors }: { detectors: Record<string, Record<string, num
  * Page
  * ------------------------------------------------------------------ */
 
-/** The four distributions and the detector table, once the summary has been read. */
+/** The distributions and the detector table, once the summary has been read. */
 function Summary({ analytics }: { analytics: AdminAnalytics }) {
+  const risk = splitRiskDistribution(analytics.risk_distribution);
+
   return (
     <>
       {/* The API's own total and two of its own counts. Nothing here is a sum of a map: the two
@@ -320,16 +322,34 @@ function Summary({ analytics }: { analytics: AdminAnalytics }) {
           note="The queue behind those submissions. Counted separately from the analyses above rather than assumed to match them."
           counts={analytics.jobs_by_status}
         />
+        {/* `risk_distribution` is one column holding two vocabularies, drawn as two lists so a
+            legacy level never sits in the list of verdicts (R13-T2). The split is by exact
+            allowlist membership in `splitRiskDistribution`; nothing is translated across. */}
         <Distribution
-          title="Risk levels recorded"
-          note="As persisted on the analysis. UNDECIDED means no decision has been written yet — it is not the same as UNKNOWN, which is a decision the risk engine reached."
-          counts={analytics.risk_distribution}
+          title="Decisions recorded"
+          note="r9-v5.0.0 verdicts, as persisted on the analysis. UNDECIDED means no decision of any kind has been written yet. Legacy risk levels are counted in their own list and are never added to these."
+          counts={risk.decisions}
+        />
+        <Distribution
+          title="Recorded risk level"
+          note="Levels written by rulesets before r9-v5.0.0, as persisted. Not verdicts and not translated into one: a HIGH is not a detection. UNKNOWN is a decision the risk engine reached, unlike UNDECIDED."
+          counts={risk.recordedRiskLevels}
         />
         <Distribution
           title="How the media arrived"
           note="By acquisition method. 'unrecorded' is media stored before this was kept, not a third way in."
           counts={analytics.acquisition}
         />
+        {/* Only when the week holds a stored value neither vocabulary contains. Carried through
+            under its own name, as the API carries it, rather than dropped or filed into a list
+            it does not belong to. */}
+        {Object.keys(risk.unrecognised).length > 0 && (
+          <Distribution
+            title="Unrecognised risk values"
+            note="Stored in the risk column but in neither vocabulary this build knows. Shown as stored, not as a verdict or a level."
+            counts={risk.unrecognised}
+          />
+        )}
       </div>
 
       <section className="mt-6">

@@ -506,7 +506,14 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
     <section
       className={`mt-6 break-inside-avoid rounded border-2 p-4 ${riskAccent(level)}`}
     >
-      <h2 className="text-base font-semibold">InspectRoot risk classification</h2>
+      {/* A level a pre-v5 ruleset wrote is named as the recorded risk level it is, not as a
+          verdict: under v5 the verdict is the assessment summary's, and this card never holds
+          one (R13-T2). */}
+      <h2 className="text-base font-semibold">
+        {legacyVocabulary && level !== null
+          ? "Recorded risk level"
+          : "InspectRoot risk classification"}
+      </h2>
 
       <p className="mt-2 text-2xl font-semibold">{riskLabel(level, rulesVersion)}</p>
 
