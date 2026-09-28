@@ -95,6 +95,11 @@ import {
   GroundTruthResult,
   fetchGroundTruth,
 } from "../../ground-truth";
+import { UserFeedbackEntry, UserFeedbackResult, fetchUserFeedback } from "../../user-feedback";
+import {
+  FEEDBACK_ASSESSMENT_LABELS,
+  FEEDBACK_CLAIMED_LABEL_LABELS,
+} from "../../../user-feedback";
 
 // The sentence the Ground Truth card shows in place of its form when the analysis carries no
 // hash of its original. Ground Truth is keyed by those bytes; without them there is nothing to
@@ -875,6 +880,78 @@ function GroundTruthSection({
 }
 
 /* ------------------------------------------------------------------ *
+ * User feedback — what the analysis's owner claimed, read-only
+ * ------------------------------------------------------------------ */
+
+/** One owner's feedback. The claimed label is printed as a claim, never as a label of the media. */
+function UserFeedbackItem({ entry }: { entry: UserFeedbackEntry }) {
+  return (
+    <li className="border-t border-hair pt-4 first:border-t-0 first:pt-0">
+      <dl className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+        <Fact label="Assessment of the result">
+          {FEEDBACK_ASSESSMENT_LABELS[entry.assessment] ?? entry.assessment}
+        </Fact>
+        <Fact label="User's claim (unverified)">
+          {entry.claimed_label === null ? (
+            <span className="text-muted">no claim</span>
+          ) : (
+            `Claims: ${FEEDBACK_CLAIMED_LABEL_LABELS[entry.claimed_label] ?? entry.claimed_label}`
+          )}
+        </Fact>
+        <Fact label="Submitted by">
+          {entry.user_email}
+          <div className="mt-1">
+            <AdminValue className="break-all">{entry.user_id}</AdminValue>
+          </div>
+        </Fact>
+        <Fact label="Last changed">
+          <AdminValue className="break-all">{entry.updated_at}</AdminValue>
+          <div className="mt-1">
+            <AdminValue className="break-all">{`first written ${entry.created_at}`}</AdminValue>
+          </div>
+        </Fact>
+      </dl>
+      <div className="mt-4">
+        {entry.notes === null ? (
+          <p className="text-[13px] text-muted">No notes.</p>
+        ) : (
+          <p className="max-w-[74ch] text-[13px] leading-relaxed whitespace-pre-wrap text-bone">
+            {entry.notes}
+          </p>
+        )}
+      </div>
+    </li>
+  );
+}
+
+/**
+ * Its own plate, after Ground Truth, with no form: administrators read user feedback and never
+ * write it. It is not Ground Truth and not a review, and the card says so.
+ */
+function UserFeedbackSection({ result }: { result: UserFeedbackResult }) {
+  return (
+    <AdminSection
+      title="User feedback"
+      description="What the owner of this analysis said about its result. It is an unverified claim by the submitter — not Ground Truth, not a human review, and never used to score the detectors. Giving feedback changes nothing above, and administrators cannot write or edit it."
+    >
+      {!result.ok ? (
+        <div className="mt-4">
+          <AdminAlert tone="error">{result.error}</AdminAlert>
+        </div>
+      ) : result.entries.length === 0 ? (
+        <p className="mt-4 text-[13px] text-muted">No user feedback has been given.</p>
+      ) : (
+        <ul className="mt-4 space-y-4">
+          {result.entries.map((entry) => (
+            <UserFeedbackItem key={entry.user_id} entry={entry} />
+          ))}
+        </ul>
+      )}
+    </AdminSection>
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * Page
  * ------------------------------------------------------------------ */
 
@@ -903,12 +980,14 @@ export default async function AdminAnalysisReview({
       : null,
   );
 
-  const [user, analysisResult, reviewResult, groundTruthResult] = await Promise.all([
-    fetchSession(),
-    analysisRead,
-    fetchReview(id),
-    groundTruthRead,
-  ]);
+  const [user, analysisResult, reviewResult, groundTruthResult, feedbackResult] =
+    await Promise.all([
+      fetchSession(),
+      analysisRead,
+      fetchReview(id),
+      groundTruthRead,
+      fetchUserFeedback(id),
+    ]);
 
   // The session the API would not accept. `admin/layout.tsx` has already turned away a reader
   // with no session and one whose role is not administrator, so what is left for this is the
@@ -918,7 +997,8 @@ export default async function AdminAnalysisReview({
     user === null ||
     (!analysisResult.ok && analysisResult.unauthenticated) ||
     (!reviewResult.ok && reviewResult.unauthenticated) ||
-    (groundTruthResult !== null && !groundTruthResult.ok && groundTruthResult.unauthenticated)
+    (groundTruthResult !== null && !groundTruthResult.ok && groundTruthResult.unauthenticated) ||
+    (!feedbackResult.ok && feedbackResult.unauthenticated)
   ) {
     redirect(LOGIN_PATH);
   }
@@ -1019,6 +1099,9 @@ export default async function AdminAnalysisReview({
             error={groundTruthError}
           />
         )}
+
+        {/* After Ground Truth and apart from it: what the submitter claimed. Read-only. */}
+        {analysisResult.ok && <UserFeedbackSection result={feedbackResult} />}
       </div>
     </>
   );

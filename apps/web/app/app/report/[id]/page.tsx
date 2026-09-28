@@ -46,6 +46,15 @@ import {
   unavailableReasonText,
 } from "../../../analysis";
 
+import {
+  FEEDBACK_ASSESSMENT_LABELS,
+  FEEDBACK_CLAIMED_LABEL_LABELS,
+  Feedback,
+  FeedbackResult,
+  MAX_FEEDBACK_NOTES_LENGTH,
+  fetchFeedback,
+} from "../../../user-feedback";
+
 import { PrintButton } from "./print-button";
 
 /**
@@ -1706,9 +1715,153 @@ function LipForensicsSection({
   );
 }
 
-export default async function Report({ params }: { params: Promise<{ id: string }> }) {
+/**
+ * The owner's feedback on this result (R13-T1): Agree, Disagree or Unsure, with an optional
+ * claimed label and notes behind a disclosure.
+ *
+ * Screen-only and outside the document: it is not part of the evidence the report renders, and a
+ * printed report carries no dead form. Drawn only when the API says this session may give
+ * feedback — for anybody other than the owner it answers 404 and nothing is drawn.
+ *
+ * Seeded from the stored feedback and nothing else. A claimed label is what the reader says the
+ * media is; it is sent as a claim, stored as one, and never shown back as a finding.
+ */
+function FeedbackSection({
+  analysisId,
+  result,
+  saved,
+  error,
+}: {
+  analysisId: string;
+  result: FeedbackResult;
+  saved: boolean;
+  error: string | null;
+}) {
+  if (!result.ok && result.unavailable) {
+    return null;
+  }
+
+  const feedback: Feedback | null = result.ok ? result.feedback : null;
+  const hasDetails = feedback !== null && (feedback.claimed_label !== null || feedback.notes !== null);
+
+  return (
+    <section
+      id="feedback"
+      className="mt-10 rounded-lg border border-black/12 px-5 py-4 print:hidden"
+    >
+      <h2 className="text-[15px] font-semibold tracking-[-0.01em]">Your feedback</h2>
+      <p className="mt-1 max-w-[72ch] text-xs leading-relaxed opacity-70">
+        Do you agree with this result? Your answer is recorded as your feedback only. It does not
+        change the assessment or any evidence in this report, and it is not treated as a verified
+        statement about the media.
+      </p>
+
+      {error && (
+        <p role="alert" className="mt-3 text-xs font-medium text-rose-700">
+          {error}
+        </p>
+      )}
+      {saved && !error && (
+        <p role="status" className="mt-3 text-xs font-medium">
+          Thank you — your feedback was saved. The report was not changed.
+        </p>
+      )}
+      {!result.ok && (
+        <p role="alert" className="mt-3 text-xs opacity-70">
+          Your earlier feedback could not be loaded.
+        </p>
+      )}
+
+      <form action="/submit-feedback" method="post" className="mt-4">
+        <input type="hidden" name="analysis_id" value={analysisId} />
+
+        <fieldset>
+          <legend className="sr-only">Your assessment of this result</legend>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(FEEDBACK_ASSESSMENT_LABELS).map(([value, label]) => (
+              <label
+                key={value}
+                className="flex cursor-pointer items-center gap-2 rounded-md border border-black/15 px-3 py-1.5 text-[13px] has-[:checked]:border-black/60 has-[:checked]:font-medium"
+              >
+                <input
+                  type="radio"
+                  name="assessment"
+                  value={value}
+                  required
+                  defaultChecked={feedback?.assessment === value}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        <details className="mt-4" open={hasDetails}>
+          <summary className="cursor-pointer text-xs underline">Add details (optional)</summary>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <label className="text-xs opacity-70" htmlFor="feedback-claimed-label">
+              What do you believe this media is?
+            </label>
+            <select
+              id="feedback-claimed-label"
+              name="claimed_label"
+              defaultValue={feedback?.claimed_label ?? ""}
+              className="rounded-md border border-black/15 bg-paper px-2.5 py-1.5 text-[13px]"
+            >
+              {/* Empty first: no claim is stated on the reader's behalf. */}
+              <option value="">No claim</option>
+              {Object.entries(FEEDBACK_CLAIMED_LABEL_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="mt-3">
+            <label className="text-xs opacity-70" htmlFor="feedback-notes">
+              Notes
+            </label>
+            <textarea
+              id="feedback-notes"
+              name="notes"
+              rows={3}
+              maxLength={MAX_FEEDBACK_NOTES_LENGTH}
+              defaultValue={feedback?.notes ?? ""}
+              className="mt-1 block w-full rounded-md border border-black/15 bg-paper px-3 py-2 text-[13px] leading-relaxed"
+            />
+          </div>
+        </details>
+
+        <button
+          type="submit"
+          className="mt-4 rounded-md border border-black/25 px-3 py-1.5 text-[13px] font-medium hover:border-black/60"
+        >
+          {feedback?.assessment ? "Update feedback" : "Send feedback"}
+        </button>
+      </form>
+    </section>
+  );
+}
+
+/** One query-string value, or null. A repeated parameter is not an outcome. */
+function singleParam(value: string | string[] | undefined): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+export default async function Report({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const { id } = await params;
-  const result = await fetchAnalysis(id);
+  const query = await searchParams;
+  // Side by side: the feedback read answers 404 for anybody but the owner, which only decides
+  // whether the widget is drawn.
+  const [result, feedbackResult] = await Promise.all([fetchAnalysis(id), fetchFeedback(id)]);
 
   // No usable session. The reader is sent to sign in rather than shown a report page that
   // cannot fill in — and deliberately before the 404 below, so a signed-out reader is never
@@ -1911,6 +2064,14 @@ export default async function Report({ params }: { params: Promise<{ id: string 
         <LipForensicsSection signal={analysis.lip_forensics} analysis={analysis} />
         <ActiveSpeakerSection signal={analysis.active_speaker} analysis={analysis} />
         <AudioSection signal={analysis.audio_authenticity} analysis={analysis} />
+
+        {/* Screen-only, and after the whole record: what the reader thinks of it is not part of it. */}
+        <FeedbackSection
+          analysisId={analysis.id}
+          result={feedbackResult}
+          saved={singleParam(query.fb_saved) !== null}
+          error={singleParam(query.fb_error)}
+        />
 
         <footer className="mt-10 break-inside-avoid border-t border-black/15 pt-4 text-xs leading-relaxed opacity-70 dark:border-white/20 print:border-black/40">
           <p className="max-w-[76ch]">

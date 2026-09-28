@@ -16,6 +16,8 @@ from app.api.analyses import router as analyses_router
 from app.api.auth import router as auth_router
 from app.api.public_v1.analyses import router as public_analyses_router
 from app.api.url_analyses import router as url_analyses_router
+from app.api.user_feedback import admin_router as admin_user_feedback_router
+from app.api.user_feedback import router as user_feedback_router
 from app.db.session import get_session
 from app.observability import RequestId, configure_logging
 from app.request_limits import UploadRequestSizeLimit
@@ -100,6 +102,10 @@ app.include_router(admin_ground_truth_router)
 # own module, beside Ground Truth rather than inside it: what a file is and where it came from
 # are revised independently, and neither file names a verdict, signal, review or provenance.
 app.include_router(admin_dataset_governance_router)
+# User feedback (R13-T1): the owner's routes on `/api/v1` and a read-only admin route on
+# `/api/v1/admin`, in one module so the two readers of one table cannot drift apart.
+app.include_router(user_feedback_router)
+app.include_router(admin_user_feedback_router)
 # The external B2B surface. Mounted under its own prefix and carrying its own API-key
 # dependency, so the internal routes above stay exactly as unauthenticated as they were.
 app.include_router(public_analyses_router)

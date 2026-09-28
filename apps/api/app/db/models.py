@@ -1754,3 +1754,94 @@ class MediaGovernance(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+# The vocabulary of user feedback (R13-T1). `AGREE`/`DISAGREE`/`UNSURE` are what the owner of an
+# analysis made of the result shown to them; the claimed label is what they say the media is.
+# Neither is Ground Truth, neither is a Human Review, and nothing in the verdict, review, Ground
+# Truth or evaluation path reads them.
+FEEDBACK_ASSESSMENTS = ("AGREE", "DISAGREE", "UNSURE")
+FEEDBACK_CLAIMED_LABELS = ("GENUINE", "AI_GENERATED", "FACE_SWAP", "OTHER")
+MAX_FEEDBACK_NOTES_LENGTH = 1000
+
+FEEDBACK_ASSESSMENT_CONSTRAINT = "ck_user_feedback_assessment"
+FEEDBACK_CLAIMED_LABEL_CONSTRAINT = "ck_user_feedback_claimed_label"
+FEEDBACK_ONE_PER_USER_CONSTRAINT = "uq_user_feedback_user_analysis"
+
+
+class UserFeedback(Base):
+    """What the owner of an analysis said about its result (R13-T1).
+
+    **A claim, not a truth.** A user's `claimed_label` is what they say the media is; it is not
+    Ground Truth, which an administrator records against the bytes with a stated source. The
+    `assessment` is what they made of the result; it is not a Human Review. This table has no
+    relationship to `ground_truth`, `analysis_reviews` or `analysis_signals`, and nothing in the
+    verdict, review, Ground Truth or evaluation path reads it.
+
+    **One row per user per analysis**, enforced by `UNIQUE(user_id, analysis_id)` so a second
+    submission is an upsert onto the same row rather than a second opinion from the same person —
+    and so two concurrent submissions resolve in the database rather than in a read-then-write.
+
+    **No history.** A revision overwrites. There is no end-user action log to write to, so what
+    survives is the current state and when it was first and last written; an immutable history of
+    feedback is not provided by R13-T1.
+
+    `ON DELETE CASCADE` from the analysis, as every analysis child has: feedback on an analysis
+    that no longer exists has nothing left to be about. `RESTRICT` from the user, as
+    `Analysis.owner_id` has: the owner of an analysis already cannot be deleted while it exists,
+    so this adds no new obstacle and never silently drops what a person said.
+    """
+
+    __tablename__ = "user_feedback"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "analysis_id", name=FEEDBACK_ONE_PER_USER_CONSTRAINT),
+        CheckConstraint(
+            "assessment IN ('%s')" % "', '".join(FEEDBACK_ASSESSMENTS),
+            name=FEEDBACK_ASSESSMENT_CONSTRAINT,
+        ),
+        CheckConstraint(
+            "claimed_label IS NULL OR claimed_label IN ('%s')"
+            % "', '".join(FEEDBACK_CLAIMED_LABELS),
+            name=FEEDBACK_CLAIMED_LABEL_CONSTRAINT,
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    analysis_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("analyses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # The session's user, never the body's. Only the analysis's owner can write here, so this
+    # always equals `Analysis.owner_id` at the time of writing.
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    assessment: Mapped[str] = mapped_column(String(16), nullable=False)
+    claimed_label: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # Plain text; null means no notes, and the endpoint stores an empty or blank note as null so
+    # there is one spelling of "nothing" for the no-op comparison.
+    notes: Mapped[str | None] = mapped_column(
+        String(MAX_FEEDBACK_NOTES_LENGTH), nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # Moves only when a submission changed something: the upsert's update arm carries a
+    # `WHERE ... IS DISTINCT FROM` guard, so an identical resubmission leaves it alone.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
