@@ -1,20 +1,21 @@
-"""R13-T2: the operational summary never counts a legacy level in the list of verdicts.
+"""R13-T2/T3: the operational summary never counts a legacy level in the list of verdicts.
 
 `analyses.risk_level` is one column written in two vocabularies — the `r9-v5.0.0` verdicts and
-the `HIGH`/`MEDIUM`/`UNKNOWN` levels of every earlier ruleset — and `/api/v1/admin/analytics`
-groups on that column alone. The admin summary used to draw the result as a single list, so a
-`MEDIUM` sat among the verdicts as if it answered the same question. The page now draws it
-through `splitRiskDistribution` as two lists, and this file holds the split to four things:
+the `HIGH`/`MEDIUM`/`UNKNOWN` levels of every earlier ruleset — and which one a row holds is
+named by the `risk_rules_version` stored beside it. R13-T2 split the summary into two lists in
+the browser, by guessing each key's vocabulary from its spelling alone. R13-T3 moved the split
+to the API, which groups on both columns and returns three maps already placed
+(`test_admin_analytics.py` holds that bucketing against real rows). This file holds the web half
+of the contract:
 
-* a verdict is counted only in the decisions list, and a level only in the recorded-risk list;
-* nothing is translated: a `HIGH` never raises `MANIPULATION_DETECTED`, a `MEDIUM` never
-  raises `INCONCLUSIVE`;
-* every count the API sent comes out exactly once, unchanged — an unrecognised value included;
+* the page draws the API's three maps as they arrive, and the old single map is gone;
+* `analytics.ts` no longer contains any split of its own — no allowlist, no `splitRiskDistribution`;
+* the three maps are parsed through unchanged, and a payload missing any of them is refused;
 * the detail cards label a legacy level as the recorded risk level, chosen by ruleset.
 
-The split is executed rather than pattern-matched, for the reason `test_risk_trace.py` executes
-its resolvers: the failure guarded against is a key on the wrong branch, and a source-text
-assertion would pass just as happily with the branches swapped.
+The parse is executed rather than pattern-matched, for the reason `test_risk_trace.py` executes
+its resolvers: the failure guarded against is a map read from the wrong field, and a source-text
+assertion would pass just as happily with two fields swapped.
 
 Frontend only. Nothing here touches the API, the schema or the risk engine.
 """
@@ -28,7 +29,6 @@ from shutil import which
 import pytest
 
 WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
-WEB_ANALYSIS = WEB_ROOT / "app" / "analysis.ts"
 WEB_ANALYTICS = WEB_ROOT / "app" / "admin" / "analytics.ts"
 WEB_ANALYTICS_PAGE = WEB_ROOT / "app" / "admin" / "analytics" / "page.tsx"
 WEB_ADMIN_ANALYSIS = WEB_ROOT / "app" / "admin" / "analyses" / "[id]" / "page.tsx"
@@ -46,90 +46,70 @@ requires_node = pytest.mark.skipif(
     reason="node and the web application's TypeScript are needed to run the split",
 )
 
-# Written out rather than imported from the module under test, so a verdict dropped from
-# `V5_VERDICTS` fails here instead of being agreed with.
-VERDICTS = ("MANIPULATION_DETECTED", "NO_CALIBRATED_MANIPULATION_SIGNAL", "INCONCLUSIVE")
-DECISION_KEYS = {*VERDICTS, "UNDECIDED"}
-LEGACY_LEVELS = {"HIGH", "MEDIUM", "UNKNOWN"}
-
-# Each case is a `risk_distribution` as the API would send it.
-CASES = {
-    # The packet's QA case. The column holds one value per row, so "a v5 decision beside a
-    # `MEDIUM`" is two rows in the week: one `r9-v5.0.0` row that wrote `MANIPULATION_DETECTED`
-    # and one earlier row that wrote `MEDIUM`, with the API's zero floors for the rest.
-    "qa": {
-        "MANIPULATION_DETECTED": 1,
-        "MEDIUM": 1,
-        "HIGH": 0,
-        "UNKNOWN": 0,
-        "UNDECIDED": 0,
-    },
-    # Legacy levels only: no verdict may appear from them.
-    "legacy_only": {"HIGH": 5, "MEDIUM": 3, "UNKNOWN": 2, "UNDECIDED": 0},
-    # A quiet week, and a payload with nothing in it at all.
-    "empty": {},
-    # Every vocabulary at once, plus two values no build wrote.
-    "mixed": {
+# A payload as `/api/v1/admin/analytics` sends it, with every risk bucket holding a distinct
+# count so a map read from the wrong field cannot pass by coincidence.
+PAYLOAD = {
+    "window": "7d",
+    "analyses_total": 31,
+    "analyses_by_status": {"queued": 0, "completed": 30, "failed": 1},
+    "jobs_by_status": {"queued": 0, "processing": 0, "completed": 30, "failed": 1},
+    "decisions": {
         "MANIPULATION_DETECTED": 4,
         "NO_CALIBRATED_MANIPULATION_SIGNAL": 7,
         "INCONCLUSIVE": 2,
-        "HIGH": 9,
-        "MEDIUM": 6,
-        "UNKNOWN": 1,
         "UNDECIDED": 3,
-        "FAKE": 1,
-        "LOW": 8,
+    },
+    "recorded_risk_levels": {"HIGH": 9, "MEDIUM": 6, "UNKNOWN": 1},
+    "unrecognised": {"r9-v5.0.0/MEDIUM": 5, "r7-v4.0.0/MANIPULATION_DETECTED": 8},
+    "acquisition": {"upload": 30, "url": 1, "unrecorded": 0},
+    "detectors": {},
+}
+
+RISK_FIELDS = ("decisions", "recorded_risk_levels", "unrecognised")
+
+CASES = {
+    "full": PAYLOAD,
+    # The pre-R13-T3 contract: one mixed map and none of the three. Refused, not half-drawn.
+    "legacy_contract": {
+        **{k: v for k, v in PAYLOAD.items() if k not in RISK_FIELDS},
+        "risk_distribution": {"HIGH": 9, "MANIPULATION_DETECTED": 4},
+    },
+    **{
+        f"missing_{field}": {k: v for k, v in PAYLOAD.items() if k != field}
+        for field in RISK_FIELDS
     },
 }
 
 
 @lru_cache(maxsize=1)
-def _split() -> dict[str, dict[str, dict[str, int]]]:
-    """Run the real `splitRiskDistribution` over every case, in one node process.
+def _parsed() -> dict[str, dict | None]:
+    """Run the real `parseAnalytics` over every case, in one node process.
 
-    `analytics.ts` is transpiled and executed with its `../analysis` import resolved to the
-    real, also-transpiled `analysis.ts`, so the allowlists under test are the ones the page
-    uses rather than copies. Every other import is stubbed: nothing reachable from the split
-    reads a session, a header or the network.
+    `analytics.ts` is transpiled and executed with every import stubbed: nothing reachable from
+    the parse reads a session, a header or the network.
     """
     driver = """
         const fs = require("fs");
         const ts = require(process.argv[1]);
-        const load = (path, resolve) => {
-            const compiled = ts.transpileModule(
-                fs.readFileSync(path, "utf8"),
-                { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }
-            ).outputText;
-            const module_ = { exports: {} };
-            new Function("exports", "module", "require", compiled)(
-                module_.exports, module_, resolve
-            );
-            return module_.exports;
-        };
+        const compiled = ts.transpileModule(
+            fs.readFileSync(process.argv[2], "utf8"),
+            { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }
+        ).outputText;
         const stub = new Proxy({}, { get: () => () => undefined });
-        const analysis = load(process.argv[2], () => stub);
-        const analytics = load(
-            process.argv[3], (name) => (name === "../analysis" ? analysis : stub)
+        const module_ = { exports: {} };
+        new Function("exports", "module", "require", compiled)(
+            module_.exports, module_, () => stub
         );
-        const cases = JSON.parse(process.argv[4]);
+        const cases = JSON.parse(process.argv[3]);
         const out = {};
-        for (const [name, counts] of Object.entries(cases)) {
-            out[name] = analytics.splitRiskDistribution(counts);
+        for (const [name, payload] of Object.entries(cases)) {
+            out[name] = module_.exports.parseAnalytics(payload);
         }
         console.log(JSON.stringify(out));
     """
 
     result = subprocess.run(
-        [
-            NODE,
-            "-e",
-            driver,
-            "--",
-            str(TYPESCRIPT),
-            str(WEB_ANALYSIS),
-            str(WEB_ANALYTICS),
-            json.dumps(CASES),
-        ],
+        [NODE, "-e", driver, "--", str(TYPESCRIPT), str(WEB_ANALYTICS), json.dumps(CASES)],
         capture_output=True,
         text=True,
         timeout=120,
@@ -142,90 +122,45 @@ def _split() -> dict[str, dict[str, dict[str, int]]]:
 
 
 @requires_node
-def test_the_qa_case_raises_only_the_verdict_in_the_decisions_list():
-    """`MANIPULATION_DETECTED` +1 among the decisions; `MEDIUM` nowhere in that list."""
-    split = _split()["qa"]
+def test_the_three_risk_maps_are_parsed_through_unchanged():
+    """A partition the API made, carried as it arrived: no key moved, dropped or added."""
+    parsed = _parsed()["full"]
 
-    assert split["decisions"]["MANIPULATION_DETECTED"] == 1
-    assert "MEDIUM" not in split["decisions"]
-    # The level is still counted — once, and only in its own list.
-    assert split["recordedRiskLevels"]["MEDIUM"] == 1
-    assert "MANIPULATION_DETECTED" not in split["recordedRiskLevels"]
-    assert split["unrecognised"] == {}
+    assert parsed["decisions"] == PAYLOAD["decisions"]
+    assert parsed["recordedRiskLevels"] == PAYLOAD["recorded_risk_levels"]
+    assert parsed["unrecognised"] == PAYLOAD["unrecognised"]
+    assert "risk_distribution" not in parsed
 
 
+@pytest.mark.parametrize(
+    "case", ["legacy_contract", *(f"missing_{field}" for field in RISK_FIELDS)]
+)
 @requires_node
-def test_a_legacy_level_is_never_counted_as_a_verdict():
-    """No `HIGH` becomes a detection and no `MEDIUM` becomes an `INCONCLUSIVE` (R9-T1 inv. 4)."""
-    split = _split()["legacy_only"]
-
-    for verdict in VERDICTS:
-        assert split["decisions"][verdict] == 0, verdict
-    assert split["recordedRiskLevels"] == {"HIGH": 5, "MEDIUM": 3, "UNKNOWN": 2}
-
-
-@pytest.mark.parametrize("case", sorted(CASES))
-@requires_node
-def test_the_lists_hold_only_their_own_vocabulary(case):
-    split = _split()[case]
-
-    assert set(split["decisions"]) == DECISION_KEYS
-    assert set(split["recordedRiskLevels"]) == LEGACY_LEVELS
-    assert not set(split["unrecognised"]) & (DECISION_KEYS | LEGACY_LEVELS)
-
-
-@pytest.mark.parametrize("case", sorted(CASES))
-@requires_node
-def test_every_count_the_api_sent_comes_out_once_and_unchanged(case):
-    """A partition, not a transformation: no count is dropped, merged, summed or invented."""
-    split = _split()[case]
-    lists = (split["decisions"], split["recordedRiskLevels"], split["unrecognised"])
-
-    for key, value in CASES[case].items():
-        holders = [counts for counts in lists if key in counts]
-        assert len(holders) == 1, key
-        assert holders[0][key] == value, key
-
-    # Anything the API did not send is a zero floor, never a figure.
-    for counts in lists:
-        for key, value in counts.items():
-            if key not in CASES[case]:
-                assert value == 0, key
-
-
-@requires_node
-def test_an_unrecognised_value_is_kept_under_its_own_name():
-    split = _split()["mixed"]
-
-    assert split["unrecognised"] == {"FAKE": 1, "LOW": 8}
-    assert split["decisions"]["UNDECIDED"] == 3
+def test_a_payload_without_all_three_maps_is_refused(case):
+    assert _parsed()[case] is None
 
 
 @requires_web
-def test_the_summary_page_draws_the_split_and_never_the_raw_distribution():
+def test_the_summary_page_draws_the_api_maps_directly():
     source = WEB_ANALYTICS_PAGE.read_text(encoding="utf-8")
 
-    assert "splitRiskDistribution(analytics.risk_distribution)" in source
-    assert "counts={risk.decisions}" in source
-    assert "counts={risk.recordedRiskLevels}" in source
-    assert "counts={risk.unrecognised}" in source
-    # The mixed list is gone, not merely joined by two more.
-    assert "counts={analytics.risk_distribution}" not in source
+    assert "counts={analytics.decisions}" in source
+    assert "counts={analytics.recordedRiskLevels}" in source
+    assert "counts={analytics.unrecognised}" in source
+    assert "risk_distribution" not in source
+    assert "splitRiskDistribution" not in source
     assert 'title="Recorded risk level"' in source
 
 
 @requires_web
-def test_the_split_reads_the_shared_allowlists_and_maps_nothing():
-    """No second copy of either vocabulary, and no lookup from one into the other."""
+def test_the_web_no_longer_guesses_a_vocabulary_from_a_key():
+    """The split lives in the API now; no second copy of it may survive in the browser."""
     source = WEB_ANALYTICS.read_text(encoding="utf-8")
-    body = source.split("export function splitRiskDistribution(", 1)[1].split("\n}\n", 1)[0]
 
-    assert "isV5Verdict(key)" in body
-    assert "isSupportedRiskLevel(key)" in body
-    for verdict in VERDICTS:
-        assert verdict not in body, verdict
-    for level in LEGACY_LEVELS:
-        assert f'"{level}"' not in body, level
+    assert "splitRiskDistribution" not in source
+    assert "risk_distribution" not in source
+    for name in ("isV5Verdict", "isSupportedRiskLevel", "V5_VERDICTS", "SUPPORTED_RISK_LEVELS"):
+        assert name not in source, name
 
 
 @requires_web

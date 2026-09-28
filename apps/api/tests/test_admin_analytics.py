@@ -26,7 +26,11 @@ any database, including one where the window is empty. That is the empty-state g
 quiet week must render as zeros rather than as missing keys or a 500.
 
 *Bucketing.* A row lands where its stored value says and nowhere else — in particular that a
-null `risk_level` is counted under `UNDECIDED` and not under `UNKNOWN`.
+null `risk_level` is counted under `UNDECIDED` and not under `UNKNOWN`, and that a risk level is
+placed by the ruleset version stored beside it (R13-T3): a v5 verdict in `decisions`, a level
+from a pinned earlier ruleset in `recorded_risk_levels`, and every other pairing — a v5 row with
+a legacy level, a legacy row with a verdict or no level, a ruleset no build wrote — in
+`unrecognised` under its own ruleset and value.
 
 *Detector semantics.* The two claims the constraint turns on: a `FAILED` signal counts as one
 failure for its own provider, and an analysis that never got a signal from a provider adds
@@ -47,8 +51,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api.admin_analytics import (
     ACQUISITION_METHODS,
     ANALYSIS_STATUSES,
+    DECISIONS,
     JOB_STATUSES,
-    RISK_LEVELS,
+    RECORDED_RISK_LEVELS,
     RISK_UNDECIDED,
     SIGNAL_STATUSES,
     WINDOW_DAYS,
@@ -93,10 +98,20 @@ VISIBLE_FIELDS = {
     "analyses_total",
     "analyses_by_status",
     "jobs_by_status",
-    "risk_distribution",
+    "decisions",
+    "recorded_risk_levels",
+    "unrecognised",
     "acquisition",
     "detectors",
 }
+
+# The rulesets, written out rather than imported from the module under test, so a version
+# dropped from its pinned set fails here instead of being agreed with. `p7-v1.0.0` and
+# `r7-v4.0.0` are the ends of the legacy range; the future version is one no build wrote.
+V5 = "r9-v5.0.0"
+LEGACY_FIRST = "p7-v1.0.0"
+LEGACY_LAST = "r7-v4.0.0"
+FUTURE = "r10-v6.0.0"
 
 # A provider name no detector in this system uses, so the rows a test seeds under it cannot
 # collide with real signals another test or a development database left behind. Unique per
@@ -171,6 +186,7 @@ def make_analysis(
     *,
     status: str = ANALYSIS_STATUS_COMPLETED,
     risk_level: str | None = None,
+    rules_version: str | None = None,
     created_at: datetime | None = None,
 ) -> Analysis:
     """One analysis, in whatever state the caller needs, registered for cleanup.
@@ -181,7 +197,9 @@ def make_analysis(
     """
     db, _, analyses = session
 
-    analysis = Analysis(status=status, risk_level=risk_level)
+    analysis = Analysis(
+        status=status, risk_level=risk_level, risk_rules_version=rules_version
+    )
     if created_at is not None:
         analysis.created_at = created_at
 
@@ -329,7 +347,8 @@ def test_every_known_category_is_present_even_at_zero(session):
     for field, categories in (
         ("analyses_by_status", ANALYSIS_STATUSES),
         ("jobs_by_status", JOB_STATUSES),
-        ("risk_distribution", RISK_LEVELS),
+        ("decisions", DECISIONS),
+        ("recorded_risk_levels", RECORDED_RISK_LEVELS),
         ("acquisition", ACQUISITION_METHODS),
     ):
         for category in categories:
@@ -339,6 +358,10 @@ def test_every_known_category_is_present_even_at_zero(session):
 
     assert isinstance(payload["analyses_total"], int)
     assert payload["analyses_total"] >= 0
+
+    # Not seeded: a key here is always a count of real rows, never a zero floor.
+    for key, value in payload["unrecognised"].items():
+        assert isinstance(value, int) and value > 0, key
 
 
 def test_a_provider_with_no_signals_this_week_is_absent_rather_than_zeroed(session):
@@ -387,33 +410,125 @@ def test_an_analysis_is_counted_under_its_stored_status(session):
     )
 
 
-def test_an_analysis_with_no_risk_level_is_counted_as_undecided(session):
-    """The constraint this route exists to get right.
+RISK_BUCKETS = ("decisions", "recorded_risk_levels", "unrecognised")
 
-    A null `risk_level` is the absence of a persisted decision. It is reported under its own
-    name and specifically *not* under `UNKNOWN`, which is a decision the risk engine reached
-    and wrote down — collapsing the two would turn "nobody has assessed this" into "we assessed
-    it and could not tell".
+
+def moved(before: dict, after: dict) -> dict[tuple[str, str], int]:
+    """Every risk-bucket key whose count changed across a seed, and by how much.
+
+    The whole of the claim each test below makes is that one row moved one key in one bucket
+    and nothing else moved — so the tests compare this map for equality rather than checking
+    the one key they expect and hoping the rest stood still.
+    """
+    changes = {}
+    for bucket in RISK_BUCKETS:
+        for key in set(before[bucket]) | set(after[bucket]):
+            delta = after[bucket].get(key, 0) - before[bucket].get(key, 0)
+            if delta:
+                changes[(bucket, key)] = delta
+    return changes
+
+
+def seeded(session, *, risk_level: str | None, rules_version: str | None) -> dict:
+    before, after = counts_before_and_after(
+        session,
+        lambda: make_analysis(session, risk_level=risk_level, rules_version=rules_version),
+    )
+    return moved(before, after)
+
+
+def test_a_v5_detection_is_a_decision(session):
+    assert seeded(session, risk_level="MANIPULATION_DETECTED", rules_version=V5) == {
+        ("decisions", "MANIPULATION_DETECTED"): 1
+    }
+
+
+def test_a_v5_no_signal_verdict_is_a_decision(session):
+    assert seeded(
+        session, risk_level="NO_CALIBRATED_MANIPULATION_SIGNAL", rules_version=V5
+    ) == {("decisions", "NO_CALIBRATED_MANIPULATION_SIGNAL"): 1}
+
+
+def test_a_legacy_high_is_a_recorded_risk_level(session):
+    assert seeded(session, risk_level="HIGH", rules_version=LEGACY_FIRST) == {
+        ("recorded_risk_levels", "HIGH"): 1
+    }
+
+
+def test_a_legacy_medium_is_a_recorded_risk_level(session):
+    assert seeded(session, risk_level="MEDIUM", rules_version=LEGACY_LAST) == {
+        ("recorded_risk_levels", "MEDIUM"): 1
+    }
+
+
+def test_a_v5_row_holding_a_legacy_level_is_unrecognised(session):
+    """Not a recorded risk level: v5 never writes `MEDIUM`, so this row contradicts its stamp."""
+    assert seeded(session, risk_level="MEDIUM", rules_version=V5) == {
+        ("unrecognised", f"{V5}/MEDIUM"): 1
+    }
+
+
+def test_a_legacy_row_holding_a_verdict_is_unrecognised(session):
+    """Not a decision, and not repaired into the legacy counts either."""
+    assert seeded(session, risk_level="MANIPULATION_DETECTED", rules_version=LEGACY_LAST) == {
+        ("unrecognised", f"{LEGACY_LAST}/MANIPULATION_DETECTED"): 1
+    }
+
+
+def test_a_v5_row_with_no_risk_level_is_undecided(session):
+    """No decision written, and specifically *not* `UNKNOWN` — which is a decision the risk
+    engine reached and wrote down. Collapsing the two would turn "nobody has assessed this"
+    into "we assessed it and could not tell"."""
+    assert seeded(session, risk_level=None, rules_version=V5) == {
+        ("decisions", RISK_UNDECIDED): 1
+    }
+
+
+def test_an_analysis_with_no_decision_at_all_is_undecided(session):
+    """The row an in-flight or failed analysis actually leaves: no level and no ruleset, since
+    the four risk columns are written in one transaction.
+
+    A regression test for R13-T3 D1: a null level beside a null ruleset is no persisted
+    decision, not a legacy or unknown taxonomy, so it is `UNDECIDED` and touches neither of the
+    other two buckets. Each map is asserted directly rather than only through `moved`.
     """
     before, after = counts_before_and_after(
-        session, lambda: make_analysis(session, risk_level=None)
+        session, lambda: make_analysis(session, risk_level=None, rules_version=None)
     )
 
-    assert after["risk_distribution"][RISK_UNDECIDED] == (
-        before["risk_distribution"][RISK_UNDECIDED] + 1
-    )
-    assert after["risk_distribution"]["UNKNOWN"] == before["risk_distribution"]["UNKNOWN"]
+    assert after["decisions"][RISK_UNDECIDED] == before["decisions"][RISK_UNDECIDED] + 1
+    assert after["recorded_risk_levels"] == before["recorded_risk_levels"]
+    assert after["unrecognised"] == before["unrecognised"]
+    assert moved(before, after) == {("decisions", RISK_UNDECIDED): 1}
 
 
-def test_an_analysis_with_a_risk_level_is_counted_under_it(session):
-    before, after = counts_before_and_after(
-        session, lambda: make_analysis(session, risk_level="HIGH")
-    )
+def test_a_legacy_row_with_no_risk_level_is_not_undecided(session):
+    """No earlier ruleset defines what a missing level beside its own stamp means, so the row
+    is carried as it stands rather than given `UNDECIDED`'s meaning."""
+    assert seeded(session, risk_level=None, rules_version=LEGACY_LAST) == {
+        ("unrecognised", f"{LEGACY_LAST}/(none)"): 1
+    }
 
-    assert after["risk_distribution"]["HIGH"] == before["risk_distribution"]["HIGH"] + 1
-    assert after["risk_distribution"][RISK_UNDECIDED] == (
-        before["risk_distribution"][RISK_UNDECIDED]
-    )
+
+def test_a_level_from_a_ruleset_no_build_wrote_is_unrecognised(session):
+    """Legacy is a pinned set, not "anything other than v5": a future ruleset's `HIGH` is not a
+    level this screen can vouch for."""
+    assert seeded(session, risk_level="HIGH", rules_version=FUTURE) == {
+        ("unrecognised", f"{FUTURE}/HIGH"): 1
+    }
+
+
+def test_a_level_with_no_ruleset_is_unrecognised(session):
+    assert seeded(session, risk_level="HIGH", rules_version=None) == {
+        ("unrecognised", "(none)/HIGH"): 1
+    }
+
+
+@pytest.mark.parametrize("rules_version", ["p7-v1.0.0", "r4-v2.0.0", "r5-v3.0.0", "r7-v4.0.0"])
+def test_every_pinned_legacy_ruleset_is_recognised(session, rules_version):
+    assert seeded(session, risk_level="UNKNOWN", rules_version=rules_version) == {
+        ("recorded_risk_levels", "UNKNOWN"): 1
+    }
 
 
 def test_media_is_counted_under_the_method_it_arrived_by(session):
@@ -455,11 +570,22 @@ def test_rows_older_than_the_window_are_not_counted(session):
 
     before, after = counts_before_and_after(
         session,
-        lambda: make_analysis(session, risk_level="HIGH", created_at=outside),
+        lambda: [
+            make_analysis(
+                session, risk_level=level, rules_version=version, created_at=outside
+            )
+            for level, version in (
+                ("HIGH", LEGACY_LAST),
+                ("MANIPULATION_DETECTED", V5),
+                ("MEDIUM", V5),
+                (None, None),
+            )
+        ],
     )
 
     assert after["analyses_total"] == before["analyses_total"]
-    assert after["risk_distribution"]["HIGH"] == before["risk_distribution"]["HIGH"]
+    # One row for each of the three risk buckets and `UNDECIDED`, and none of them counted.
+    assert moved(before, after) == {}
 
 
 # --- detector health ------------------------------------------------------------------

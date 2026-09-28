@@ -25,13 +25,7 @@
  * silently read as zero looks exactly like a quiet week.
  */
 
-import {
-  SUPPORTED_RISK_LEVELS,
-  V5_VERDICTS,
-  apiUrl,
-  isSupportedRiskLevel,
-  isV5Verdict,
-} from "../analysis";
+import { apiUrl } from "../analysis";
 import { requestIdHeaders } from "../observability";
 import { sessionHeaders } from "../session";
 
@@ -47,18 +41,26 @@ export const ANALYTICS_TIMEOUT_MS = 8000;
 /**
  * The seven-day summary as `/api/v1/admin/analytics` reports it.
  *
- * Mirrors `AnalyticsWindow` in `app/api/admin_analytics.py`. The four distributions are open
- * maps rather than named fields, and deliberately: the API guarantees the schema's vocabulary
- * is present and also carries through any status it did not recognise, and a closed type here
+ * Mirrors `AnalyticsWindow` in `app/api/admin_analytics.py`. The distributions are open maps
+ * rather than named fields, and deliberately: the API guarantees the schema's vocabulary is
+ * present and also carries through any status it did not recognise, and a closed type here
  * would drop exactly that value — the unrecognised one, which is the single most interesting
  * thing that can appear on this screen.
+ *
+ * The risk column arrives as three maps the API has already placed (R13-T3): `decisions` holds
+ * the `r9-v5.0.0` verdicts and `UNDECIDED`, `recordedRiskLevels` the levels a pinned earlier
+ * ruleset wrote, and `unrecognised` every stored pairing of ruleset and value that is neither.
+ * The API placed each row by the ruleset version stored beside it, which this module never
+ * sees; nothing here re-sorts, re-labels or second-guesses a key between the three.
  */
 export type AdminAnalytics = {
   window: string;
   analyses_total: number;
   analyses_by_status: Record<string, number>;
   jobs_by_status: Record<string, number>;
-  risk_distribution: Record<string, number>;
+  decisions: Record<string, number>;
+  recordedRiskLevels: Record<string, number>;
+  unrecognised: Record<string, number>;
   acquisition: Record<string, number>;
   detectors: Record<string, Record<string, number>>;
 };
@@ -139,7 +141,9 @@ export function parseAnalytics(payload: unknown): AdminAnalytics | null {
     analyses_total,
     analyses_by_status,
     jobs_by_status,
-    risk_distribution,
+    decisions,
+    recorded_risk_levels,
+    unrecognised,
     acquisition,
     detectors,
   } = payload as Record<string, unknown>;
@@ -147,7 +151,9 @@ export function parseAnalytics(payload: unknown): AdminAnalytics | null {
   const total = count(analyses_total);
   const analyses = parseCounts(analyses_by_status);
   const jobs = parseCounts(jobs_by_status);
-  const risk = parseCounts(risk_distribution);
+  const decided = parseCounts(decisions);
+  const recorded = parseCounts(recorded_risk_levels);
+  const unplaced = parseCounts(unrecognised);
   const acquired = parseCounts(acquisition);
   const providers = parseDetectors(detectors);
 
@@ -156,7 +162,9 @@ export function parseAnalytics(payload: unknown): AdminAnalytics | null {
     total === undefined ||
     analyses === null ||
     jobs === null ||
-    risk === null ||
+    decided === null ||
+    recorded === null ||
+    unplaced === null ||
     acquired === null ||
     providers === null
   ) {
@@ -168,69 +176,12 @@ export function parseAnalytics(payload: unknown): AdminAnalytics | null {
     analyses_total: total,
     analyses_by_status: analyses,
     jobs_by_status: jobs,
-    risk_distribution: risk,
+    decisions: decided,
+    recordedRiskLevels: recorded,
+    unrecognised: unplaced,
     acquisition: acquired,
     detectors: providers,
   };
-}
-
-// The bucket `admin_analytics.py` counts a row with no persisted `risk_level` under. Not a
-// verdict and not a level: the absence of any decision, under either vocabulary.
-export const RISK_UNDECIDED = "UNDECIDED";
-
-/**
- * `risk_distribution`, split into the vocabularies it holds so no list mixes them (R13-T2).
- *
- * `analyses.risk_level` is one column written in two vocabularies — the v5 verdicts from
- * `r9-v5.0.0`, and the `HIGH`/`MEDIUM`/`UNKNOWN` levels every earlier ruleset wrote — and the
- * API groups on that column alone. Drawn as one list, a `MEDIUM` sat one row under a
- * `MANIPULATION_DETECTED` as if the two were answers to the same question. They are not, and
- * neither is translated into the other here: a `HIGH` is never counted as a detection, and a
- * `MEDIUM` is never counted as `INCONCLUSIVE` (R9-T1 invariant 4).
- *
- * **Each key is sorted by exact membership of an allowlist, and by nothing else.** The payload
- * carries no `rules_version`, so a key cannot be resolved through its version the way a single
- * row is; it is placed in the one vocabulary that contains that literal string. The two
- * allowlists share no string, so no key can land in both. A key in neither — a value no build
- * of this application wrote — is kept under its own name in `unrecognised` rather than dropped
- * or folded into either list, because it is the value an operator most needs to see.
- *
- * No count is changed, summed or derived. Every figure is the API's; the only values this adds
- * are zeros for a verdict the week did not produce, the floor the API itself applies to the
- * legacy levels, so a verdict nobody reached reads as the zero it is rather than as a row that
- * was never wired up.
- */
-export type RiskDistributionSplit = {
-  decisions: Record<string, number>;
-  recordedRiskLevels: Record<string, number>;
-  unrecognised: Record<string, number>;
-};
-
-export function splitRiskDistribution(counts: Record<string, number>): RiskDistributionSplit {
-  const decisions: Record<string, number> = {};
-  for (const verdict of V5_VERDICTS) {
-    decisions[verdict] = 0;
-  }
-  decisions[RISK_UNDECIDED] = 0;
-
-  const recordedRiskLevels: Record<string, number> = {};
-  for (const level of SUPPORTED_RISK_LEVELS) {
-    recordedRiskLevels[level] = 0;
-  }
-
-  const unrecognised: Record<string, number> = {};
-
-  for (const [key, value] of Object.entries(counts)) {
-    if (isV5Verdict(key) || key === RISK_UNDECIDED) {
-      decisions[key] = value;
-    } else if (isSupportedRiskLevel(key)) {
-      recordedRiskLevels[key] = value;
-    } else {
-      unrecognised[key] = value;
-    }
-  }
-
-  return { decisions, recordedRiskLevels, unrecognised };
 }
 
 /**

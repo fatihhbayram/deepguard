@@ -29,10 +29,15 @@ persisted rows are counted, and the arithmetic is per provider rather than again
 analysis total, so there is no denominator anywhere that a never-invoked provider could fall
 short of.
 
-*It does not re-decide a risk level.* The distribution is `Analysis.risk_level` as stored. A
-null there is not a missing value to be filled in or a decision still in flight — it is the
-absence of a persisted decision, and it is reported under its own name (`UNDECIDED`) rather
-than folded into `UNKNOWN`, which is a decision the risk engine reached and wrote down.
+*It does not re-decide a risk level.* `Analysis.risk_level` is one column written in two
+vocabularies, and which one a row holds is named by the `risk_rules_version` stored beside it.
+So the two are grouped together and every row is placed by *both* (R13-T3): a `r9-v5.0.0`
+verdict under `decisions`, a level written by one of the four pinned earlier rulesets under
+`recorded_risk_levels`, and any pairing that is neither — a v5 row carrying `MEDIUM`, a legacy
+row carrying a verdict, a ruleset this build has never heard of — under `unrecognised`, by its
+own version and value. Nothing is translated across. A null level on a row with no ruleset, or
+on a v5 row, is the absence of a persisted decision and is reported as `UNDECIDED` rather than
+folded into `UNKNOWN`, which is a decision the risk engine reached and wrote down.
 
 The window is fixed at seven days and there is no `?from=`. The question this screen answers
 is "is the pipeline healthy right now", and the answer to that is recent; historical slicing
@@ -67,7 +72,16 @@ from app.db.models import (
     MediaFile,
 )
 from app.db.session import get_session
-from app.risk_engine import RISK_HIGH, RISK_MEDIUM, RISK_UNKNOWN
+from app.risk_engine import (
+    RISK_HIGH,
+    RISK_MEDIUM,
+    RISK_UNKNOWN,
+    RULES_VERSION_V5,
+    VERDICT_INCONCLUSIVE,
+    VERDICT_MANIPULATION_DETECTED,
+    VERDICT_NO_SIGNAL,
+)
+from app.risk_trace import RULESET_V1, RULESET_V2, RULESET_V3, RULESET_V4
 from app.web_auth import require_admin
 
 logger = logging.getLogger(__name__)
@@ -139,17 +153,37 @@ SIGNAL_STATUSES = (
     SIGNAL_STATUS_TIMEOUT,
 )
 
-# Every risk level the engine can write, plus the absence of one.
+# The two vocabularies `analyses.risk_level` is written in, each bound to the rulesets that
+# write it (R13-T3).
 #
-# Imported from `app/risk_engine.py` rather than spelled out here, because these are the
-# engine's own vocabulary and this route is only reporting it. A literal `"HIGH"` written
-# here would be a second definition that goes on looking correct for as long as it takes
-# somebody to rename a level — at which point this screen would report zero of the new name
-# under a key for the old one, which is worse than failing.
+# Imported from `app/risk_engine.py` and `app/risk_trace.py` rather than spelled out here,
+# because these are the engine's own vocabulary and this route is only reporting it. A literal
+# `"HIGH"` written here would be a second definition that goes on looking correct for as long as
+# it takes somebody to rename a level — at which point this screen would report zero of the new
+# name under a key for the old one, which is worse than failing.
 #
-# `RISK_UNDECIDED` is deliberately not among them and is defined in this module: it is not a
-# level the engine can write. It is what this route calls the absence of one.
-RISK_LEVELS = (RISK_HIGH, RISK_MEDIUM, RISK_UNKNOWN, RISK_UNDECIDED)
+# `r9-v5.0.0` writes the three verdicts. `RISK_UNDECIDED` sits in the same list and is defined in
+# this module: it is not a verdict the engine can write, it is what this route calls the absence
+# of any decision.
+DECISION_VERDICTS = (
+    VERDICT_MANIPULATION_DETECTED,
+    VERDICT_NO_SIGNAL,
+    VERDICT_INCONCLUSIVE,
+)
+DECISIONS = (*DECISION_VERDICTS, RISK_UNDECIDED)
+
+# Every ruleset before v5 wrote `HIGH`, `MEDIUM` or `UNKNOWN`. The rulesets are pinned by
+# exact version — the four `app/risk_trace.py` holds frozen tables for, which are the four this
+# deployment has ever run — and *not* as "anything other than v5". A version outside this set
+# is one no build of this application wrote, and a `HIGH` stamped with it is not a legacy
+# level this screen can vouch for; it is carried under `unrecognised` instead.
+LEGACY_RULES_VERSIONS = frozenset(
+    ruleset.rules_version for ruleset in (RULESET_V1, RULESET_V2, RULESET_V3, RULESET_V4)
+)
+RECORDED_RISK_LEVELS = (RISK_HIGH, RISK_MEDIUM, RISK_UNKNOWN)
+
+# How a null half of an unrecognised `(ruleset, value)` pair is spelled in that pair's key.
+UNRECOGNISED_ABSENT = "(none)"
 
 
 class AnalyticsWindow(BaseModel):
@@ -177,9 +211,18 @@ class AnalyticsWindow(BaseModel):
     # are counted separately rather than one being presented as the other.
     jobs_by_status: dict[str, int]
 
-    # The window's analyses by the risk level persisted on them, with `UNDECIDED` for the ones
-    # carrying none.
-    risk_distribution: dict[str, int]
+    # The window's analyses by the risk level persisted on them, placed by the ruleset version
+    # persisted beside it — see `risk_buckets`. Three maps rather than one, because the column
+    # holds two vocabularies and a single map would sit a `MEDIUM` one row under a
+    # `MANIPULATION_DETECTED` as though they answered the same question.
+    #
+    # `decisions`: `r9-v5.0.0` verdicts, plus `UNDECIDED` for analyses with no decision yet.
+    decisions: dict[str, int]
+    # `recorded_risk_levels`: `HIGH`/`MEDIUM`/`UNKNOWN` as written by a pinned earlier ruleset.
+    recorded_risk_levels: dict[str, int]
+    # `unrecognised`: every other pairing, keyed `"<ruleset>/<value>"` so neither half is lost.
+    # Empty on a healthy deployment, and never seeded: a key here is always a real row.
+    unrecognised: dict[str, int]
 
     # How the window's media arrived. Keyed by `MediaFile.acquisition_method`, with
     # `unrecorded` for rows predating the column.
@@ -244,6 +287,62 @@ def tallied(
     return tally
 
 
+def unrecognised_key(rules_version: str | None, risk_level: str | None) -> str:
+    """The name an unrecognised pairing is counted under: both halves, as stored.
+
+    Both, because either half on its own would misfile the row in the reader's head — a bare
+    `MEDIUM` here reads as a legacy level, and a bare `r9-v5.0.0` says nothing about what was
+    wrong with it.
+    """
+    return (
+        f"{UNRECOGNISED_ABSENT if rules_version is None else rules_version}"
+        f"/{UNRECOGNISED_ABSENT if risk_level is None else risk_level}"
+    )
+
+
+def risk_buckets(
+    rows: Sequence[Row],
+) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+    """`(risk_level, risk_rules_version, count)` groups, placed by both columns together.
+
+    The counting already happened in PostgreSQL; this only decides which of three maps each
+    group belongs in, and it decides by exact match on the pair and on nothing else:
+
+    - a `r9-v5.0.0` row holding one of the three verdicts is a **decision**;
+    - a row with no level, and either no ruleset or `r9-v5.0.0`, is **`UNDECIDED`** — no
+      decision has been written. The four risk columns are written in one transaction, so the
+      row an in-flight or failed analysis actually leaves behind has neither; a v5 version
+      beside a null level is the same absence and is counted the same way;
+    - a row from one of the pinned legacy rulesets holding `HIGH`, `MEDIUM` or `UNKNOWN` is a
+      **recorded risk level**;
+    - everything else is **unrecognised**, by its own ruleset and value. That includes a legacy
+      ruleset beside a null level: no earlier ruleset defines what that absence means, so it
+      is not given `UNDECIDED`'s meaning either. And it includes a legacy row holding a v5
+      verdict, a v5 row holding a legacy level, and any ruleset this build did not write — each
+      is data that contradicts its own stamp, and none is repaired into a list it does not
+      belong to.
+
+    Every known key is seeded at zero, for the reason `ANALYSIS_STATUSES` gives. `unrecognised`
+    is not seeded: it has no vocabulary, and a key in it is always a count of real rows.
+    """
+    decisions = {name: 0 for name in DECISIONS}
+    recorded = {level: 0 for level in RECORDED_RISK_LEVELS}
+    unrecognised: dict[str, int] = {}
+
+    for risk_level, rules_version, count in rows:
+        if rules_version == RULES_VERSION_V5 and risk_level in DECISION_VERDICTS:
+            decisions[risk_level] += count
+        elif risk_level is None and rules_version in (None, RULES_VERSION_V5):
+            decisions[RISK_UNDECIDED] += count
+        elif rules_version in LEGACY_RULES_VERSIONS and risk_level in RECORDED_RISK_LEVELS:
+            recorded[risk_level] += count
+        else:
+            key = unrecognised_key(rules_version, risk_level)
+            unrecognised[key] = unrecognised.get(key, 0) + count
+
+    return decisions, recorded, unrecognised
+
+
 def grouped_counts(
     session: Session, column: ColumnElement, created_at: ColumnElement
 ) -> Sequence[Row]:
@@ -276,7 +375,7 @@ def read_analytics(session: Session = Depends(get_session)) -> AnalyticsWindow:
     are issued separately rather than assembled into one query with five joined subselects
     because they answer five unrelated questions over four tables, and a join between them
     would multiply rows against each other — an analysis with three signals would be counted
-    three times in the risk distribution. Five cheap independent scans of a week's rows, read
+    three times in the risk buckets. Five cheap independent scans of a week's rows, read
     inside one transaction and therefore one consistent snapshot of it.
 
     An empty window is not a special case and is not checked for. Every statement returns no
@@ -298,15 +397,17 @@ def read_analytics(session: Session = Depends(get_session)) -> AnalyticsWindow:
         categories=JOB_STATUSES,
     )
 
-    # Grouped on the stored column, null group and all, and named `UNDECIDED` afterwards rather
-    # than `COALESCE`d to that string in SQL. A coalesce would merge a row that genuinely held
+    # Grouped on the level *and* the ruleset that wrote it, null groups and all, and named
+    # afterwards rather than `COALESCE`d in SQL. A coalesce would merge a row that genuinely held
     # the literal text "UNDECIDED" into the null bucket and there would be no way to tell from
-    # the result that it had happened. Nothing writes that string today; the point is that this
-    # route's answer does not depend on nothing ever writing it.
-    risk_distribution = tallied(
-        grouped_counts(session, Analysis.risk_level, Analysis.created_at),
-        categories=RISK_LEVELS,
-        absent=RISK_UNDECIDED,
+    # the result that it had happened; here such a row has no ruleset that writes that string
+    # and lands in `unrecognised` under its own name.
+    decisions, recorded_risk_levels, unrecognised = risk_buckets(
+        session.execute(
+            select(Analysis.risk_level, Analysis.risk_rules_version, func.count())
+            .where(within_window(Analysis.created_at))
+            .group_by(Analysis.risk_level, Analysis.risk_rules_version)
+        ).all()
     )
 
     # Windowed on the *analysis*, joined, because `media_files` has no `created_at` of its own —
@@ -325,8 +426,7 @@ def read_analytics(session: Session = Depends(get_session)) -> AnalyticsWindow:
         absent=ACQUISITION_UNRECORDED,
     )
 
-    # The only two-column grouping here: provider and status together, so one pass produces the
-    # whole table. Windowed on the signal's own `created_at` rather than the analysis's, because
+    # Provider and status grouped together, so one pass produces the whole table. Windowed on the signal's own `created_at` rather than the analysis's, because
     # a detector that answered this week about media submitted last week is this week's
     # operational fact — the page is about what the providers have been doing lately.
     #
@@ -352,7 +452,9 @@ def read_analytics(session: Session = Depends(get_session)) -> AnalyticsWindow:
         analyses_total=analyses_total,
         analyses_by_status=analyses_by_status,
         jobs_by_status=jobs_by_status,
-        risk_distribution=risk_distribution,
+        decisions=decisions,
+        recorded_risk_levels=recorded_risk_levels,
+        unrecognised=unrecognised,
         acquisition=acquisition,
         detectors=detectors,
     )
