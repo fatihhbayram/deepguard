@@ -62,6 +62,10 @@ export const ADMIN_AUDIT_PATH = "/admin/audit";
 // navigation links to it, and its two mutations redirect back to it.
 export const ADMIN_API_KEYS_PATH = "/admin/api-keys";
 
+// The review queue inside that surface (R14-T3): analyses filtered on stored operational facts,
+// newest first, each linking to its review screen. A list of analyses, not a verdict on any.
+export const ADMIN_REVIEW_QUEUE_PATH = "/admin/review-queue";
+
 // The review screen for one analysis (R8-T7), which is the first administrative address that
 // is not a fixed string — it names an analysis, so it is a function rather than a constant.
 //

@@ -59,23 +59,37 @@ import logging
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, field_validator
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, and_, exists, false, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.api.admin_analytics import (
+    BUCKET_DECISIONS,
+    BUCKET_RECORDED,
+    DECISIONS,
+    FEEDBACK_DISAGREE,
+    risk_bucket,
+)
 from app.db.models import (
     ANALYST_ASSESSMENTS,
     AUDIT_ACTION_REVIEW_CREATED,
     AUDIT_ACTION_REVIEW_UPDATED,
     AUDIT_TARGET_ANALYSIS,
+    FEEDBACK_ASSESSMENTS,
     MAX_REVIEW_NOTE_LENGTH,
+    REVIEW_STATUS_REVIEWED,
     REVIEW_STATUS_UNREVIEWED,
     REVIEW_STATUSES,
+    SIGNAL_STATUS_FAILED,
+    SIGNAL_STATUS_TIMEOUT,
     AdminAuditEvent,
     Analysis,
     AnalysisReview,
+    AnalysisSignal,
+    MediaFile,
     User,
+    UserFeedback,
 )
 from app.db.session import get_session
 from app.observability import current_request_id
@@ -398,6 +412,301 @@ def review_changes(
         }
 
     return changes
+
+
+# --- the review queue (R14-T3) ------------------------------------------------------------
+#
+# Which analyses an administrator might want to open next, filtered on operational facts that
+# already exist: what the owner said in feedback, what the engine decided, whether a detector
+# failed, and whether anybody has reviewed it. **Being in the queue says nothing about the
+# media.** There is no score, no priority and no new state here — the order is chronological,
+# and every flag on an item states which stored fact it matched, never what that fact means.
+
+# How many items one page carries by default, and the most a caller may ask for.
+REVIEW_QUEUE_DEFAULT_LIMIT = 50
+REVIEW_QUEUE_MAX_LIMIT = 200
+
+# The two signal states that mean a detector did not answer. `SUCCESS` is the third and the
+# only other one the column holds.
+SIGNAL_ERROR_STATUSES = (SIGNAL_STATUS_FAILED, SIGNAL_STATUS_TIMEOUT)
+
+
+class ReviewQueueItem(BaseModel):
+    """One analysis in the queue, with the facts it was filtered on.
+
+    **No single feedback record.** An analysis can carry feedback from several accounts, and
+    picking one of them to show would be picking arbitrarily; the item carries a count per
+    assessment instead, and `has_disagree_feedback` is read off that count.
+
+    **The verdict is placed by `risk_bucket`**, the classifier R13-T3 established and R14-T2
+    extracted, so exactly one of `decision`, `recorded_risk_level` and `unrecognised_risk_state`
+    is set, and a legacy `HIGH` can never be read as a v5 verdict or the other way round.
+    """
+
+    model_config = ConfigDict(from_attributes=False)
+
+    analysis_id: uuid.UUID
+    created_at: datetime
+    status: str
+
+    # Every media hash on the analysis, sorted. A list, because `media_files.analysis_id` is not
+    # unique in the schema and choosing one row would be choosing arbitrarily. Empty for an
+    # analysis with no media row.
+    media_sha256s: list[str]
+
+    risk_rules_version: str | None
+    decision: str | None
+    recorded_risk_level: str | None
+    unrecognised_risk_state: str | None
+
+    # `UNREVIEWED` where there is no review row, as `get_analysis_review` answers.
+    review_status: str
+    analyst_assessment: str | None
+
+    # Every assessment present, at zero where nobody gave it.
+    feedback_counts: dict[str, int]
+    has_disagree_feedback: bool
+
+    # `FAILED` and `TIMEOUT` signals, each present, at zero where there were none.
+    signal_error_counts: dict[str, int]
+    has_signal_errors: bool
+
+
+class ReviewQueuePage(BaseModel):
+    """One page of the queue and the size of the whole filtered set it came from."""
+
+    items: list[ReviewQueueItem]
+    total: int
+    limit: int
+    offset: int
+
+
+def pairs_for_decision(session: Session, decision: str) -> list[tuple[str | None, str | None]]:
+    """Every stored `(risk_level, risk_rules_version)` pair that `risk_bucket` places under
+    this decision.
+
+    The pairs actually present in `analyses` are grouped by PostgreSQL — a handful of rows —
+    and each is classified here by `risk_bucket` itself. The SQL filter built from the result
+    only matches pairs exactly; it does not restate the taxonomy, so it cannot disagree with the
+    operational summary about what a decision is.
+    """
+    stored = session.execute(
+        select(Analysis.risk_level, Analysis.risk_rules_version).group_by(
+            Analysis.risk_level, Analysis.risk_rules_version
+        )
+    ).all()
+
+    return [
+        (risk_level, rules_version)
+        for risk_level, rules_version in stored
+        if risk_bucket(risk_level, rules_version) == (BUCKET_DECISIONS, decision)
+    ]
+
+
+def review_queue_filters(
+    pairs: list[tuple[str | None, str | None]] | None,
+    feedback_assessment: str | None,
+    signal_error: bool,
+    unreviewed_only: bool,
+) -> list[ColumnElement[bool]]:
+    """The WHERE clauses over `analyses`, one per filter the caller set.
+
+    **Every relationship is an `EXISTS`, never a join.** Feedback, signals and reviews are each
+    one-to-many (or one-to-one) against the analysis, and a join would multiply the analysis row
+    by its children; an `EXISTS` keeps the statement over `analyses` alone, so the count and the
+    page are counted and cut on one row per analysis without a `DISTINCT` to undo anything.
+
+    `pairs` is `None` when no decision filter was asked for, and an empty list when one was and
+    no stored pair matches — which filters everything out rather than nothing.
+    """
+    clauses: list[ColumnElement[bool]] = []
+
+    if pairs is not None:
+        clauses.append(
+            or_(
+                *(
+                    and_(
+                        Analysis.risk_level.is_not_distinct_from(risk_level),
+                        Analysis.risk_rules_version.is_not_distinct_from(rules_version),
+                    )
+                    for risk_level, rules_version in pairs
+                )
+            )
+            if pairs
+            else false()
+        )
+
+    if feedback_assessment is not None:
+        clauses.append(
+            exists().where(
+                UserFeedback.analysis_id == Analysis.id,
+                UserFeedback.assessment == feedback_assessment,
+            )
+        )
+
+    if signal_error:
+        clauses.append(
+            exists().where(
+                AnalysisSignal.analysis_id == Analysis.id,
+                AnalysisSignal.status.in_(SIGNAL_ERROR_STATUSES),
+            )
+        )
+
+    # `NEEDS_FOLLOW_UP` stays in the queue: somebody looked and asked for another look, so the
+    # case is still open. Only `REVIEWED` takes an analysis out.
+    if unreviewed_only:
+        clauses.append(
+            ~exists().where(
+                AnalysisReview.analysis_id == Analysis.id,
+                AnalysisReview.status == REVIEW_STATUS_REVIEWED,
+            )
+        )
+
+    return clauses
+
+
+def review_queue_items(session: Session, analyses: list) -> list[ReviewQueueItem]:
+    """The page's analyses, with their feedback, signal errors, review and media attached.
+
+    One grouped statement per relationship, each restricted to the ids on this page, so the
+    number of statements is fixed whatever the page size and no child row ever multiplies an
+    analysis.
+    """
+    ids = [analysis.id for analysis in analyses]
+
+    feedback: dict[uuid.UUID, dict[str, int]] = {
+        analysis_id: {name: 0 for name in FEEDBACK_ASSESSMENTS} for analysis_id in ids
+    }
+    for analysis_id, assessment, count in session.execute(
+        select(UserFeedback.analysis_id, UserFeedback.assessment, func.count())
+        .where(UserFeedback.analysis_id.in_(ids))
+        .group_by(UserFeedback.analysis_id, UserFeedback.assessment)
+    ):
+        feedback[analysis_id][assessment] = count
+
+    signal_errors: dict[uuid.UUID, dict[str, int]] = {
+        analysis_id: {name: 0 for name in SIGNAL_ERROR_STATUSES} for analysis_id in ids
+    }
+    for analysis_id, signal_status, count in session.execute(
+        select(AnalysisSignal.analysis_id, AnalysisSignal.status, func.count())
+        .where(
+            AnalysisSignal.analysis_id.in_(ids),
+            AnalysisSignal.status.in_(SIGNAL_ERROR_STATUSES),
+        )
+        .group_by(AnalysisSignal.analysis_id, AnalysisSignal.status)
+    ):
+        signal_errors[analysis_id][signal_status] = count
+
+    reviews = {
+        review.analysis_id: review
+        for review in session.execute(
+            select(AnalysisReview).where(AnalysisReview.analysis_id.in_(ids))
+        ).scalars()
+    }
+
+    media: dict[uuid.UUID, list[str]] = {analysis_id: [] for analysis_id in ids}
+    for analysis_id, sha256 in session.execute(
+        select(MediaFile.analysis_id, MediaFile.original_sha256)
+        .where(MediaFile.analysis_id.in_(ids))
+        .order_by(MediaFile.original_sha256)
+    ):
+        media[analysis_id].append(sha256)
+
+    items = []
+    for analysis in analyses:
+        bucket, key = risk_bucket(analysis.risk_level, analysis.risk_rules_version)
+        review = reviews.get(analysis.id)
+        feedback_counts = feedback[analysis.id]
+        error_counts = signal_errors[analysis.id]
+
+        items.append(
+            ReviewQueueItem(
+                analysis_id=analysis.id,
+                created_at=analysis.created_at,
+                status=analysis.status,
+                media_sha256s=media[analysis.id],
+                risk_rules_version=analysis.risk_rules_version,
+                decision=key if bucket == BUCKET_DECISIONS else None,
+                recorded_risk_level=key if bucket == BUCKET_RECORDED else None,
+                unrecognised_risk_state=(
+                    key if bucket not in (BUCKET_DECISIONS, BUCKET_RECORDED) else None
+                ),
+                review_status=REVIEW_STATUS_UNREVIEWED if review is None else review.status,
+                analyst_assessment=None if review is None else review.analyst_assessment,
+                feedback_counts=feedback_counts,
+                has_disagree_feedback=feedback_counts[FEEDBACK_DISAGREE] > 0,
+                signal_error_counts=error_counts,
+                has_signal_errors=sum(error_counts.values()) > 0,
+            )
+        )
+
+    return items
+
+
+# Declared before every `/analyses/{analysis_id}/...` route in this file, so the static path is
+# matched first whatever the dynamic routes on this prefix become.
+@router.get("/analyses/queue", response_model=ReviewQueuePage)
+def get_review_queue(
+    feedback_assessment: str | None = None,
+    decision: str | None = None,
+    signal_error: bool = False,
+    unreviewed_only: bool = True,
+    limit: int = Query(REVIEW_QUEUE_DEFAULT_LIMIT, ge=1, le=REVIEW_QUEUE_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    session: Session = Depends(get_session),
+) -> ReviewQueuePage:
+    """The analyses matching every filter set, newest first, one page at a time.
+
+    Read-only: nothing here writes, and no statement names a forensic column except to read it.
+
+    `decision` is one of the v5 verdicts or `UNDECIDED`, exactly the keys the operational
+    summary's `decisions` map carries, and it matches the same rows that map counts under that
+    key. `feedback_assessment` is one of the feedback vocabulary. Anything else is a 422 rather
+    than a filter that silently matches nothing.
+
+    `total` is counted by the same WHERE clauses the page is cut with, over `analyses` alone.
+    """
+    if decision is not None and decision not in DECISIONS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"decision must be one of {', '.join(DECISIONS)}",
+        )
+
+    if feedback_assessment is not None and feedback_assessment not in FEEDBACK_ASSESSMENTS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"feedback_assessment must be one of {', '.join(FEEDBACK_ASSESSMENTS)}",
+        )
+
+    clauses = review_queue_filters(
+        pairs_for_decision(session, decision) if decision is not None else None,
+        feedback_assessment,
+        signal_error,
+        unreviewed_only,
+    )
+
+    total = session.execute(
+        select(func.count()).select_from(Analysis).where(*clauses)
+    ).scalar_one()
+
+    # The id breaks ties: two analyses committed in one transaction share `created_at`, and
+    # without it a row could appear on two pages or on none.
+    analyses = list(
+        session.execute(
+            select(Analysis)
+            .where(*clauses)
+            .order_by(Analysis.created_at.desc(), Analysis.id.desc())
+            .limit(limit)
+            .offset(offset)
+        ).scalars()
+    )
+
+    return ReviewQueuePage(
+        items=review_queue_items(session, analyses),
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get(

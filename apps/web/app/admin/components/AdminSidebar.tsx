@@ -37,6 +37,7 @@ import {
   ADMIN_AUDIT_PATH,
   ADMIN_JOBS_PATH,
   ADMIN_PATH,
+  ADMIN_REVIEW_QUEUE_PATH,
   WORKSPACE_PATH,
 } from "../../session";
 
@@ -56,6 +57,7 @@ const GROUPS: {
       // owns it and stays marked while a reader is on one account. See `AdminNavLink`.
       { href: ADMIN_PATH, label: "Accounts", prefix: "/admin/users" },
       { href: ADMIN_JOBS_PATH, label: "Detection jobs", prefix: ADMIN_JOBS_PATH },
+      { href: ADMIN_REVIEW_QUEUE_PATH, label: "Review queue", prefix: ADMIN_REVIEW_QUEUE_PATH },
       { href: ADMIN_ANALYTICS_PATH, label: "Operational summary", prefix: ADMIN_ANALYTICS_PATH },
     ],
   },
