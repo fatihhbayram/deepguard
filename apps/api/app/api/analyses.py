@@ -1930,6 +1930,31 @@ def analysis_evidence_select():
     )
 
 
+class AnalysisDetail(AnalysisSummary):
+    """One analysis as the detail read reports it: the summary, plus every media hash (R14-T5).
+
+    `media_sha256s` is every distinct original hash among the analysis's media rows, sorted.
+    The schema does not make `media_files.analysis_id` unique, and an administrator recording
+    Ground Truth and governance against specific bytes chooses from this list. It is read-only
+    and additive: `original_sha256` is unchanged, and the listing does not carry it.
+    """
+
+    media_sha256s: list[str]
+
+
+def media_sha256s(session: Session, analysis_id: uuid.UUID) -> list[str]:
+    """Every distinct original hash of one analysis's media, sorted."""
+    return [
+        row.original_sha256
+        for row in session.execute(
+            select(MediaFile.original_sha256)
+            .where(MediaFile.analysis_id == analysis_id)
+            .distinct()
+            .order_by(MediaFile.original_sha256)
+        ).all()
+    ]
+
+
 def analysis_payloads(session: Session, rows: list[Any]) -> list[AnalysisSummary]:
     """Attach the stored evidence to already-read analysis rows and shape the response.
 
@@ -2107,12 +2132,12 @@ def list_analyses(
         ) from None
 
 
-@router.get("/analyses/{analysis_id}", response_model=AnalysisSummary)
+@router.get("/analyses/{analysis_id}", response_model=AnalysisDetail)
 def get_analysis(
     analysis_id: uuid.UUID,
     session: Session = Depends(get_session),
     user: User = Depends(require_user),
-) -> AnalysisSummary:
+) -> AnalysisDetail:
     """Return one analysis with all four of its signals and their stored evidence.
 
     The report route reads this. It exists so a single report is built from the row it is
@@ -2123,11 +2148,12 @@ def get_analysis(
     Four statements, the same as the listing and for the same reason — the shape of the read
     does not change just because one row comes back.
 
-    The response model is the listing's. That is not laziness: the report needs exactly the
-    persisted facts the dashboard needs, and a second model repeating them would be two
-    places to add a field to and one place to forget. The name says "summary" because what
-    both readers get is a summary *of the stored evidence* — the full record lives in the
-    database, and neither endpoint invents anything on top of it.
+    The response model is the listing's, plus `media_sha256s` (`AnalysisDetail`, R14-T5), which
+    one further statement reads for this analysis alone. That is not laziness: the report
+    needs exactly the persisted facts the dashboard needs, and a second model repeating them
+    would be two places to add a field to and one place to forget. The name says "summary"
+    because what both readers get is a summary *of the stored evidence* — the full record
+    lives in the database, and neither endpoint invents anything on top of it.
 
     A `uuid.UUID` path parameter means a malformed id is rejected by validation as a 422
     before any statement runs; only a well-formed id that names nothing reaches the 404.
@@ -2146,6 +2172,8 @@ def get_analysis(
         ).all()
 
         payloads = analysis_payloads(session, rows)
+        # One more statement, only when the analysis was found and visible (R14-T5).
+        hashes = media_sha256s(session, analysis_id) if payloads else []
     except SQLAlchemyError:
         logger.exception("Reading analysis %s failed.", analysis_id)
         raise HTTPException(
@@ -2160,7 +2188,7 @@ def get_analysis(
         )
 
     # The id is a primary key, so the narrowed select cannot return a second row.
-    return payloads[0]
+    return AnalysisDetail(**dict(payloads[0]), media_sha256s=hashes)
 
 
 class EnrichmentRequestState(BaseModel):

@@ -68,13 +68,14 @@ def test_the_query_is_narrowed_to_the_requested_id(client, fake_session):
     assert "LIMIT" not in sql.upper()
 
 
-def test_the_detail_response_carries_the_same_fields_as_the_listing(client, fake_session):
-    """One model serves both readers, so the report can never be shown less than the
-    dashboard already shows about the same analysis."""
+def test_the_detail_response_carries_the_listing_fields_and_the_media_hashes(client, fake_session):
+    """The listing's model serves the detail too, so the report can never be shown less than
+    the dashboard already shows about the same analysis — plus one read-only field the
+    listing does not carry: every media hash of the analysis (R14-T5)."""
     row = listing_row()
     fake_session.rows = [row]
 
-    assert set(detail(client, row.id).json()) == EXPECTED_FIELDS
+    assert set(detail(client, row.id).json()) == EXPECTED_FIELDS | {"media_sha256s"}
 
 
 # Absence. A well-formed id that names nothing is a different fact from a malformed one, and
@@ -239,15 +240,16 @@ def test_an_analysis_with_no_signals_at_all_returns_none_for_each(client, fake_s
 # Query budget. One analysis costs what the listing costs, and no more.
 
 
-def test_one_analysis_costs_five_statements(client, fake_session):
-    """The same budget as the whole listing: the shape of the read does not change because
-    one row comes back, and nothing is fetched per signal."""
+def test_one_analysis_costs_six_statements(client, fake_session):
+    """The whole listing's budget plus one: the shape of the read does not change because one
+    row comes back, and nothing is fetched per signal. The one more is the media hashes of
+    this analysis (R14-T5), which the listing does not read."""
     row = listing_row()
     fake_session.rows = [row]
 
     detail(client, row.id)
 
-    assert len(fake_session.statements) == 5
+    assert len(fake_session.statements) == 6
 
 
 def test_an_analysis_with_no_signals_reads_no_evidence_tables(client, fake_session):
@@ -255,14 +257,15 @@ def test_an_analysis_with_no_signals_reads_no_evidence_tables(client, fake_sessi
 
     The execution-state statement is still issued, and deliberately so: whether an analysis
     is still being enriched is not a question its signal rows can answer, so it is asked of
-    the task rows for every analysis rendered, including one carrying no evidence at all.
+    the task rows for every analysis rendered, including one carrying no evidence at all. So
+    is the media-hash statement (R14-T5), which reads `media_files`, not an evidence table.
     """
     row = unsignalled_row()
     fake_session.rows = [row]
 
     detail(client, row.id)
 
-    assert len(fake_session.statements) == 2
+    assert len(fake_session.statements) == 3
 
 
 # Dimensions. A rotated phone video has two different picture sizes — the one encoded in the

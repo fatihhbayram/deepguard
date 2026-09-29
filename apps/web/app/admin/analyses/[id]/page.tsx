@@ -49,6 +49,13 @@
  * does not compare it with the verdict either: that comparison is evaluation, and belongs
  * elsewhere.
  *
+ * **Promotion is a fifth card and writes through the three existing endpoints (R14-T5).** It
+ * saves dataset governance, then Ground Truth, then the review status, each through its own route
+ * and only after the one before succeeded (`../../promotion.ts`). A user feedback record may be
+ * chosen as context: its claim prefills the label when it names one exactly, and never chooses a
+ * source class. The review status opens on the current state, so `NEEDS_FOLLOW_UP` is retained
+ * unless the analyst changes it.
+ *
  * A Server Component with no client-side code at all. The controls are plain HTML forms, the
  * same as the account controls, so the page works with JavaScript disabled and the outcome of
  * a save arrives as a redirect carrying it in the query string.
@@ -86,6 +93,7 @@ import {
   REVIEW_STATUS_NEEDS_FOLLOW_UP,
   REVIEW_STATUS_REVIEWED,
   REVIEW_STATUS_UNREVIEWED,
+  ReviewResult,
   fetchReview,
 } from "../../reviews";
 import {
@@ -96,6 +104,25 @@ import {
   fetchGroundTruth,
 } from "../../ground-truth";
 import { UserFeedbackEntry, UserFeedbackResult, fetchUserFeedback } from "../../user-feedback";
+import {
+  DATASET_SPLIT_LABELS,
+  DatasetGovernance,
+  DatasetGovernanceResult,
+  fetchDatasetGovernance,
+} from "../../dataset-governance";
+import {
+  BOOLEAN_NOT_RECORDED,
+  PROMOTION_STEPS,
+  ParsedOutcome,
+  PromotionStep,
+  REVIEW_TARGETS,
+  defaultReviewTarget,
+  isReviewOnlyFailure,
+  parseOutcome,
+  prefilledGroundTruthLabel,
+  promotionCandidates,
+  selectedPromotionMedia,
+} from "../../promotion";
 import {
   FEEDBACK_ASSESSMENT_LABELS,
   FEEDBACK_CLAIMED_LABEL_LABELS,
@@ -889,7 +916,13 @@ function GroundTruthSection({
  * ------------------------------------------------------------------ */
 
 /** One owner's feedback. The claimed label is printed as a claim, never as a label of the media. */
-function UserFeedbackItem({ entry }: { entry: UserFeedbackEntry }) {
+function UserFeedbackItem({
+  entry,
+  promotionHref,
+}: {
+  entry: UserFeedbackEntry;
+  promotionHref: string | null;
+}) {
   return (
     <li className="border-t border-hair pt-4 first:border-t-0 first:pt-0">
       <dl className="grid grid-cols-1 gap-5 sm:grid-cols-2">
@@ -925,6 +958,16 @@ function UserFeedbackItem({ entry }: { entry: UserFeedbackEntry }) {
           </p>
         )}
       </div>
+      {/* Per record, so the feedback used as context is the one the analyst chose — never "the
+          first". It opens the promotion form; it saves nothing. */}
+      {promotionHref !== null && (
+        <Link
+          href={promotionHref}
+          className="mt-4 inline-block rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+        >
+          Use this feedback as context for promotion
+        </Link>
+      )}
     </li>
   );
 }
@@ -933,7 +976,13 @@ function UserFeedbackItem({ entry }: { entry: UserFeedbackEntry }) {
  * Its own plate, after Ground Truth, with no form: administrators read user feedback and never
  * write it. It is not Ground Truth and not a review, and the card says so.
  */
-function UserFeedbackSection({ result }: { result: UserFeedbackResult }) {
+function UserFeedbackSection({
+  result,
+  promotionHref,
+}: {
+  result: UserFeedbackResult;
+  promotionHref: ((entry: UserFeedbackEntry) => string) | null;
+}) {
   return (
     <AdminSection
       title="User feedback"
@@ -948,11 +997,554 @@ function UserFeedbackSection({ result }: { result: UserFeedbackResult }) {
       ) : (
         <ul className="mt-4 space-y-4">
           {result.entries.map((entry) => (
-            <UserFeedbackItem key={entry.user_id} entry={entry} />
+            <UserFeedbackItem
+              key={entry.user_id}
+              entry={entry}
+              promotionHref={promotionHref === null ? null : promotionHref(entry)}
+            />
           ))}
         </ul>
       )}
     </AdminSection>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Promotion — governance, then Ground Truth, then the review (R14-T5)
+ * ------------------------------------------------------------------ */
+
+type PromotionMode = "manual" | "feedback";
+
+/** This analysis, with the promotion panel open in one mode, scrolled to it. */
+function promotionPath(analysisId: string, params: Record<string, string>): string {
+  return `${adminAnalysisPath(analysisId)}?${new URLSearchParams(params)}#promotion`;
+}
+
+const PROMOTION_STEP_LABELS: Record<PromotionStep, string> = {
+  governance: "dataset governance",
+  ground_truth: "Ground Truth",
+  review: "review status",
+};
+
+function stepList(steps: PromotionStep[]): string {
+  return steps.length === 0 ? "nothing" : steps.map((step) => PROMOTION_STEP_LABELS[step]).join(", ");
+}
+
+/**
+ * What the last promotion did, step by step. A failure after a save is called a partial success
+ * and says so, because the saved steps are saved: three endpoints, three transactions.
+ */
+function PromotionOutcome({ outcome }: { outcome: ParsedOutcome }) {
+  if (outcome.failed === null && outcome.error === null) {
+    return (
+      <AdminAlert tone="success">
+        {`Saved: ${stepList(outcome.saved)}. The automated assessment and the user's feedback were not changed.`}
+      </AdminAlert>
+    );
+  }
+
+  if (outcome.failed === null) {
+    return <AdminAlert tone="error">{`Nothing was saved. ${outcome.error ?? ""}`}</AdminAlert>;
+  }
+
+  // Every step after the one that failed: the sequence stops there.
+  const notAttempted = PROMOTION_STEPS.slice(PROMOTION_STEPS.indexOf(outcome.failed) + 1);
+
+  return (
+    <AdminAlert tone="error">
+      {outcome.saved.length > 0 ? "Partial success. " : "Nothing was saved. "}
+      {`Saved: ${stepList(outcome.saved)}. Failed: ${PROMOTION_STEP_LABELS[outcome.failed]} — ${(outcome.error ?? "no reason given").replace(/\.$/, "")}.`}
+      {notAttempted.length > 0 && ` Not attempted: ${stepList(notAttempted)}.`}
+      {outcome.failed === "review"
+        ? " Retry the review status below."
+        : " Correct the form and submit it again; a step already saved is not written twice."}
+    </AdminAlert>
+  );
+}
+
+const inputClass =
+  "mt-1 block w-full rounded-md border border-line bg-ink px-2.5 py-1.5 text-[12px] text-bone transition-colors duration-150 hover:border-rule focus:border-rule focus:outline-none";
+
+function TextField({
+  name,
+  label,
+  defaultValue,
+  required = false,
+  readOnly = false,
+  hint,
+}: {
+  name: string;
+  label: string;
+  defaultValue: string;
+  required?: boolean;
+  readOnly?: boolean;
+  hint?: string;
+}) {
+  return (
+    <label className="block text-[12px] text-muted">
+      {label}
+      {!required && <span> (optional)</span>}
+      <input
+        name={name}
+        type="text"
+        defaultValue={defaultValue}
+        required={required}
+        readOnly={readOnly}
+        className={inputClass}
+      />
+      {hint && <span className="mt-1 block text-[11px] text-muted">{hint}</span>}
+    </label>
+  );
+}
+
+function BooleanField({
+  name,
+  label,
+  value,
+}: {
+  name: string;
+  label: string;
+  value: boolean | null;
+}) {
+  return (
+    <label className="block text-[12px] text-muted">
+      {label}
+      <select
+        name={name}
+        defaultValue={value === null ? BOOLEAN_NOT_RECORDED : String(value)}
+        className={inputClass}
+      >
+        {/* Unknown is not false: an unstated boolean stays unrecorded. */}
+        <option value={BOOLEAN_NOT_RECORDED}>Not recorded</option>
+        <option value="true">Yes</option>
+        <option value="false">No</option>
+      </select>
+    </label>
+  );
+}
+
+/** The review status control, opening on the current state so it is retained unless changed. */
+function ReviewTargetField({ review }: { review: AnalysisReview }) {
+  return (
+    <>
+      <input type="hidden" name="expected_review_status" value={review.status} />
+      <label className="block text-[12px] text-muted">
+        {`Leave the review as (currently ${REVIEW_STATUS_LABELS[review.status] ?? review.status})`}
+        <select
+          name="review_status"
+          required
+          defaultValue={defaultReviewTarget(review.status)}
+          className={inputClass}
+        >
+          <option value="" disabled>
+            Choose…
+          </option>
+          {REVIEW_TARGETS.map((status) => (
+            <option key={status} value={status}>
+              {REVIEW_STATUS_LABELS[status] ?? status}
+            </option>
+          ))}
+        </select>
+      </label>
+    </>
+  );
+}
+
+/**
+ * The promotion form. Every control starts from the stored governance or from nothing, except the
+ * label, which a chosen feedback record may prefill when its claim names a label exactly. The
+ * source class and the media always start unchosen.
+ */
+function PromotionForm({
+  analysisId,
+  candidates,
+  governance,
+  groundTruth,
+  review,
+  feedback,
+}: {
+  analysisId: string;
+  candidates: string[];
+  governance: DatasetGovernance | null;
+  groundTruth: GroundTruth | null;
+  review: AnalysisReview;
+  feedback: UserFeedbackEntry | null;
+}) {
+  const fieldsetClass = "mt-6 border-t border-hair pt-5";
+  const legendClass = "text-[11px] font-medium tracking-[0.08em] text-muted uppercase";
+  // An existing record keeps its lineage and its lineage keeps its split (409 otherwise), so
+  // both are shown fixed rather than offered as a change the API would refuse.
+  const fixed = governance !== null;
+
+  return (
+    <form action="/admin/promote-ground-truth" method="post" className="mt-4">
+      <input type="hidden" name="analysis_id" value={analysisId} />
+      <input type="hidden" name="feedback_user_id" value={feedback?.user_id ?? ""} />
+
+      <fieldset className={fieldsetClass}>
+        <legend className={legendClass}>Media</legend>
+        <p className="mt-2 text-[12px] text-muted">
+          Choose the file these records are about. Governance and Ground Truth are keyed by its
+          SHA-256 and apply to every analysis of the same bytes.
+        </p>
+        {candidates.map((sha256) => (
+          <label key={sha256} className="mt-2 flex items-center gap-2 text-[12px] text-bone">
+            {/* Nothing preselected, even for one file: the analyst states which bytes. */}
+            <input type="radio" name="sha256" value={sha256} required />
+            <AdminValue className="break-all">{sha256}</AdminValue>
+          </label>
+        ))}
+      </fieldset>
+
+      <fieldset className={fieldsetClass}>
+        <legend className={legendClass}>1 · Dataset governance</legend>
+        <p className="mt-2 text-[12px] text-muted">
+          Saved first, so a label never reaches evaluation without the lineage, split and licence
+          it is exported under. The whole record is sent: an emptied field is cleared.
+        </p>
+        <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <TextField
+            name="source_lineage_id"
+            label="Source lineage"
+            required
+            readOnly={fixed}
+            defaultValue={governance?.source_lineage_id ?? ""}
+            hint={fixed ? "Recorded; a record keeps its lineage." : undefined}
+          />
+          <label className="block text-[12px] text-muted">
+            Dataset split
+            {fixed ? (
+              <>
+                <input type="hidden" name="dataset_split" value={governance.dataset_split} />
+                <span className={`${inputClass} text-muted`}>
+                  {DATASET_SPLIT_LABELS[governance.dataset_split] ?? governance.dataset_split}
+                </span>
+              </>
+            ) : (
+              <select name="dataset_split" required defaultValue="" className={inputClass}>
+                <option value="" disabled>
+                  Choose…
+                </option>
+                {Object.entries(DATASET_SPLIT_LABELS).map(([value, text]) => (
+                  <option key={value} value={value}>
+                    {text}
+                  </option>
+                ))}
+              </select>
+            )}
+          </label>
+          <TextField name="recording_identity" label="Recording identity" defaultValue={governance?.recording_identity ?? ""} />
+          <TextField name="derived_from_sha256" label="Derived from (SHA-256)" defaultValue={governance?.derived_from_sha256 ?? ""} />
+          <TextField name="generation_pipeline" label="Generation pipeline" defaultValue={governance?.generation_pipeline ?? ""} />
+          <TextField name="license" label="Licence" defaultValue={governance?.license ?? ""} />
+          <TextField name="permission_status" label="Permission status" defaultValue={governance?.permission_status ?? ""} />
+          <BooleanField name="redistributable" label="Redistributable" value={governance?.redistributable ?? null} />
+          <BooleanField name="private" label="Private" value={governance?.private ?? null} />
+          <TextField name="stratum_primary" label="Primary stratum" defaultValue={governance?.stratum_primary ?? ""} />
+          <TextField name="source" label="Source" defaultValue={governance?.source ?? ""} />
+          <TextField name="acquisition_type" label="Acquisition type" defaultValue={governance?.acquisition_type ?? ""} />
+          <TextField name="benchmark_family" label="Benchmark family" defaultValue={governance?.benchmark_family ?? ""} />
+        </div>
+        <label className="mt-4 block text-[12px] text-muted">
+          Transformations <span>(optional, one per line, in order)</span>
+          <textarea
+            name="transformations"
+            rows={2}
+            defaultValue={(governance?.transformations ?? []).join("\n")}
+            className={inputClass}
+          />
+        </label>
+      </fieldset>
+
+      <fieldset className={fieldsetClass}>
+        <legend className={legendClass}>2 · Ground Truth</legend>
+        {groundTruth !== null && (
+          <p className="mt-2 text-[12px] text-muted">
+            {`Currently recorded: ${GROUND_TRUTH_LABEL_LABELS[groundTruth.label] ?? groundTruth.label}, ${GROUND_TRUTH_SOURCE_CLASS_LABELS[groundTruth.source_class] ?? groundTruth.source_class}. Saving replaces it.`}
+          </p>
+        )}
+        <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <label className="block text-[12px] text-muted">
+            Label
+            <select
+              name="label"
+              required
+              defaultValue={feedback === null ? "" : prefilledGroundTruthLabel(feedback.claimed_label)}
+              className={inputClass}
+            >
+              <option value="" disabled>
+                Choose…
+              </option>
+              {Object.entries(GROUND_TRUTH_LABEL_LABELS).map(([value, text]) => (
+                <option key={value} value={value}>
+                  {text}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-[12px] text-muted">
+            How it is known
+            {/* Never preselected, from feedback or otherwise. */}
+            <select name="source_class" required defaultValue="" className={inputClass}>
+              <option value="" disabled>
+                Choose…
+              </option>
+              {Object.entries(GROUND_TRUTH_SOURCE_CLASS_LABELS).map(([value, text]) => (
+                <option key={value} value={value}>
+                  {text}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <p className="mt-3 max-w-[74ch] text-[12px] leading-relaxed text-muted">
+          A user&apos;s claim is not provenance. Their feedback — even as the owner of the
+          analysis — does not by itself make this <em>Known to the owner</em> or{" "}
+          <em>Externally verified</em>. Without independent evidence, choose <em>Unknown</em>.
+        </p>
+        <label className="mt-3 flex items-start gap-2 text-[12px] text-bone">
+          <input type="checkbox" name="provenance_attested" value="1" className="mt-0.5" />
+          <span>
+            The source class above rests on evidence independent of the user&apos;s feedback, the
+            automated assessment and the human review, and that evidence is stated in the notes.
+            (Required for every source class except Unknown.)
+          </span>
+        </label>
+        <label className="mt-3 block text-[12px] text-muted">
+          Notes <span>(the evidence, for any source class other than Unknown)</span>
+          <textarea name="notes" rows={3} defaultValue="" className={inputClass} />
+        </label>
+      </fieldset>
+
+      <fieldset className={fieldsetClass}>
+        <legend className={legendClass}>3 · Review</legend>
+        <p className="mt-2 text-[12px] text-muted">
+          Set only after both records above are saved. The review&apos;s assessment and note are
+          kept as they are.
+        </p>
+        <div className="mt-3 max-w-[40ch]">
+          <ReviewTargetField review={review} />
+        </div>
+      </fieldset>
+
+      <div className="mt-6 flex flex-wrap items-center gap-3">
+        <button
+          type="submit"
+          className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+        >
+          Save governance, Ground Truth and review
+        </button>
+        <Link
+          href={adminAnalysisPath(analysisId)}
+          className="text-[12px] text-muted underline-offset-2 hover:text-bone hover:underline"
+        >
+          Cancel
+        </Link>
+      </div>
+    </form>
+  );
+}
+
+/** The review step on its own, for the partial success where only the review failed. */
+function ReviewRetryForm({
+  analysisId,
+  feedbackUserId,
+  media,
+  review,
+}: {
+  analysisId: string;
+  feedbackUserId: string | null;
+  media: string | null;
+  review: AnalysisReview;
+}) {
+  return (
+    <form action="/admin/promote-ground-truth" method="post" className="mt-4 max-w-[40ch]">
+      <input type="hidden" name="analysis_id" value={analysisId} />
+      <input type="hidden" name="feedback_user_id" value={feedbackUserId ?? ""} />
+      <input type="hidden" name="retry" value="review" />
+      {media !== null && <input type="hidden" name="media" value={media} />}
+      <ReviewTargetField review={review} />
+      <button
+        type="submit"
+        className="mt-3 rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+      >
+        Retry the review status
+      </button>
+    </form>
+  );
+}
+
+/** The feedback record chosen as context, shown as the claim it is. */
+function FeedbackContext({ entry }: { entry: UserFeedbackEntry }) {
+  const prefilled = prefilledGroundTruthLabel(entry.claimed_label);
+
+  return (
+    <div className="mt-4 rounded-md border border-line px-4 py-3 text-[12px] leading-relaxed text-muted">
+      <p className="text-bone">
+        {`Context: feedback from ${entry.user_email} — ${FEEDBACK_ASSESSMENT_LABELS[entry.assessment] ?? entry.assessment}, `}
+        {entry.claimed_label === null
+          ? "no claimed label"
+          : `claims ${FEEDBACK_CLAIMED_LABEL_LABELS[entry.claimed_label] ?? entry.claimed_label}`}
+        .
+      </p>
+      <p className="mt-1">
+        {prefilled === ""
+          ? "The claim does not name a Ground Truth label exactly, so the label is left for you to choose."
+          : "The claim prefills the label only. It is unverified; check it before saving."}
+      </p>
+    </div>
+  );
+}
+
+function PromotionSection({
+  analysisId,
+  candidates,
+  media,
+  governanceResult,
+  groundTruthResult,
+  reviewResult,
+  feedbackResult,
+  mode,
+  feedbackUserId,
+  outcome,
+}: {
+  analysisId: string;
+  candidates: string[];
+  media: string | null;
+  governanceResult: DatasetGovernanceResult | null;
+  groundTruthResult: GroundTruthResult | null;
+  reviewResult: ReviewResult;
+  feedbackResult: UserFeedbackResult;
+  mode: PromotionMode | null;
+  feedbackUserId: string | null;
+  outcome: ParsedOutcome | null;
+}) {
+  const governance = governanceResult !== null && governanceResult.ok ? governanceResult.governance : null;
+  const feedback =
+    mode === "feedback" && feedbackResult.ok
+      ? (feedbackResult.entries.find((entry) => entry.user_id === feedbackUserId) ?? null)
+      : null;
+
+  let body: React.ReactNode;
+  if (candidates.length === 0) {
+    body = <p className="mt-4 text-[13px] text-muted">{NO_SHA256_FOR_GROUND_TRUTH}</p>;
+  } else if (mode === null || (outcome !== null && isReviewOnlyFailure(outcome))) {
+    // Closed — or open on a review-only failure, where the two records are saved and the retry
+    // above is the one thing left to do; a second copy of the whole form would invite re-sending it.
+    body = (
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <Link
+          href={promotionPath(analysisId, { promote: "manual" })}
+          className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
+        >
+          Promote to Ground Truth
+        </Link>
+        <span className="text-[12px] text-muted">
+          or use one specific user feedback record above as context.
+        </span>
+      </div>
+    );
+  } else if (media === null) {
+    // Several media files and none chosen yet: the form is seeded from one file's records, so
+    // the file comes first. Each link reopens this panel on that file — nothing is preselected.
+    const panel: Record<string, string> =
+      mode === "feedback" && feedbackUserId !== null
+        ? { promote: "feedback", feedback: feedbackUserId }
+        : { promote: mode };
+    body = (
+      <div className="mt-4">
+        <p className="text-[12px] text-muted">
+          This analysis has more than one media file. Choose the one these records are about:
+        </p>
+        <ul className="mt-2 space-y-2">
+          {candidates.map((sha256) => (
+            <li key={sha256}>
+              <Link
+                href={promotionPath(analysisId, { ...panel, media: sha256 })}
+                className="text-[12px] text-bone underline-offset-2 hover:underline"
+              >
+                <AdminValue className="break-all">{sha256}</AdminValue>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  } else if (governanceResult === null || !governanceResult.ok) {
+    body = (
+      <div className="mt-4">
+        <AdminAlert tone="error">
+          {governanceResult === null ? "Dataset governance could not be read." : governanceResult.error}
+        </AdminAlert>
+      </div>
+    );
+  } else if (groundTruthResult === null || !groundTruthResult.ok) {
+    body = (
+      <div className="mt-4">
+        <AdminAlert tone="error">
+          {groundTruthResult === null ? "Ground Truth could not be read." : groundTruthResult.error}
+        </AdminAlert>
+      </div>
+    );
+  } else if (!reviewResult.ok) {
+    body = (
+      <div className="mt-4">
+        <AdminAlert tone="error">{reviewResult.error}</AdminAlert>
+      </div>
+    );
+  } else if (mode === "feedback" && feedback === null) {
+    body = (
+      <div className="mt-4">
+        <AdminAlert tone="error">
+          That feedback record is not on this analysis. Choose one from the list below.
+        </AdminAlert>
+      </div>
+    );
+  } else {
+    body = (
+      <>
+        {feedback !== null && <FeedbackContext entry={feedback} />}
+        <PromotionForm
+          analysisId={analysisId}
+          candidates={[media]}
+          governance={governance}
+          groundTruth={groundTruthResult.groundTruth}
+          review={reviewResult.review}
+          feedback={feedback}
+        />
+      </>
+    );
+  }
+
+  return (
+    <div id="promotion">
+      <AdminSection
+        title="Dataset governance & Ground Truth promotion"
+        description="Adds this case's media to the verified dataset in three separate saves, in order: dataset governance, then Ground Truth, then the review status. Each runs only if the one before it succeeded. User feedback may be used as context and never as provenance."
+      >
+        {media !== null && governanceResult !== null && governanceResult.ok && (
+          <p className="mt-4 text-[12px] text-muted">
+            {governance === null
+              ? `Dataset governance of ${media.slice(0, 12)}…: not recorded.`
+              : `Dataset governance of ${media.slice(0, 12)}…: lineage ${governance.source_lineage_id}, ${DATASET_SPLIT_LABELS[governance.dataset_split] ?? governance.dataset_split} split.`}
+          </p>
+        )}
+        {outcome !== null && (
+          <div className="mt-4">
+            <PromotionOutcome outcome={outcome} />
+            {isReviewOnlyFailure(outcome) && reviewResult.ok && (
+              <ReviewRetryForm
+                analysisId={analysisId}
+                feedbackUserId={feedbackUserId}
+                media={media}
+                review={reviewResult.review}
+              />
+            )}
+          </div>
+        )}
+        {body}
+      </AdminSection>
+    </div>
   );
 }
 
@@ -985,14 +1577,48 @@ export default async function AdminAnalysisReview({
       : null,
   );
 
-  const [user, analysisResult, reviewResult, groundTruthResult, feedbackResult] =
-    await Promise.all([
-      fetchSession(),
-      analysisRead,
-      fetchReview(id),
-      groundTruthRead,
-      fetchUserFeedback(id),
-    ]);
+  // The promotion form (R14-T5) is seeded from the governance and Ground Truth of the media it
+  // is opened on, which is one of the analysis's media hashes — not necessarily the original the
+  // Ground Truth card above is keyed by. Only the original's Ground Truth read is shared.
+  const promotionMediaRead = analysisRead.then((result) =>
+    result.ok
+      ? selectedPromotionMedia(
+          promotionCandidates(result.analysis.media_sha256s),
+          singleParam(query.media),
+        )
+      : null,
+  );
+  const governanceRead = promotionMediaRead.then((sha256) =>
+    sha256 === null ? null : fetchDatasetGovernance(sha256),
+  );
+  const promotionGroundTruthRead = Promise.all([analysisRead, promotionMediaRead]).then(
+    ([result, sha256]) =>
+      sha256 === null
+        ? null
+        : result.ok && sha256 === result.analysis.original_sha256
+          ? groundTruthRead
+          : fetchGroundTruth(sha256),
+  );
+
+  const [
+    user,
+    analysisResult,
+    reviewResult,
+    groundTruthResult,
+    feedbackResult,
+    promotionMedia,
+    governanceResult,
+    promotionGroundTruthResult,
+  ] = await Promise.all([
+    fetchSession(),
+    analysisRead,
+    fetchReview(id),
+    groundTruthRead,
+    fetchUserFeedback(id),
+    promotionMediaRead,
+    governanceRead,
+    promotionGroundTruthRead,
+  ]);
 
   // The session the API would not accept. `admin/layout.tsx` has already turned away a reader
   // with no session and one whose role is not administrator, so what is left for this is the
@@ -1003,7 +1629,11 @@ export default async function AdminAnalysisReview({
     (!analysisResult.ok && analysisResult.unauthenticated) ||
     (!reviewResult.ok && reviewResult.unauthenticated) ||
     (groundTruthResult !== null && !groundTruthResult.ok && groundTruthResult.unauthenticated) ||
-    (!feedbackResult.ok && feedbackResult.unauthenticated)
+    (!feedbackResult.ok && feedbackResult.unauthenticated) ||
+    (governanceResult !== null && !governanceResult.ok && governanceResult.unauthenticated) ||
+    (promotionGroundTruthResult !== null &&
+      !promotionGroundTruthResult.ok &&
+      promotionGroundTruthResult.unauthenticated)
   ) {
     redirect(LOGIN_PATH);
   }
@@ -1022,6 +1652,13 @@ export default async function AdminAnalysisReview({
   const saved = singleParam(query.saved);
   const groundTruthError = singleParam(query.gt_error);
   const groundTruthSaved = singleParam(query.gt_saved) !== null;
+
+  // The promotion panel: closed, manual, or opened from one specific feedback record.
+  const promoteParam = singleParam(query.promote);
+  const promotionMode: PromotionMode | null =
+    promoteParam === "manual" || promoteParam === "feedback" ? promoteParam : null;
+  const promotionFeedbackUserId = singleParam(query.feedback);
+  const promotionOutcome = parseOutcome((name) => singleParam(query[name]));
 
   return (
     <>
@@ -1106,7 +1743,33 @@ export default async function AdminAnalysisReview({
         )}
 
         {/* After Ground Truth and apart from it: what the submitter claimed. Read-only. */}
-        {analysisResult.ok && <UserFeedbackSection result={feedbackResult} />}
+        {analysisResult.ok && (
+          <UserFeedbackSection
+            result={feedbackResult}
+            promotionHref={
+              analysisResult.analysis.media_sha256s.length === 0
+                ? null
+                : (entry) => promotionPath(id, { promote: "feedback", feedback: entry.user_id })
+            }
+          />
+        )}
+
+        {/* Last: the one workflow on this page that writes more than one record — each through
+            its own endpoint, in order (R14-T5). */}
+        {analysisResult.ok && (
+          <PromotionSection
+            analysisId={id}
+            candidates={promotionCandidates(analysisResult.analysis.media_sha256s)}
+            media={promotionMedia}
+            governanceResult={governanceResult}
+            groundTruthResult={promotionGroundTruthResult}
+            reviewResult={reviewResult}
+            feedbackResult={feedbackResult}
+            mode={promotionMode}
+            feedbackUserId={promotionFeedbackUserId}
+            outcome={promotionOutcome}
+          />
+        )}
       </div>
     </>
   );

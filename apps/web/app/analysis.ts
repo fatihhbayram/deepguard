@@ -460,6 +460,10 @@ export type AnalysisSummary = {
   // to print a hash a reader can check the source file against. Nullable because the column
   // is: an analysis stored before hashing was wired in carries neither.
   original_sha256: string | null;
+  // Every distinct original hash among the analysis's media rows, sorted (R14-T5). Reported by
+  // the detail read only (`AnalysisDetail`); a listing item has none and parses as []. The admin
+  // promotion form chooses from it; nothing else reads it. `original_sha256` is unchanged.
+  media_sha256s: string[];
   size_bytes: number | null;
   was_normalized: boolean;
   // How the analysed artifact was acquired. False means the bytes are exactly what was
@@ -3090,6 +3094,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     original_filename,
     declared_content_type,
     original_sha256,
+    media_sha256s,
     size_bytes,
     was_normalized,
     was_assembled,
@@ -3114,6 +3119,15 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
   const acquisitionMethod = parseAbsentableString(acquisition_method);
   const sourceHost = parseAbsentableString(source_host);
   const parsedSha256 = parseOptionalString(original_sha256);
+  // Absent is read as "not reported" — a listing item, or an API from before R14-T5 — and
+  // becomes no hashes, so the promotion form offers nothing rather than the whole analysis
+  // becoming unreadable. A value that is present and not a list of strings is malformed.
+  const mediaSha256s =
+    media_sha256s === undefined
+      ? []
+      : Array.isArray(media_sha256s) && media_sha256s.every((sha) => typeof sha === "string")
+        ? (media_sha256s as string[])
+        : undefined;
   const parsedSize = parseOptionalNumber(size_bytes);
   const riskLevel = parseOptionalString(risk_level);
   const riskRulesVersion = parseOptionalString(risk_rules_version);
@@ -3141,6 +3155,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     typeof created_at !== "string" ||
     typeof declared_content_type !== "string" ||
     parsedSha256 === undefined ||
+    mediaSha256s === undefined ||
     parsedSize === undefined ||
     typeof was_normalized !== "boolean" ||
     typeof was_assembled !== "boolean" ||
@@ -3181,6 +3196,7 @@ export function parseAnalysis(payload: unknown): AnalysisSummary | null {
     original_filename,
     declared_content_type,
     original_sha256: parsedSha256,
+    media_sha256s: mediaSha256s,
     size_bytes: parsedSize,
     was_normalized,
     was_assembled,
