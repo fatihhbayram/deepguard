@@ -62,7 +62,7 @@ PAYLOAD = {
     "recorded_risk_levels": {"HIGH": 9, "MEDIUM": 6, "UNKNOWN": 1},
     "unrecognised": {"r9-v5.0.0/MEDIUM": 5, "r7-v4.0.0/MANIPULATION_DETECTED": 8},
     "acquisition": {"upload": 30, "url": 1, "unrecorded": 0},
-    "detectors": {},
+    "detectors_health": [],
     # R14-T2: user feedback. `test_admin_feedback_analytics.py` holds its parse.
     "feedback_total": 0,
     "feedback_by_assessment": {"AGREE": 0, "DISAGREE": 0, "UNSURE": 0},

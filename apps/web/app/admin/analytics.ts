@@ -18,8 +18,9 @@
  * the row it renders, and it never appears as text. It is stated here so the distinction stays
  * explicit rather than becoming precedent for a real ratio later.
  *
- * The one ratio on the payload, the feedback `disagreement_rate` (R14-T2), is the API's: it is
- * parsed and drawn as it arrives, and nothing here divides to produce it.
+ * The two ratios on the payload, the feedback `disagreement_rate` (R14-T2) and each detector
+ * deployment's `failure_rate` (R14-T4), are the API's: they are parsed and drawn as they arrive,
+ * and nothing here divides to produce them.
  *
  * The payload is parsed rather than cast, the convention `users.ts` states in full: a body that
  * is not the expected shape fails the whole read, and the page says the summary could not be
@@ -65,7 +66,7 @@ export type AdminAnalytics = {
   recordedRiskLevels: Record<string, number>;
   unrecognised: Record<string, number>;
   acquisition: Record<string, number>;
-  detectors: Record<string, Record<string, number>>;
+  detectors_health: DetectorHealth[];
   feedback_total: number;
   feedback_by_assessment: Record<string, number>;
   feedback_by_claimed_label: Record<string, number>;
@@ -73,6 +74,23 @@ export type AdminAnalytics = {
   feedback_by_decision: Record<string, FeedbackBucket>;
   feedback_by_recorded_risk_level: Record<string, FeedbackBucket>;
   feedback_by_unrecognised_risk_state: Record<string, FeedbackBucket>;
+};
+
+/**
+ * How one detector deployment's runs ended in the window (R14-T4), as the API counted them.
+ *
+ * `provider_version` is null when the rows were persisted without one — a real group, kept as
+ * null, never replaced with a made-up name. `status_counts` holds `SUCCESS`, `FAILED`,
+ * `TIMEOUT`, any status the API carried through, and `MISSING` only on a deployment a ruleset
+ * expects. `failure_rate` is the API's `(FAILED + TIMEOUT) / (SUCCESS + FAILED + TIMEOUT)`,
+ * null when nothing was run, and never recomputed here. It is an operational execution rate,
+ * not a model error or false-positive rate.
+ */
+export type DetectorHealth = {
+  provider: string;
+  provider_version: string | null;
+  status_counts: Record<string, number>;
+  failure_rate: number | null;
 };
 
 /**
@@ -136,22 +154,49 @@ export function parseCounts(payload: unknown): Record<string, number> | null {
   return counts;
 }
 
-/** The detector table: a map of providers to their own status counts. */
-function parseDetectors(payload: unknown): Record<string, Record<string, number>> | null {
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+/**
+ * The detector health list, or null for anything that is not one.
+ *
+ * The rate is held to its range rather than merely typed — null, or a number from 0 to 1 —
+ * because a rate outside it means the API's definition has changed. Whether it is null is the
+ * API's call: deciding that here would take a sum of the counts, which is the arithmetic this
+ * module does not do.
+ */
+function parseDetectorHealth(payload: unknown): DetectorHealth[] | null {
+  if (!Array.isArray(payload)) {
     return null;
   }
 
-  const detectors: Record<string, Record<string, number>> = {};
-  for (const [provider, value] of Object.entries(payload)) {
-    const counts = parseCounts(value);
-    if (counts === null) {
+  const health: DetectorHealth[] = [];
+  for (const entry of payload) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
       return null;
     }
-    detectors[provider] = counts;
+
+    const { provider, provider_version, status_counts, failure_rate } = entry as Record<
+      string,
+      unknown
+    >;
+    const counts = parseCounts(status_counts);
+
+    if (
+      typeof provider !== "string" ||
+      (provider_version !== null && typeof provider_version !== "string") ||
+      counts === null ||
+      (failure_rate !== null && !isRate(failure_rate))
+    ) {
+      return null;
+    }
+
+    health.push({
+      provider,
+      provider_version,
+      status_counts: counts,
+      failure_rate: failure_rate as number | null,
+    });
   }
 
-  return detectors;
+  return health;
 }
 
 /**
@@ -222,7 +267,7 @@ export function parseAnalytics(payload: unknown): AdminAnalytics | null {
     recorded_risk_levels,
     unrecognised,
     acquisition,
-    detectors,
+    detectors_health,
     feedback_total,
     feedback_by_assessment,
     feedback_by_claimed_label,
@@ -239,7 +284,7 @@ export function parseAnalytics(payload: unknown): AdminAnalytics | null {
   const recorded = parseCounts(recorded_risk_levels);
   const unplaced = parseCounts(unrecognised);
   const acquired = parseCounts(acquisition);
-  const providers = parseDetectors(detectors);
+  const providers = parseDetectorHealth(detectors_health);
   const feedbackTotal = count(feedback_total);
   const byAssessment = parseCounts(feedback_by_assessment);
   const byClaimedLabel = parseCounts(feedback_by_claimed_label);
@@ -283,7 +328,7 @@ export function parseAnalytics(payload: unknown): AdminAnalytics | null {
     recordedRiskLevels: recorded,
     unrecognised: unplaced,
     acquisition: acquired,
-    detectors: providers,
+    detectors_health: providers,
     feedback_total: feedbackTotal,
     feedback_by_assessment: byAssessment,
     feedback_by_claimed_label: byClaimedLabel,

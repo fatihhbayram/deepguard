@@ -12,6 +12,12 @@
  * constraint on this screen — an invented ratio on a page about detector health is
  * indistinguishable, to the person reading it, from a measured one.
  *
+ * **Detector health is per deployment, with the API's failure rate (R14-T4).** One row per
+ * provider and version, a null version shown as such, the API's `failure_rate` formatted and
+ * never computed, and `MISSING` — expected signals no row was written for — beside the run
+ * statuses. The section says in its own text that these are operational execution failures, not
+ * model error or false-positive rates.
+ *
  * **No charting library.** The bars below are a div inside a div with a percentage width, which
  * is the whole of what these distributions need; each is labelled with its own count in text,
  * so the length is decoration over a number the reader can already see. A dependency that draws
@@ -53,7 +59,7 @@ import { ADMIN_ANALYTICS_PATH, LOGIN_PATH } from "../../session";
 import { AdminAlert } from "../components/AdminAlert";
 import { AdminPageHeader } from "../components/AdminPageHeader";
 import { AdminSection } from "../components/AdminSection";
-import { AdminAnalytics, FeedbackBucket, fetchAnalytics } from "../analytics";
+import { AdminAnalytics, DetectorHealth, FeedbackBucket, fetchAnalytics } from "../analytics";
 import { JOB_STATUS_FAILED } from "../jobs";
 
 /*
@@ -224,29 +230,28 @@ function Headline({ analytics }: { analytics: AdminAnalytics }) {
  * ------------------------------------------------------------------ */
 
 /**
- * Provider health: how each detector's runs ended this week.
+ * Detector health: how each detector deployment's runs ended this week (R14-T4).
  *
- * A real table, because this is the one place on the page with two dimensions — provider down,
- * status across — and a grid of divs would leave a screen reader with no way to associate a
- * number with either.
+ * A real table, because this is the one place on the page with two dimensions — deployment
+ * down, status across — and a grid of divs would leave a screen reader with no way to associate
+ * a number with either.
  *
- * The status columns are taken from the providers themselves rather than from a list written
- * here. The API seeds every provider with the schema's whole status vocabulary and carries
- * through anything else it found, so the union of the keys is exactly the set of outcomes this
+ * The status columns are taken from the rows themselves rather than from a list written here.
+ * The API seeds every deployment with the schema's whole status vocabulary and carries through
+ * anything else it found, so the union of the keys is exactly the set of outcomes this
  * deployment actually recorded — including one this file has never heard of, which is precisely
- * the column that must not be dropped.
+ * the column that must not be dropped. `MISSING` is among them only where a ruleset expects the
+ * deployment, and elsewhere reads as a dash.
  *
- * Nothing is ranked, totalled or scored. There is no "health %" column: that would be a
- * fraction with a denominator this page chose, on the subject the constraint is strictest
- * about.
+ * The failure rate is the API's number, formatted by `rateText` and never re-derived from the
+ * counts beside it. Nothing is ranked, totalled or scored.
  */
-function Detectors({ detectors }: { detectors: Record<string, Record<string, number>> }) {
-  const providers = Object.keys(detectors);
+function Detectors({ detectors }: { detectors: DetectorHealth[] }) {
   const statuses = [
-    ...new Set(providers.flatMap((provider) => Object.keys(detectors[provider]))),
+    ...new Set(detectors.flatMap((detector) => Object.keys(detector.status_counts))),
   ];
 
-  if (providers.length === 0) {
+  if (detectors.length === 0) {
     return (
       <p className="text-[13px] text-muted">
         No detector recorded a result in the last seven days.
@@ -256,40 +261,65 @@ function Detectors({ detectors }: { detectors: Record<string, Record<string, num
 
   return (
     <AdminSection bleed scroll>
-      <table className="w-full min-w-[420px] border-collapse text-left">
+      <table className="w-full min-w-[560px] border-collapse text-left">
         <thead>
           <tr className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
             <th scope="col" className="px-5 py-3 font-medium">
               Provider
+            </th>
+            <th scope="col" className="px-5 py-3 font-medium">
+              Version
             </th>
             {statuses.map((status) => (
               <th key={status} scope="col" className="px-5 py-3 text-right font-medium">
                 {status}
               </th>
             ))}
+            <th
+              scope="col"
+              className="px-5 py-3 text-right font-medium"
+              title="(FAILED + TIMEOUT) / (SUCCESS + FAILED + TIMEOUT), computed by the API. Operational execution failures and timeouts only — not a model error or false-positive rate."
+            >
+              Failure rate
+            </th>
           </tr>
         </thead>
         <tbody>
-          {providers.map((provider) => (
-            <tr key={provider} className="border-t border-hair">
+          {detectors.map((detector) => (
+            <tr
+              key={JSON.stringify([detector.provider, detector.provider_version])}
+              className="border-t border-hair"
+            >
               <th
                 scope="row"
                 className="px-5 py-3 font-mono text-[13px] font-normal text-bone"
               >
-                {provider}
+                {detector.provider}
               </th>
+              <td className="max-w-[28ch] px-5 py-3 font-mono text-[12px] break-all text-muted">
+                {/* Null is what the row holds: no version was persisted. Shown as that, in
+                    italics, rather than as a name that reads like a deployment. */}
+                {detector.provider_version === null ? (
+                  <span className="italic">null</span>
+                ) : (
+                  detector.provider_version
+                )}
+              </td>
               {statuses.map((status) => (
                 <td
                   key={status}
                   className="px-5 py-3 text-right font-mono text-[13px] text-muted tabular-nums"
                 >
-                  {/* A provider that recorded a status another provider did not holds no key
-                      for it. Shown as an em dash rather than a zero, because "this detector
-                      never produces that outcome" and "it produced it zero times this week"
-                      are different facts and the table should not flatten them. */}
-                  {detectors[provider][status] ?? "—"}
+                  {/* A deployment that recorded a status another did not holds no key for it.
+                      Shown as an em dash rather than a zero, because "this detector never
+                      produces that outcome" and "it produced it zero times this week" are
+                      different facts and the table should not flatten them. */}
+                  {detector.status_counts[status] ?? "—"}
                 </td>
               ))}
+              <td className="px-5 py-3 text-right font-mono text-[13px] text-muted tabular-nums">
+                {rateText(detector.failure_rate)}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -533,14 +563,18 @@ function Summary({ analytics }: { analytics: AdminAnalytics }) {
           Detector health
         </h3>
         <p className="mt-1.5 max-w-[74ch] text-[12px] leading-relaxed text-muted">
-          How often each provider&rsquo;s runs ended in each state, over the same seven days.
-          These are operational counts, not forensic ones: a FAILED run means the provider could
-          not answer, never that the media is fake. A provider is listed only if it recorded at
-          least one result — one that appears nowhere below was not asked, which is not the same
-          as having failed. No scores are shown, averaged or compared.
+          How often each provider&rsquo;s runs ended in each state, by provider and version,
+          over the same seven days. These are operational execution errors, not model evaluation
+          errors: a FAILED or TIMEOUT run means the provider could not answer, never that the
+          media is fake, and the failure rate is not a false-positive or error rate of any
+          detector. MISSING counts analyses completed in these seven days whose ruleset expected
+          this detector but which have no result from it at all; a FAILED or TIMEOUT result is not also counted as
+          missing, and analyses still in progress are not counted. A provider is listed only if
+          it recorded a result or had one go missing — one that appears nowhere below was not
+          asked. No scores are shown, averaged or compared.
         </p>
         <div className="mt-3">
-          <Detectors detectors={analytics.detectors} />
+          <Detectors detectors={analytics.detectors_health} />
         </div>
       </section>
 

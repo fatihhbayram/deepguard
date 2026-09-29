@@ -102,7 +102,8 @@ VISIBLE_FIELDS = {
     "recorded_risk_levels",
     "unrecognised",
     "acquisition",
-    "detectors",
+    # R14-T4: per-deployment detector health, asserted in `test_detector_health.py`.
+    "detectors_health",
     # R14-T2: user feedback, asserted in `test_admin_feedback_analytics.py`.
     "feedback_total",
     "feedback_by_assessment",
@@ -126,6 +127,15 @@ FUTURE = "r10-v6.0.0"
 # run for the same reason the fixture emails are.
 def unique_provider() -> str:
     return f"test-provider-{uuid.uuid4().hex[:12]}"
+
+
+def detector(payload: dict, provider: str, version: str | None = None) -> dict | None:
+    """The status counts of one `(provider, provider_version)` in `detectors_health`, or None
+    when that deployment is not listed."""
+    for entry in payload["detectors_health"]:
+        if entry["provider"] == provider and entry["provider_version"] == version:
+            return entry["status_counts"]
+    return None
 
 
 @pytest.fixture(autouse=True)
@@ -256,6 +266,8 @@ def make_signal(
     provider: str,
     status: str = SIGNAL_STATUS_SUCCESS,
     score: float | None = None,
+    provider_version: str | None = None,
+    signal_type: str = "deepfake",
 ) -> None:
     """One detector's persisted answer about one analysis."""
     db, _, _ = session
@@ -264,9 +276,10 @@ def make_signal(
         AnalysisSignal(
             analysis_id=analysis.id,
             provider=provider,
-            signal_type="deepfake",
+            signal_type=signal_type,
             status=status,
             score=score,
+            provider_version=provider_version,
         )
     )
     db.commit()
@@ -381,7 +394,7 @@ def test_a_provider_with_no_signals_this_week_is_absent_rather_than_zeroed(sessi
     """
     payload = read(administrator(session))
 
-    assert unique_provider() not in payload["detectors"]
+    assert detector(payload, unique_provider()) is None
 
 
 # --- bucketing ------------------------------------------------------------------------
@@ -612,7 +625,7 @@ def test_a_provider_appears_with_every_status_seeded_at_zero(session):
 
     payload = read(administrator(session))
 
-    assert payload["detectors"][provider] == {
+    assert detector(payload, provider) == {
         SIGNAL_STATUS_SUCCESS: 1,
         SIGNAL_STATUS_FAILED: 0,
         **{
@@ -636,12 +649,12 @@ def test_a_failed_signal_counts_as_a_failure_for_its_own_provider_only(session):
     make_signal(session, analysis, provider=failing, status=SIGNAL_STATUS_FAILED)
     make_signal(session, analysis, provider=healthy, status=SIGNAL_STATUS_SUCCESS)
 
-    detectors = read(administrator(session))["detectors"]
+    payload = read(administrator(session))
 
-    assert detectors[failing][SIGNAL_STATUS_FAILED] == 1
-    assert detectors[failing][SIGNAL_STATUS_SUCCESS] == 0
-    assert detectors[healthy][SIGNAL_STATUS_FAILED] == 0
-    assert detectors[healthy][SIGNAL_STATUS_SUCCESS] == 1
+    assert detector(payload, failing)[SIGNAL_STATUS_FAILED] == 1
+    assert detector(payload, failing)[SIGNAL_STATUS_SUCCESS] == 0
+    assert detector(payload, healthy)[SIGNAL_STATUS_FAILED] == 0
+    assert detector(payload, healthy)[SIGNAL_STATUS_SUCCESS] == 1
 
 
 def test_an_analysis_a_provider_never_answered_about_is_not_a_failure(session):
@@ -658,7 +671,7 @@ def test_an_analysis_a_provider_never_answered_about_is_not_a_failure(session):
 
     make_signal(session, answered, provider=provider, status=SIGNAL_STATUS_SUCCESS)
 
-    tally = read(administrator(session))["detectors"][provider]
+    tally = detector(read(administrator(session)), provider)
 
     assert tally == {
         SIGNAL_STATUS_SUCCESS: 1,

@@ -24,10 +24,13 @@ would read as a leaderboard of which detector is right, which is a question this
 not answer and which nothing in the schema entitles anyone to answer.
 
 *It does not treat a missing signal as a failure.* Providers are not all invoked for every
-analysis, so an analysis with no row for a provider means that provider was not asked. Only
-persisted rows are counted, and the arithmetic is per provider rather than against the week's
-analysis total, so there is no denominator anywhere that a never-invoked provider could fall
-short of.
+analysis, so an analysis with no row for a provider usually means that provider was not asked.
+The status counts are persisted rows, per `(provider, provider_version)`, and the one rate on
+them (R14-T4) has those rows as its denominator — never the week's analysis total, which a
+never-invoked provider could fall short of. A signal is counted as `MISSING` only where a
+ruleset *expected* it: a completed analysis decided under a ruleset with a coverage model, with
+no row at all for one of that ruleset's decision-eligible detectors. A `FAILED` or `TIMEOUT`
+row is a row, and is never also missing — see `missing_signal_counts`.
 
 *It does not re-decide a risk level.* `Analysis.risk_level` is one column written in two
 vocabularies, and which one a row holds is named by the `risk_rules_version` stored beside it.
@@ -84,7 +87,7 @@ from app.risk_engine import (
     VERDICT_MANIPULATION_DETECTED,
     VERDICT_NO_SIGNAL,
 )
-from app.risk_trace import RULESET_V1, RULESET_V2, RULESET_V3, RULESET_V4
+from app.risk_trace import RULESET_V1, RULESET_V2, RULESET_V3, RULESET_V4, RULESETS
 from app.web_auth import require_admin
 
 logger = logging.getLogger(__name__)
@@ -156,6 +159,18 @@ SIGNAL_STATUSES = (
     SIGNAL_STATUS_TIMEOUT,
 )
 
+# The statuses `failure_rate` counts as a failed run: the detector was asked and produced no
+# answer, either by refusing or by running out of time (R14-T4).
+FAILURE_STATUSES = (SIGNAL_STATUS_FAILED, SIGNAL_STATUS_TIMEOUT)
+
+# The count of expected signals no row was ever written for (R14-T4). Not a signal status — no
+# detector run can persist it, because it describes the absence of a run — and so kept out of
+# `SIGNAL_STATUSES` and out of `failure_rate`. It sits beside them in `status_counts` because it
+# is read beside them, and it is only ever present on a `(provider, provider_version)` that some
+# ruleset expects: on any other detector there is nothing it could be counting, and a `0` there
+# would claim a check that was never made.
+SIGNAL_MISSING = "MISSING"
+
 # The two vocabularies `analyses.risk_level` is written in, each bound to the rulesets that
 # write it (R13-T3).
 #
@@ -193,6 +208,26 @@ UNRECOGNISED_ABSENT = "(none)"
 FEEDBACK_DISAGREE = "DISAGREE"
 
 
+class DetectorHealthMetric(BaseModel):
+    """How one detector deployment's runs ended in the window (R14-T4).
+
+    Operational execution health: how often a provider answered at all. Not a model's error
+    rate, false-positive rate or accuracy — nothing here reads a score or compares one with
+    Ground Truth.
+    """
+
+    provider: str
+    # As persisted. Null is a real group — rows written without a version — and is reported as
+    # null rather than under an invented name, which would read as a deployment that exists.
+    provider_version: str | None
+    # Every `SIGNAL_STATUSES` key, seeded at zero, plus any status the database holds that this
+    # module does not recognise, plus `MISSING` where the deployment is one a ruleset expects.
+    status_counts: dict[str, int]
+    # `(FAILED + TIMEOUT) / (SUCCESS + FAILED + TIMEOUT)`, null when that denominator is zero.
+    # `MISSING` is in neither half: a signal nobody wrote is not a run that failed.
+    failure_rate: float | None
+
+
 class AnalyticsWindow(BaseModel):
     """The seven-day picture, as one payload.
 
@@ -202,9 +237,10 @@ class AnalyticsWindow(BaseModel):
     `failed` and `completed` side by side say everything a failure rate would, and say it
     without deciding whether in-flight work belongs in the denominator.
 
-    One exception, required by R14-T2: `disagreement_rate` in the feedback buckets. It is
-    defined in `feedback_buckets` and computed here, so the browser never divides anything, and
-    its denominator is fixed — the bucket's own feedback — so there is nothing left to decide.
+    Two exceptions, each required by its task and each with a fixed denominator, computed here so
+    the browser never divides anything: `disagreement_rate` in the feedback buckets (R14-T2),
+    defined in `feedback_buckets`, and `failure_rate` on each detector deployment (R14-T4),
+    defined in `detector_health`.
     """
 
     # Which window produced these counts. Present so a payload read on its own — logged,
@@ -239,11 +275,12 @@ class AnalyticsWindow(BaseModel):
     # `unrecorded` for rows predating the column.
     acquisition: dict[str, int]
 
-    # Provider health: for each detector that persisted at least one signal in the window, how
-    # many of each status it wrote. Providers appear because they have rows, never because a
-    # list here says they should — a detector nobody invoked this week is absent, not zeroed,
-    # and the difference is the difference between "asked and silent" and "not asked".
-    detectors: dict[str, dict[str, int]]
+    # Detector health (R14-T4): one entry per `(provider, provider_version)` that persisted at
+    # least one signal in the window or had an expected signal go missing in it. Deployments
+    # appear because they have rows or missing rows, never because a list here says they should —
+    # a detector nobody invoked this week is absent, not zeroed, and the difference is the
+    # difference between "asked and silent" and "not asked". See `detector_health`.
+    detectors_health: list[DetectorHealthMetric]
 
     # User feedback (R14-T2): what owners said about the results they were shown. Unverified
     # opinion — not Ground Truth, not a Human Review, not an evaluation of any detector.
@@ -393,6 +430,128 @@ def risk_buckets(
         buckets[bucket][key] = buckets[bucket].get(key, 0) + count
 
     return buckets[BUCKET_DECISIONS], buckets[BUCKET_RECORDED], buckets[BUCKET_UNRECOGNISED]
+
+
+def expected_signals() -> list[tuple[str, str, str, str]]:
+    """`(rules_version, provider, signal_type, provider_version)` for every signal a ruleset
+    expected, read off the frozen rulesets in `app/risk_trace.py` (R14-T4).
+
+    Only rulesets that declare a `decision_total` expect anything: that literal is the R9
+    coverage model, and every ruleset before `r9-v5.0.0` predates it — R9-T1 forbids
+    retrofitting it onto them, so an old analysis can have no missing signal here. Of the
+    detectors a ruleset lists, only the decision-eligible ones are expected; evidence-only
+    detectors are counted in no coverage, and their absence is not missing anything.
+    """
+    return [
+        (ruleset.rules_version, signal.provider, signal.signal_type, signal.provider_version)
+        for ruleset in RULESETS.values()
+        if ruleset.decision_total is not None
+        for signal in ruleset.signals
+        if signal.decisional
+    ]
+
+
+def missing_signal_counts(session: Session) -> dict[tuple[str, str | None], int]:
+    """How many window analyses lack a row for each expected signal, keyed by the deployment the
+    ruleset expected.
+
+    Counted by PostgreSQL, one `COUNT` per expected signal, over analyses that are:
+
+    - **completed, within the window**. A queued or processing analysis has not had its
+      detectors run yet, and a failed one stopped before they could; neither lacks a signal in
+      any sense worth an alarm. A missing signal becomes an observable fact when the analysis
+      completes without it, so that moment is what is windowed — see below.
+    - **decided under that ruleset**, by the `risk_rules_version` persisted on them — the only
+      record of which ruleset's expectations applied to the analysis.
+    - **without any row for that `(provider, signal_type)`**. Any row at all, whatever its
+      status and whatever its version: a `FAILED` or `TIMEOUT` row is already counted as the
+      failure it is, and counting it again here would report one run twice. A row from a
+      different deployment is likewise present, and is counted under its own version.
+
+    Windowed on the completion, not on the submission: an analysis submitted nine days ago
+    that sat in the queue and completed today without an expected row is today's missing
+    signal, and `Analysis.created_at` would drop it. There is no signal row to take a time from,
+    and `analyses` has no completion timestamp, so the anchor is the `updated_at` of the
+    analysis's job (one per analysis, `unique`), required to be `completed`. That is the
+    completion time: `app.worker._set_status` moves the job and the analysis into their end
+    states in one transaction, `updated_at` is touched by that write, and every other write to a
+    job is conditional on it still being `queued` or `processing`, so a completed job is never
+    written again. An analysis with no job row has no recorded completion and is not counted.
+
+    Filed under the expected `(provider, provider_version)`, which the frozen ruleset names
+    exactly, so the attribution comes from the ruleset and not from anything inferred here.
+    """
+    missing: dict[tuple[str, str | None], int] = {}
+
+    for rules_version, provider, signal_type, provider_version in expected_signals():
+        count = session.execute(
+            select(func.count())
+            .select_from(Analysis)
+            .join(AnalysisJob, AnalysisJob.analysis_id == Analysis.id)
+            .where(AnalysisJob.status == JOB_STATUS_COMPLETED)
+            .where(within_window(AnalysisJob.updated_at))
+            .where(Analysis.status == ANALYSIS_STATUS_COMPLETED)
+            .where(Analysis.risk_rules_version == rules_version)
+            .where(
+                ~select(AnalysisSignal.id)
+                .where(AnalysisSignal.analysis_id == Analysis.id)
+                .where(AnalysisSignal.provider == provider)
+                .where(AnalysisSignal.signal_type == signal_type)
+                .exists()
+            )
+        ).scalar_one()
+
+        key = (provider, provider_version)
+        missing[key] = missing.get(key, 0) + count
+
+    return missing
+
+
+def detector_health(
+    rows: Sequence[Row], missing: dict[tuple[str, str | None], int]
+) -> list[DetectorHealthMetric]:
+    """`(provider, provider_version, status, count)` groups and the missing counts, as one entry
+    per deployment.
+
+    A deployment is listed if it wrote a row or had an expected signal go missing; one with
+    neither is absent, for the reason on `detectors_health`. `MISSING` is keyed only on the
+    deployments a ruleset expects, seeded at zero there and absent everywhere else.
+
+    `failure_rate` is `(FAILED + TIMEOUT) / (SUCCESS + FAILED + TIMEOUT)`, null when nothing was
+    run. A status outside `SIGNAL_STATUSES` is carried in the counts under its own name, as
+    `tallied` does, and is in neither half of the rate: this module cannot say whether it was a
+    failure.
+    """
+    counts: dict[tuple[str, str | None], dict[str, int]] = {}
+
+    for provider, provider_version, status, count in rows:
+        tally = counts.setdefault(
+            (provider, provider_version), {name: 0 for name in SIGNAL_STATUSES}
+        )
+        tally[status] = tally.get(status, 0) + count
+
+    for key, count in missing.items():
+        if count == 0 and key not in counts:
+            continue
+        tally = counts.setdefault(key, {name: 0 for name in SIGNAL_STATUSES})
+        tally[SIGNAL_MISSING] = count
+
+    health = []
+    for (provider, provider_version), tally in counts.items():
+        failed = sum(tally[status] for status in FAILURE_STATUSES)
+        run = sum(tally[status] for status in SIGNAL_STATUSES)
+        health.append(
+            DetectorHealthMetric(
+                provider=provider,
+                provider_version=provider_version,
+                status_counts=tally,
+                failure_rate=failed / run if run else None,
+            )
+        )
+
+    # A stable order, so the table does not reshuffle between reads. A null version sorts first.
+    health.sort(key=lambda metric: (metric.provider, metric.provider_version or ""))
+    return health
 
 
 def feedback_tally() -> dict[str, float | int | None]:
@@ -554,26 +713,28 @@ def read_analytics(session: Session = Depends(get_session)) -> AnalyticsWindow:
         absent=ACQUISITION_UNRECORDED,
     )
 
-    # Provider and status grouped together, so one pass produces the whole table. Windowed on the signal's own `created_at` rather than the analysis's, because
-    # a detector that answered this week about media submitted last week is this week's
-    # operational fact — the page is about what the providers have been doing lately.
+    # Provider, version and status grouped together, so one pass produces the whole table.
+    # Windowed on the signal's own `created_at` rather than the analysis's, because a detector
+    # that answered this week about media submitted last week is this week's operational fact —
+    # the page is about what the providers have been doing lately. A null version is its own
+    # group and stays null.
     #
     # `score` is not selected, here or anywhere in this module.
-    detectors: dict[str, dict[str, int]] = {}
-    signal_rows = session.execute(
-        select(AnalysisSignal.provider, AnalysisSignal.status, func.count())
-        .where(within_window(AnalysisSignal.created_at))
-        .group_by(AnalysisSignal.provider, AnalysisSignal.status)
-    ).all()
-
-    for provider, status, count in signal_rows:
-        # A provider's row appears the first time one of its signals does, and is seeded with
-        # all three statuses at zero. So a detector that answered forty times and failed none
-        # reads as `FAILED 0` rather than as a blank the reader has to interpret — while a
-        # detector nobody invoked this week stays out of the table entirely, because it has no
-        # rows and an absent provider is not a failing one.
-        tally = detectors.setdefault(provider, {name: 0 for name in SIGNAL_STATUSES})
-        tally[status] = tally.get(status, 0) + count
+    detectors_health = detector_health(
+        session.execute(
+            select(
+                AnalysisSignal.provider,
+                AnalysisSignal.provider_version,
+                AnalysisSignal.status,
+                func.count(),
+            )
+            .where(within_window(AnalysisSignal.created_at))
+            .group_by(
+                AnalysisSignal.provider, AnalysisSignal.provider_version, AnalysisSignal.status
+            )
+        ).all(),
+        missing_signal_counts(session),
+    )
 
     # User feedback, windowed on its own `updated_at` — see the comment on `feedback_total`. The
     # window predicate is the same `within_window`, applied to a different column on purpose.
@@ -623,7 +784,7 @@ def read_analytics(session: Session = Depends(get_session)) -> AnalyticsWindow:
         recorded_risk_levels=recorded_risk_levels,
         unrecognised=unrecognised,
         acquisition=acquisition,
-        detectors=detectors,
+        detectors_health=detectors_health,
         feedback_total=feedback_total,
         feedback_by_assessment=feedback_by_assessment,
         feedback_by_claimed_label=feedback_by_claimed_label,
