@@ -465,7 +465,7 @@ def test_an_old_row_that_was_assembled_still_reports_the_assembly():
 
     assert rendered["acquisition"] == (
         "How this artifact was acquired was not recorded for this analysis. "
-        "It was assembled by DeepGuard from separate video and audio streams."
+        "It was assembled by InspectRoot from separate video and audio streams."
     )
 
 

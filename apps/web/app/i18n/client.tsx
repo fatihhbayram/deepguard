@@ -19,10 +19,18 @@
  * that word is a client island.
  */
 
-import { useEffect, useSyncExternalStore } from "react";
+import {
+  createContext,
+  Fragment,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useSyncExternalStore,
+} from "react";
 
 import {
   type CanonicalDomain,
+  copySegments,
   createLocaleStore,
   DEFAULT_LOCALE,
   isLocale,
@@ -32,6 +40,7 @@ import {
   type MessageKey,
   translate,
   translateCanonical,
+  translateCopy,
 } from "./core";
 
 const store = createLocaleStore(() =>
@@ -50,22 +59,76 @@ if (typeof window !== "undefined") {
   });
 }
 
+/*
+ * A language fixed for everything rendered inside it, whatever the reader chose (R16-T3).
+ *
+ * The page never sets one: in the browser every word follows the reader's stored choice. It
+ * exists because that choice lives in `localStorage`, which a render outside a browser cannot
+ * reach — the server always paints the default language — and the report has to be renderable
+ * in each language, deterministically, to prove that switching changes its words and none of
+ * its evidence (`tests/report-i18n.test.mjs`).
+ */
+const FixedLocaleContext = createContext<Locale | null>(null);
+
+export function FixedLocale({ locale, children }: { locale: Locale; children: ReactNode }) {
+  return <FixedLocaleContext.Provider value={locale}>{children}</FixedLocaleContext.Provider>;
+}
+
 export function useLocale(): [Locale, (locale: Locale) => void] {
+  const fixed = useContext(FixedLocaleContext);
   const locale = useSyncExternalStore(store.subscribe, store.get, () => DEFAULT_LOCALE);
-  return [locale, store.set];
+  return [fixed ?? locale, store.set];
 }
 
 /**
  * One interface string, in the reader's language.
  *
- * It says which language it is in. Until R16-T3 the report and the forensic vocabulary stay in
- * English and are marked `lang="en"` while `<html lang>` follows the reader; a word of this
- * interface drawn inside one of those regions has to name its own language, or the browser
- * would apply the region's rules to it — case mapping under `uppercase` first among them.
+ * It says which language it is in. Parts of the application are still English whatever the
+ * reader chose, and some are marked `lang="en"` while `<html lang>` follows the reader; a word
+ * of this interface drawn inside one of those regions has to name its own language, or the
+ * browser would apply the region's rules to it — case mapping under `uppercase` first among them.
  */
 export function T({ k }: { k: MessageKey }) {
   const [locale] = useLocale();
   return <span lang={locale}>{translate(locale, k)}</span>;
+}
+
+/**
+ * One sentence of the forensic report, in the reader's language (R16-T3).
+ *
+ * The English is the key and stays where it was written — in the report, or in the shared
+ * vocabulary of `../analysis` — so this leaf is handed exactly the sentence the English report
+ * prints, and looks it up; see `translateCopy`. A sentence with no Turkish entry is drawn in
+ * English and says so with `lang="en"`, which is also what the report's tests look for.
+ *
+ * `{name}` slots in a template are filled from `values`, and what fills them is never looked
+ * up: a host, a status, a rule id or a figure is drawn exactly as the record holds it, in
+ * whichever order the reader's language puts the words around it.
+ */
+export function Copy({
+  children,
+  text,
+  values,
+}: {
+  children?: string;
+  text?: string;
+  values?: Record<string, ReactNode>;
+}) {
+  const [locale] = useLocale();
+  const english = text ?? children ?? "";
+  const copy = translateCopy(locale, english);
+
+  return (
+    <span lang={copy.lang}>
+      {copySegments(copy.text).map((segment, index) =>
+        typeof segment === "string" ? (
+          segment
+        ) : (
+          <Fragment key={index}>{values?.[segment.slot] ?? `{${segment.slot}}`}</Fragment>
+        ),
+      )}
+    </span>
+  );
 }
 
 /**

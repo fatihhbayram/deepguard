@@ -570,25 +570,51 @@ export function acquisitionStatement(analysis: {
   source_host: string | null;
   was_assembled: boolean;
 }): string {
+  return withHost(acquisitionSentence(analysis));
+}
+
+/**
+ * A sentence that may name a host, with the host held beside it rather than inside it (R16-T3).
+ *
+ * `text` carries `{host}` where the host goes and `host` is the value that goes there, exactly as
+ * recorded. The report puts the sentence into the reader's language first and fills the slot
+ * after, so the host is never inside anything that is translated. Joined, the two are the
+ * English sentence `acquisitionStatement` and `credentialsAbsentStatement` have always returned.
+ */
+export type HostSentence = { text: string; host: string | null };
+
+function withHost(sentence: HostSentence): string {
+  const host = sentence.host;
+  // A function rather than a replacement string, so nothing in a host can be read as a `$`
+  // pattern.
+  return host === null ? sentence.text : sentence.text.replace("{host}", () => host);
+}
+
+/** `acquisitionStatement`, with the host held apart. */
+export function acquisitionSentence(analysis: {
+  acquisition_method: string | null;
+  source_host: string | null;
+  was_assembled: boolean;
+}): HostSentence {
   if (analysis.acquisition_method === ACQUISITION_METHOD_URL) {
     const host = analysis.source_host;
 
     if (analysis.was_assembled) {
       return host === null
-        ? "Media was acquired by URL and assembled from multiple served media components."
-        : `Media was acquired from ${host} and assembled from multiple served media components.`;
+        ? { text: "Media was acquired by URL and assembled from multiple served media components.", host: null }
+        : { text: "Media was acquired from {host} and assembled from multiple served media components.", host };
     }
 
     return host === null
-      ? "Media was acquired by URL as a single served file."
-      : `Media was acquired from ${host} as a single served file.`;
+      ? { text: "Media was acquired by URL as a single served file.", host: null }
+      : { text: "Media was acquired from {host} as a single served file.", host };
   }
 
   if (analysis.acquisition_method === ACQUISITION_METHOD_UPLOAD) {
     // Only that a file was uploaded. Not that it is original, not that it is unmodified, not
     // that the submitter authored it — DeepGuard knows a client sent these bytes and nothing
     // whatever about where the client got them.
-    return "The analysed artifact was uploaded by the submitter.";
+    return { text: "The analysed artifact was uploaded by the submitter.", host: null };
   }
 
   // No method recorded. `was_assembled` is still worth saying when it is true, because true
@@ -596,9 +622,12 @@ export function acquisitionStatement(analysis: {
   // on such a row is only R7-T1's server default and supports no claim at all, so nothing is
   // added for it. That asymmetry is deliberate: it is the difference between reading a
   // recorded fact and reinterpreting a default.
-  return analysis.was_assembled
-    ? "How this artifact was acquired was not recorded for this analysis. It was assembled by DeepGuard from separate video and audio streams."
-    : "How this artifact was acquired was not recorded for this analysis.";
+  return {
+    text: analysis.was_assembled
+      ? "How this artifact was acquired was not recorded for this analysis. It was assembled by InspectRoot from separate video and audio streams."
+      : "How this artifact was acquired was not recorded for this analysis.",
+    host: null,
+  };
 }
 
 /**
@@ -614,21 +643,35 @@ export function acquisitionStatement(analysis: {
  * nothing about presence or absence, and a reading that found one is not an absence — neither
  * gets this sentence, and the caller is what decides that.
  */
-export function credentialsAbsentStatement(analysis: {
+export function credentialsAbsentSentence(analysis: {
   acquisition_method: string | null;
   source_host: string | null;
-}): string {
+}): HostSentence {
   if (
     analysis.acquisition_method === ACQUISITION_METHOD_URL &&
     analysis.source_host !== null
   ) {
-    return `No Content Credentials were found in the artifact acquired from ${analysis.source_host}. This does not establish whether credentials were present in an upstream or publisher-original file.`;
+    return {
+      text: "No Content Credentials were found in the artifact acquired from {host}. This does not establish whether credentials were present in an upstream or publisher-original file.",
+      host: analysis.source_host,
+    };
   }
 
   // An upload, or an acquisition nobody recorded. There is no host to name and no upstream
   // file this service can point at, so the claim shrinks to the artifact itself — which is
   // the same limit the sentence above draws, said without the part that needs a host.
-  return "No Content Credentials were found in the analysed artifact. This does not establish whether credentials were present in any file it was derived from.";
+  return {
+    text: "No Content Credentials were found in the analysed artifact. This does not establish whether credentials were present in any file it was derived from.",
+    host: null,
+  };
+}
+
+/** `credentialsAbsentSentence`, joined into the one English sentence. */
+export function credentialsAbsentStatement(analysis: {
+  acquisition_method: string | null;
+  source_host: string | null;
+}): string {
+  return withHost(credentialsAbsentSentence(analysis));
 }
 
 // The complete vocabulary of risk states this dashboard is entitled to present as a

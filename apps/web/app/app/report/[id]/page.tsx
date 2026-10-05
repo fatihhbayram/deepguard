@@ -4,6 +4,7 @@ import { notFound, redirect } from "next/navigation";
 import {
   CanonicalLabel,
   CanonicalOption,
+  Copy,
   LanguageSelector,
   MessageOption,
   T,
@@ -34,13 +35,13 @@ import {
   RiskTrace,
   SyntheticVideoSignal,
   absentSignalDetail,
-  acquisitionStatement,
+  acquisitionSentence,
   componentDetectorName,
   componentReadingPresence,
   componentStateText,
   contributionRoleText,
   lipForensicsRulesetRole,
-  credentialsAbsentStatement,
+  credentialsAbsentSentence,
   deepEvidenceWording,
   enrichmentSnapshotNotice,
   provenanceWording,
@@ -89,6 +90,14 @@ import { PrintButton } from "./print-button";
  * A Server Component. The only client-side code on the page is the print button, which is
  * isolated in its own module so the report itself stays server-rendered and prints correctly
  * with JavaScript disabled.
+ *
+ * **Its words follow the reader's language; its evidence does not (R16-T3).** Every sentence
+ * of presentation copy is drawn through `<Copy>`, which is handed the English this file and
+ * `../../../analysis` write and paints it in the reader's language — the English stays here,
+ * where it is reviewed, and the server still renders it first. A hash, an id, a ruleset, a
+ * status, a provider, a version, a timestamp and every figure is drawn as the record holds it,
+ * outside any lookup, so switching language cannot reach a character of the evidence. With
+ * JavaScript disabled the report prints in English.
  */
 
 // What the risk column says when no decision was ever taken. Distinct from `UNKNOWN`, which
@@ -138,7 +147,7 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
           figure typeface, and `break-all` on it is what keeps a hash from widening the
           document past the viewport on a phone. */}
       <dt className="text-[11px] font-medium tracking-[0.06em] uppercase opacity-70">
-        {label}
+        <Copy text={label} />
       </dt>
       <dd className="mt-1 font-mono text-xs leading-relaxed break-all">{value}</dd>
     </div>
@@ -162,13 +171,29 @@ function Section({
     // printed report. The tint is dropped for print too: a filled block costs toner on every
     // section and separates nothing that the darkened rule does not already separate.
     <section className="mt-5 break-inside-avoid rounded-lg border border-black/12 bg-paper-2 px-5 py-4 dark:border-white/20 print:border-black/40 print:bg-transparent print:px-4">
-      <h2 className="text-[15px] font-semibold tracking-[-0.01em]">{title}</h2>
+      <h2 className="text-[15px] font-semibold tracking-[-0.01em]">
+        <Copy text={title} />
+      </h2>
       {subtitle && (
-        <p className="mt-1 max-w-[72ch] text-xs leading-relaxed opacity-70">{subtitle}</p>
+        <p className="mt-1 max-w-[72ch] text-xs leading-relaxed opacity-70">
+          <Copy text={subtitle} />
+        </p>
       )}
       <div className="mt-3.5">{children}</div>
     </section>
   );
+}
+
+/**
+ * A sentence from the shared vocabulary that may be the record's own word instead.
+ *
+ * Several of those lookups answer a value they have no sentence for with the value itself — an
+ * unfamiliar detector, role or reason, exactly as the API spelled it. That answer is the record
+ * and not English copy, so it is drawn as it arrived, claiming no language, and only a real
+ * sentence goes on to be translated.
+ */
+function CopyOrRecord({ text, record }: { text: string; record: string }) {
+  return text === record ? <span>{record}</span> : <Copy text={text} />;
 }
 
 /**
@@ -206,7 +231,8 @@ function NoSignal({
 }) {
   return (
     <p className="text-xs opacity-70">
-      No {what} signal is stored for this analysis. {absentSignalDetail(analysis, signalType)}
+      <Copy text={`No ${what} signal is stored for this analysis.`} />{" "}
+      <Copy text={absentSignalDetail(analysis, signalType)} />
     </p>
   );
 }
@@ -227,7 +253,7 @@ function MediaSection({
       title="Analysed media"
       subtitle={
         analysis.was_assembled
-          ? "What ffprobe established about the analysed artifact, as the database kept it. This acquisition was assembled by DeepGuard, so it is not a copy of a single published file."
+          ? "What ffprobe established about the analysed artifact, as the database kept it. This acquisition was assembled by InspectRoot, so it is not a copy of a single published file."
           : "What ffprobe established about the forensic original, as the database kept it."
       }
     >
@@ -265,7 +291,7 @@ function MediaSection({
         {media.display_rotation !== null && media.display_rotation !== 0 && (
           <Field
             label="Display rotation"
-            value={`${media.display_rotation}° clockwise`}
+            value={<Copy text="{degrees}° clockwise" values={{ degrees: media.display_rotation }} />}
           />
         )}
         <Field label="Frame rate" value={`${frameRateText(media.frame_rate)} fps`} />
@@ -273,9 +299,12 @@ function MediaSection({
         <Field label="Pixel format" value={media.pix_fmt ?? ABSENT} />
         <Field
           label="Constant frame rate"
-          value={media.constant_frame_rate ? "yes" : "no"}
+          value={<Copy text={media.constant_frame_rate ? "yes" : "no"} />}
         />
-        <Field label="Normalized for detection" value={analysis.was_normalized ? "yes" : "no"} />
+        <Field
+          label="Normalized for detection"
+          value={<Copy text={analysis.was_normalized ? "yes" : "no"} />}
+        />
         {/* How the artifact was obtained, not what it is. An assembled acquisition is
             neither more nor less trustworthy than a served one, and a fetched one is neither
             more nor less trustworthy than an uploaded one; what the reader must not do is
@@ -284,8 +313,17 @@ function MediaSection({
 
             The sentence comes from `acquisitionStatement` rather than being written here, so
             the report and the dashboard cannot drift into two different claims about the same
-            row — and so that the one place it is written is the one place to review. */}
-        <Field label="Acquisition" value={acquisitionStatement(analysis)} />
+            row — and so that the one place it is written is the one place to review. It is
+            taken with its host held apart, so the host is drawn as recorded in either language. */}
+        <Field
+          label="Acquisition"
+          value={
+            <Copy
+              text={acquisitionSentence(analysis).text}
+              values={{ host: analysis.source_host }}
+            />
+          }
+        />
       </dl>
       <div className="mt-4 break-inside-avoid">
         {/* Named for the bytes it actually identifies, which are the submitted ones.
@@ -299,7 +337,7 @@ function MediaSection({
             carried by this payload (`AnalysisSummary` is narrower than the upload response),
             so the page says that rather than showing a hash it does not have. */}
         <dt className="text-xs uppercase tracking-wide opacity-60">
-          SHA-256 of the submitted media
+          <Copy>SHA-256 of the submitted media</Copy>
         </dt>
         {/* Printed in full, never abbreviated: an abbreviated hash cannot be checked, and
             checking it against the source file is the whole reason it is here. */}
@@ -307,20 +345,38 @@ function MediaSection({
           {analysis.original_sha256 ?? ABSENT}
         </dd>
         <p className="mt-1 text-xs opacity-70">
-          This is the hash of the media as it reached InspectRoot. It is not a hash or a
-          signature of this report.
-          {analysis.was_normalized
-            ? " The detectors did not read these bytes. This media required normalization, so every reading on this report was taken on a transcoded derivative of it, and this hash identifies the submitted file rather than the derivative that was scored. The derivative's own content identity is not shown on this report."
-            : " This media required no normalization, so these are also the bytes every detector on this report read."}
-          {analysis.was_assembled
-            ? " Because this acquisition was assembled from separate video and audio streams, it hashes the artifact DeepGuard built and stored, not a file the source published — the source published no single file to compare it against."
-            : ""}
+          <Copy>
+              This is the hash of the media as it reached InspectRoot. It is not a hash or a
+              signature of this report.
+            </Copy>{" "}
+            <Copy>
+            {analysis.was_normalized
+              ? "The detectors did not read these bytes. This media required normalization, so every reading on this report was taken on a transcoded derivative of it, and this hash identifies the submitted file rather than the derivative that was scored. The derivative's own content identity is not shown on this report."
+              : "This media required no normalization, so these are also the bytes every detector on this report read."}
+          </Copy>
+          {analysis.was_assembled ? (
+            <>
+              {" "}
+              <Copy>
+                Because this acquisition was assembled from separate video and audio streams, it
+                hashes the artifact InspectRoot built and stored, not a file the source published
+                — the source published no single file to compare it against.
+              </Copy>
+            </>
+          ) : null}
           {/* A single served file was stored byte for byte, so the hash is the hash of what
               the host served this fetch — which is not the same as the hash of a file that
               host's publisher issued, and the sentence stops where the evidence does. */}
-          {analysis.acquisition_method === ACQUISITION_METHOD_URL && !analysis.was_assembled
-            ? " It hashes the file served to DeepGuard at acquisition time. Whether that file matches any upstream or publisher-original file is not something this analysis establishes."
-            : ""}
+          {analysis.acquisition_method === ACQUISITION_METHOD_URL && !analysis.was_assembled ? (
+            <>
+              {" "}
+              <Copy>
+                It hashes the file served to InspectRoot at acquisition time. Whether that file
+                matches any upstream or publisher-original file is not something this analysis
+                establishes.
+              </Copy>
+            </>
+          ) : null}
         </p>
       </div>
     </Section>
@@ -359,16 +415,27 @@ const CONTRIBUTION_LABELS: Record<RiskRationale["syntheticVideo"]["role"], strin
  * one a rule could be applied to also depends on the build that produced it, which its own
  * section below states in full.
  */
-function storedStatusNote(status: string | null | undefined): string {
+function storedStatusNote(status: string | null | undefined): React.ReactNode {
   if (status === undefined || status === null) {
-    return "No signal from this detector is recorded for this analysis.";
+    return <Copy>No signal from this detector is recorded for this analysis.</Copy>;
   }
 
   if (status !== "SUCCESS") {
-    return `This detector returned no reading — its signal is stored as ${status}.`;
+    // The status is the record's own word, drawn into the sentence as stored.
+    return (
+      <Copy
+        text="This detector returned no reading — its signal is stored as {status}."
+        values={{ status }}
+      />
+    );
   }
 
-  return "This detector returned a reading; its section below gives the figures and the build that produced them.";
+  return (
+    <Copy>
+      This detector returned a reading; its section below gives the figures and the build that
+      produced them.
+    </Copy>
+  );
 }
 
 function Contribution({
@@ -382,14 +449,16 @@ function Contribution({
 }) {
   return (
     <div className="border-t border-black/10 pt-2 dark:border-white/15">
-      <p className="text-sm font-medium">{detector}</p>
+      <p className="text-sm font-medium">
+        <Copy text={detector} />
+      </p>
       <p className="mt-0.5 text-xs font-medium opacity-90">
-        {CONTRIBUTION_LABELS[contribution.role]}
+        <Copy text={CONTRIBUTION_LABELS[contribution.role]} />
       </p>
       <p className="mt-1 text-xs opacity-70">
         {contribution.role === "unclear"
           ? storedStatusNote(status)
-          : contribution.detail}
+          : <Copy text={contribution.detail} />}
       </p>
     </div>
   );
@@ -470,29 +539,36 @@ function OperationalSummary({ trace }: { trace: RiskTrace | null }) {
   return (
     <section className="mt-6 break-inside-avoid rounded-lg border-2 border-black/25 px-5 py-4 dark:border-white/30 print:border-black/50 print:px-4">
       <h2 className="text-[11px] font-semibold tracking-[0.16em] uppercase opacity-70">
-        Assessment summary
+        <Copy>Assessment summary</Copy>
       </h2>
 
       {/* What was detected. The largest type in the block, because it is the sentence a reader
           takes away and the one most likely to be read alone. */}
-      <p className="mt-2 text-2xl font-semibold tracking-[-0.02em]">{wording.title}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-[-0.02em]">
+        <Copy text={wording.title} />
+      </p>
 
       {/* What the system did to arrive at it — in detectors and operating points, never in a
           statement about the media. */}
-      <p className="mt-2 max-w-[76ch] text-sm leading-relaxed">{wording.meaning}</p>
+      <p className="mt-2 max-w-[76ch] text-sm leading-relaxed">
+        <Copy text={wording.meaning} />
+      </p>
 
       {/* Was coverage complete? Omitted entirely when the decision states no coverage, which is
           a different fact from coverage of zero and must never be printed as one. */}
       {coverage !== null && (
         <p className="mt-3 font-mono text-xs">
-          Decision coverage: {coverage.usable}/{coverage.total} {coverage.status}
+          <Copy
+            text="Decision coverage: {usable}/{total} {status}"
+            values={{ usable: coverage.usable, total: coverage.total, status: coverage.status }}
+          />
         </p>
       )}
 
       {/* What it does not prove. Given the same weight as the finding rather than a footnote's:
           this is the half a reader is most likely to supply wrongly on their own. */}
       <p className="mt-3 max-w-[76ch] border-t border-black/12 pt-3 text-sm leading-relaxed dark:border-white/20 print:border-black/40">
-        {wording.clarification}
+        <Copy text={wording.clarification} />
       </p>
     </section>
   );
@@ -517,41 +593,53 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
           verdict: under v5 the verdict is the assessment summary's, and this card never holds
           one (R13-T2). */}
       <h2 className="text-base font-semibold">
+        <Copy>
         {legacyVocabulary && level !== null
           ? "Recorded risk level"
           : "InspectRoot risk classification"}
+        </Copy>
       </h2>
 
-      <p className="mt-2 text-2xl font-semibold">{riskLabel(level, rulesVersion)}</p>
+      <p className="mt-2 text-2xl font-semibold">
+        <Copy text={riskLabel(level, rulesVersion)} />
+      </p>
 
       {!legacyVocabulary ? null : level === null ? (
         <p className="mt-1 text-xs opacity-70">
-          No risk decision is stored for this analysis. That is not the same as{" "}
-          <span className="font-mono">Unknown</span>: nothing classified this analysis, so
-          there is no decision to report — it was analysed before the risk engine existed, or
-          it has not finished.
+          {/* `Unknown` is the word the card prints for that level, so it is named in the
+              reader's language as well; the stored level itself is `UNKNOWN`. */}
+          <Copy
+            text="No risk decision is stored for this analysis. That is not the same as {unknown}: nothing classified this analysis, so there is no decision to report — it was analysed before the risk engine existed, or it has not finished."
+            values={{ unknown: <span className="font-mono"><Copy>Unknown</Copy></span> }}
+          />
         </p>
       ) : !isSupportedRiskLevel(level) ? (
         <p className="mt-1 text-xs opacity-70">
-          The stored risk state{" "}
-          <span className="font-mono">{level}</span> is not a risk class this build
-          classifies under, so it is reported as unsupported rather than presented as an
-          InspectRoot classification.
+          <Copy
+            text="The stored risk state {level} is not a risk class this build classifies under, so it is reported as unsupported rather than presented as an InspectRoot classification."
+            values={{ level: <span className="font-mono">{level}</span> }}
+          />
         </p>
       ) : level === "UNKNOWN" ? (
         <p className="mt-1 text-xs opacity-70">
-          The risk engine ran and a rule fired. Its conclusion is that the evidence does not
-          support a classification — an answer, not a missing one.
+          <Copy>
+            The risk engine ran and a rule fired. Its conclusion is that the evidence does not
+            support a classification — an answer, not a missing one.
+          </Copy>
         </p>
       ) : null}
 
       {rationale !== null && (
         <div className="mt-4">
-          <h3 className="text-sm font-semibold">Why this classification</h3>
-          <p className="mt-1 text-sm">{rationale.summary}</p>
+          <h3 className="text-sm font-semibold">
+            <Copy>Why this classification</Copy>
+          </h3>
+          <p className="mt-1 text-sm">
+            <Copy text={rationale.summary} />
+          </p>
 
           <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide opacity-70">
-            How each detector contributed
+            <Copy>How each detector contributed</Copy>
           </h4>
           <div className="mt-2 space-y-2">
             <Contribution
@@ -572,9 +660,11 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
           </div>
 
           <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide opacity-70">
-            What this covers
+            <Copy>What this covers</Copy>
           </h4>
-          <p className="mt-1 text-xs opacity-80">{rationale.coverage}</p>
+          <p className="mt-1 text-xs opacity-80">
+            <Copy text={rationale.coverage} />
+          </p>
         </div>
       )}
 
@@ -586,11 +676,13 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
 
       {analysis.risk_rule_id !== null && rationale === null && (
         <p className="mt-2 text-xs opacity-70">
-          This build has no description for rule{" "}
-          <span className="font-mono">{analysis.risk_rule_id}</span> under ruleset{" "}
-          <span className="font-mono">{analysis.risk_rules_version ?? ABSENT}</span>, so the
-          trace above is shown without one. The decision itself is reproduced exactly as it
-          was stored.
+          <Copy
+            text="This build has no description for rule {rule} under ruleset {ruleset}, so the trace above is shown without one. The decision itself is reproduced exactly as it was stored."
+            values={{
+              rule: <span className="font-mono">{analysis.risk_rule_id}</span>,
+              ruleset: <span className="font-mono">{analysis.risk_rules_version ?? ABSENT}</span>,
+            }}
+          />
         </p>
       )}
 
@@ -614,12 +706,14 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
 function ClassificationGuarantee() {
   return (
     <p className="mt-4 max-w-[76ch] break-inside-avoid text-xs leading-relaxed opacity-80">
-      The assessment above is a deterministic InspectRoot classification based on calibrated
-      forensic evidence. It is not a Fake/Real determination. Each detector was compared only
-      against the threshold measured for it, and those thresholds are points on unrelated scales
-      that cannot be compared with each other; the scores were never averaged, weighted, voted on
-      or combined into a single number. This classification was recorded when the analysis ran
-      and is reproduced here unchanged; it is not recalculated by this report.
+      <Copy>
+        The assessment above is a deterministic InspectRoot classification based on calibrated
+        forensic evidence. It is not a Fake/Real determination. Each detector was compared only
+        against the threshold measured for it, and those thresholds are points on unrelated scales
+        that cannot be compared with each other; the scores were never averaged, weighted, voted on
+        or combined into a single number. This classification was recorded when the analysis ran
+        and is reproduced here unchanged; it is not recalculated by this report.
+      </Copy>
     </p>
   );
 }
@@ -670,14 +764,20 @@ function TraceContribution({ contribution }: { contribution: RiskContribution })
   return (
     <div className="break-inside-avoid border-t border-black/10 pt-3 dark:border-white/15 print:border-black/30">
       <p className="text-sm font-medium break-words">
-        {contributionDetector(contribution.signal)}
+        <CopyOrRecord
+          text={contributionDetector(contribution.signal)}
+          record={contribution.signal}
+        />
       </p>
       <p className="mt-0.5 text-xs font-medium opacity-90 break-words">
-        {known ? RISK_CONDITION_LABELS[condition] : RISK_CONDITION_UNINTERPRETABLE}{" "}
+        <Copy text={known ? RISK_CONDITION_LABELS[condition] : RISK_CONDITION_UNINTERPRETABLE} />{" "}
         · <span className="font-mono break-all">{condition}</span>
       </p>
       <p className="mt-1 text-xs opacity-70 break-words">
-        {contributionRoleText(contribution.role, contribution.decisional)}
+        <CopyOrRecord
+          text={contributionRoleText(contribution.role, contribution.decisional)}
+          record={contribution.role}
+        />
       </p>
 
       <dl className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -699,19 +799,24 @@ function TraceContribution({ contribution }: { contribution: RiskContribution })
 
       {contribution.unavailable_reason !== null && (
         <p className="mt-2 text-xs opacity-70 break-words">
-          {unavailableReasonText(contribution.unavailable_reason)}
+          <CopyOrRecord
+            text={unavailableReasonText(contribution.unavailable_reason)}
+            record={contribution.unavailable_reason}
+          />
         </p>
       )}
 
       {known && (
         <p className="mt-2 text-xs opacity-80 break-words">
-          {RISK_CONDITION_DETAILS[condition]}
+          <Copy text={RISK_CONDITION_DETAILS[condition]} />
         </p>
       )}
       {!known && (
         <p className="mt-2 text-xs opacity-80 break-words">
-          This build has no interpretation for that condition, so none is given. No threshold
-          outcome is inferred from it, and it establishes nothing about the media.
+          <Copy>
+            This build has no interpretation for that condition, so none is given. No threshold
+            outcome is inferred from it, and it establishes nothing about the media.
+          </Copy>
         </p>
       )}
     </div>
@@ -742,11 +847,13 @@ function RiskTraceSection({ trace }: { trace: RiskTrace }) {
           report; this is where they are shown to have been read back from the trace, beside the
           rule and the calibration that produced them, and dropping them here would leave the
           decision breakdown explaining a decision it does not state. */}
-      <p className="text-xs uppercase tracking-wide opacity-60">Decision as stored</p>
+      <p className="text-xs uppercase tracking-wide opacity-60">
+        <Copy>Decision as stored</Copy>
+      </p>
       <p className="mt-0.5 text-lg font-semibold break-words">
         {/* Read through the trace's own version, which is the version the decision was taken
             under — the same resolution the summary at the top of the report makes. */}
-        {riskLabel(trace.risk_level, trace.rules_version)}
+        <Copy text={riskLabel(trace.risk_level, trace.rules_version)} />
       </p>
 
       <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -758,25 +865,31 @@ function RiskTraceSection({ trace }: { trace: RiskTrace }) {
       {trace.rule_summary !== null && (
         <div className="mt-4 break-inside-avoid">
           <h3 className="text-xs font-semibold uppercase tracking-wide opacity-70">
-            What the rule that fired meant
+            <Copy>What the rule that fired meant</Copy>
           </h3>
+          {/* The API's own sentence, carried in the payload and printed as it arrived. The API
+              writes it in English and knows nothing of the reader's language, so it is not
+              looked up here; a reader of the Turkish report reads the rule in the record's
+              words. */}
           <p className="mt-1 text-sm break-words">{trace.rule_summary}</p>
         </div>
       )}
 
       {!trace.interpreted && (
         <p className="mt-4 text-xs opacity-80 break-words">
-          The API could not resolve this decision&apos;s ruleset version or the calibration it
-          was measured under, so the detailed reading of it is unavailable. The decision itself
-          is reproduced above exactly as it was stored; what is missing is the interpretation,
-          and none is guessed in its place.
+          <Copy>
+            The API could not resolve this decision&apos;s ruleset version or the calibration it
+            was measured under, so the detailed reading of it is unavailable. The decision itself
+            is reproduced above exactly as it was stored; what is missing is the interpretation,
+            and none is guessed in its place.
+          </Copy>
         </p>
       )}
 
       {trace.contributions.length > 0 ? (
         <div className="mt-4">
           <h3 className="text-xs font-semibold uppercase tracking-wide opacity-70">
-            How each detector stood in this decision
+            <Copy>How each detector stood in this decision</Copy>
           </h3>
           <div className="mt-2 space-y-3">
             {trace.contributions.map((contribution) => (
@@ -789,17 +902,21 @@ function RiskTraceSection({ trace }: { trace: RiskTrace }) {
         </div>
       ) : (
         <p className="mt-4 text-xs opacity-70 break-words">
-          The API reported no detector contributions for this decision. That is a statement
-          about what this record can be read to say, not a finding that no detector ran — each
-          detector&apos;s own stored evidence is reproduced further down this report.
+          <Copy>
+            The API reported no detector contributions for this decision. That is a statement
+            about what this record can be read to say, not a finding that no detector ran — each
+            detector&apos;s own stored evidence is reproduced further down this report.
+          </Copy>
         </p>
       )}
 
       <p className="mt-4 text-xs opacity-80">
-        None of the conditions above is a statement about the media. A detector that did not
-        reach its threshold, one that could not be read, and one with no reading at all are
-        three different facts about the evidence, and none of them is evidence that the media
-        was not manipulated.
+        <Copy>
+          None of the conditions above is a statement about the media. A detector that did not
+          reach its threshold, one that could not be read, and one with no reading at all are
+          three different facts about the evidence, and none of them is evidence that the media
+          was not manipulated.
+        </Copy>
       </p>
     </Section>
   );
@@ -825,126 +942,160 @@ function ScopeDisclosure({ analysis }: { analysis: AnalysisSummary }) {
           each of those rulesets answered in — one heading for both would put the newer word on
           an older decision. */}
       <h2 className="text-sm font-semibold uppercase tracking-wide">
-        {ruleset === RULES_VERSION_V5
-          ? "Scope of this assessment"
-          : "Scope of this risk model"}
+        <Copy>
+          {ruleset === RULES_VERSION_V5
+            ? "Scope of this assessment"
+            : "Scope of this risk model"}
+        </Copy>
       </h2>
       {ruleset === RULES_VERSION_V5 ? (
         <>
           <p className="mt-2 text-sm font-medium">
-            This assessment is validated for generated video and for face swaps, by the two
-            decision detectors it is taken from, each read against a threshold measured for it
-            alone.
+            <Copy>
+              This assessment is validated for generated video and for face swaps, by the two
+              decision detectors it is taken from, each read against a threshold measured for it
+              alone.
+            </Copy>
           </p>
           <p className="mt-2 text-xs opacity-80">
-            Both thresholds were set to almost never flag legitimate footage: neither detector
-            flagged any of the 54 genuine clips in the calibration corpus. That choice is paid
-            for in detection rate. At these operating points the synthetic-video detector
-            flagged 54.6% of generated video and the face classifier flagged 44% of face swaps,
-            so a great deal of manipulated media is correctly not flagged.
+            <Copy>
+              Both thresholds were set to almost never flag legitimate footage: neither detector
+              flagged any of the 54 genuine clips in the calibration corpus. That choice is paid
+              for in detection rate. At these operating points the synthetic-video detector
+              flagged 54.6% of generated video and the face classifier flagged 44% of face swaps,
+              so a great deal of manipulated media is correctly not flagged.
+            </Copy>
           </p>
           <p className="mt-2 text-xs opacity-80">
-            The mouth-dynamics model still runs and its score is reported below, but under this
-            ruleset it is evidence only: it cannot reach the assessment above, and a reading it
-            failed to produce does not reduce the decision coverage stated there. R7-T5 replayed
-            the rules that once let it decide over 307 independent genuine recordings and found
-            it responsible for 21 of 22 false HIGH results, so it was withdrawn rather than
-            re-tuned — no study has measured an operating point that would be safe here.
+            <Copy>
+              The mouth-dynamics model still runs and its score is reported below, but under this
+              ruleset it is evidence only: it cannot reach the assessment above, and a reading it
+              failed to produce does not reduce the decision coverage stated there. R7-T5 replayed
+              the rules that once let it decide over 307 independent genuine recordings and found
+              it responsible for 21 of 22 false HIGH results, so it was withdrawn rather than
+              re-tuned — no study has measured an operating point that would be safe here.
+            </Copy>
           </p>
           <p className="mt-2 text-xs opacity-80">
-            The two deciding detectors cover different things and are read independently.
-            Neither staying below its threshold is evidence about the other: in the R4-T1 study
-            they never agreed on a single clip, and each was blind to the manipulation family
-            the other was calibrated for.
+            <Copy>
+              The two deciding detectors cover different things and are read independently.
+              Neither staying below its threshold is evidence about the other: in the R4-T1 study
+              they never agreed on a single clip, and each was blind to the manipulation family
+              the other was calibrated for.
+            </Copy>
           </p>
         </>
       ) : ruleset === RULES_VERSION_V4 ? (
         <>
           <p className="mt-2 text-sm font-medium">
-            This risk model is validated for generated video and for face swaps, by two
-            separate detectors with separate thresholds. Absence of HIGH risk does not mean
-            the media is genuine.
+            <Copy>
+              This risk model is validated for generated video and for face swaps, by two
+              separate detectors with separate thresholds. Absence of HIGH risk does not mean
+              the media is genuine.
+            </Copy>
           </p>
           <p className="mt-2 text-xs opacity-80">
-            Both thresholds were set to almost never flag legitimate footage: neither detector
-            flagged any of the 54 genuine clips in the calibration corpus. That choice is paid
-            for in detection rate. At these operating points the synthetic-video detector
-            flagged 54.6% of generated video and the face classifier flagged 44% of face
-            swaps, so a great deal of manipulated media is correctly not flagged as HIGH.
+            <Copy>
+              Both thresholds were set to almost never flag legitimate footage: neither detector
+              flagged any of the 54 genuine clips in the calibration corpus. That choice is paid
+              for in detection rate. At these operating points the synthetic-video detector
+              flagged 54.6% of generated video and the face classifier flagged 44% of face
+              swaps, so a great deal of manipulated media is correctly not flagged as HIGH.
+            </Copy>
           </p>
           <p className="mt-2 text-xs opacity-80">
-            The mouth-dynamics model still runs and its score is reported below, but it cannot
-            change this classification. Under the previous ruleset it could, on its own. R7-T5
-            replayed those rules over 307 independent genuine recordings and found that rule
-            responsible for 21 of 22 false HIGH results, so it was removed rather than
-            re-tuned — no study has measured an operating point that would be safe here. Its
-            score is recorded as independent forensic evidence and nothing more.
+            <Copy>
+              The mouth-dynamics model still runs and its score is reported below, but it cannot
+              change this classification. Under the previous ruleset it could, on its own. R7-T5
+              replayed those rules over 307 independent genuine recordings and found that rule
+              responsible for 21 of 22 false HIGH results, so it was removed rather than
+              re-tuned — no study has measured an operating point that would be safe here. Its
+              score is recorded as independent forensic evidence and nothing more.
+            </Copy>
           </p>
           <p className="mt-2 text-xs opacity-80">
-            The two deciding detectors cover different things and are read independently.
-            Neither scoring low is evidence against the other: in the R4-T1 study they never
-            agreed on a single clip, and each was blind to the manipulation family the other
-            was calibrated for.
+            <Copy>
+              The two deciding detectors cover different things and are read independently.
+              Neither scoring low is evidence against the other: in the R4-T1 study they never
+              agreed on a single clip, and each was blind to the manipulation family the other
+              was calibrated for.
+            </Copy>
           </p>
         </>
       ) : ruleset === RULES_VERSION_V3 ? (
         <>
           <p className="mt-2 text-sm font-medium">
-            This risk model is validated for generated video and for face swaps, by three
-            separate detectors with separate thresholds. Absence of HIGH risk does not mean
-            the media is genuine.
+            <Copy>
+              This risk model is validated for generated video and for face swaps, by three
+              separate detectors with separate thresholds. Absence of HIGH risk does not mean
+              the media is genuine.
+            </Copy>
           </p>
           <p className="mt-2 text-xs opacity-80">
-            Every threshold was set to almost never flag legitimate footage: no detector
-            flagged any genuine clip in the corpus it was calibrated on. That choice is paid
-            for in detection rate. At these operating points the synthetic-video detector
-            flagged 54.6% of generated video and the face classifier flagged 44% of face
-            swaps, so a great deal of manipulated media is correctly not flagged as HIGH.
+            <Copy>
+              Every threshold was set to almost never flag legitimate footage: no detector
+              flagged any genuine clip in the corpus it was calibrated on. That choice is paid
+              for in detection rate. At these operating points the synthetic-video detector
+              flagged 54.6% of generated video and the face classifier flagged 44% of face
+              swaps, so a great deal of manipulated media is correctly not flagged as HIGH.
+            </Copy>
           </p>
           <p className="mt-2 text-xs opacity-80">
-            The mouth-dynamics model was calibrated separately, over a smaller corpus: 40 clips
-            of one dataset, where it flagged all 20 face swaps and none of the 20 genuine
-            clips. That dataset lies inside the model&apos;s training distribution, so its
-            perfect separation there is a property of that corpus and not a claim about media
-            in general — and 20 genuine clips bound its false-positive rate more loosely than
-            the 54 behind the other two.
+            <Copy>
+              The mouth-dynamics model was calibrated separately, over a smaller corpus: 40 clips
+              of one dataset, where it flagged all 20 face swaps and none of the 20 genuine
+              clips. That dataset lies inside the model&apos;s training distribution, so its
+              perfect separation there is a property of that corpus and not a claim about media
+              in general — and 20 genuine clips bound its false-positive rate more loosely than
+              the 54 behind the other two.
+            </Copy>
           </p>
           <p className="mt-2 text-xs opacity-80">
-            The three detectors cover different things and are read independently. None
-            scoring low is evidence against another: in the R4-T1 study the first two never
-            agreed on a single clip, each was blind to the manipulation family the other was
-            calibrated for, and the third asks a question neither of them asks — how a mouth
-            moves over consecutive frames, rather than how a frame looks. It also needs a face
-            tracked through 25 consecutive frames, so it abstains outright on media the other
-            two score without difficulty.
+            <Copy>
+              The three detectors cover different things and are read independently. None
+              scoring low is evidence against another: in the R4-T1 study the first two never
+              agreed on a single clip, each was blind to the manipulation family the other was
+              calibrated for, and the third asks a question neither of them asks — how a mouth
+              moves over consecutive frames, rather than how a frame looks. It also needs a face
+              tracked through 25 consecutive frames, so it abstains outright on media the other
+              two score without difficulty.
+            </Copy>
           </p>
         </>
       ) : ruleset === RULES_VERSION_V2 ? (
         <>
           <p className="mt-2 text-sm font-medium">
-            This risk model is validated for generated video and for face swaps, by two
-            separate detectors with separate thresholds. Absence of HIGH risk does not mean
-            the media is genuine.
+            <Copy>
+              This risk model is validated for generated video and for face swaps, by two
+              separate detectors with separate thresholds. Absence of HIGH risk does not mean
+              the media is genuine.
+            </Copy>
           </p>
           <p className="mt-2 text-xs opacity-80">
-            Both thresholds were set to almost never flag legitimate footage: neither detector
-            flagged any of the 54 genuine clips in the calibration corpus. That choice is paid
-            for in detection rate. At these operating points the synthetic-video detector
-            flagged 54.6% of generated video and the face classifier flagged 44% of face
-            swaps, so a great deal of manipulated media is correctly not flagged as HIGH.
+            <Copy>
+              Both thresholds were set to almost never flag legitimate footage: neither detector
+              flagged any of the 54 genuine clips in the calibration corpus. That choice is paid
+              for in detection rate. At these operating points the synthetic-video detector
+              flagged 54.6% of generated video and the face classifier flagged 44% of face
+              swaps, so a great deal of manipulated media is correctly not flagged as HIGH.
+            </Copy>
           </p>
           <p className="mt-2 text-xs opacity-80">
-            The two detectors cover different things and are read independently. Neither one
-            scoring low is evidence against the other: in the calibration study the two never
-            agreed on a single clip, and each was blind to the manipulation family the other
-            was calibrated for.
+            <Copy>
+              The two detectors cover different things and are read independently. Neither one
+              scoring low is evidence against the other: in the calibration study the two never
+              agreed on a single clip, and each was blind to the manipulation family the other
+              was calibrated for.
+            </Copy>
           </p>
         </>
       ) : (
         <p className="mt-2 text-sm font-medium">
-          This decision was taken under a single-detector ruleset that is validated for
-          generated video and is not validated for face-swap detection. Absence of HIGH risk
-          does not rule out face manipulation.
+          <Copy>
+            This decision was taken under a single-detector ruleset that is validated for
+            generated video and is not validated for face-swap detection. Absence of HIGH risk
+            does not rule out face manipulation.
+          </Copy>
         </p>
       )}
     </section>
@@ -986,7 +1137,10 @@ function EnrichmentSnapshotNotice({ analysis }: { analysis: AnalysisSummary }) {
 
   return (
     <p className="mt-5 max-w-[76ch] break-inside-avoid rounded-lg border border-black/25 px-4 py-3 text-xs leading-relaxed dark:border-white/30 print:border-black/40">
-      <span className="font-semibold">Snapshot.</span> {notice}
+      <span className="font-semibold">
+        <Copy>Snapshot.</Copy>
+      </span>{" "}
+      <Copy text={notice} />
     </p>
   );
 }
@@ -1051,10 +1205,12 @@ function DeepEvidenceSection({ analysis }: { analysis: AnalysisSummary }) {
               label={componentDetectorName(component)}
               value={
                 <>
-                  {componentStateText(
-                    component.state,
-                    componentReadingPresence(analysis, component),
-                  )}
+                  <Copy
+                    text={componentStateText(
+                      component.state,
+                      componentReadingPresence(analysis, component),
+                    )}
+                  />
                   {/* The raw state beside the sentence, for the same reason the aggregate
                       is shown raw above: the sentence is this build's wording and the state
                       is the record. */}
@@ -1072,10 +1228,12 @@ function DeepEvidenceSection({ analysis }: { analysis: AnalysisSummary }) {
           only thing that makes it truthful is that the state it was rendered under is on the
           page. Nothing in this section is hidden in print. */}
       <p className="mt-4 max-w-[76ch] text-xs leading-relaxed opacity-70">
-        This states what had run when this page was rendered. A copy printed or exported
-        before the supplementary detectors finished records the state above as it stood at
-        that moment; the assessment it accompanies is final either way, and no detector named
-        here can reach it under this ruleset.
+        <Copy>
+          This states what had run when this page was rendered. A copy printed or exported
+          before the supplementary detectors finished records the state above as it stood at
+          that moment; the assessment it accompanies is final either way, and no detector named
+          here can reach it under this ruleset.
+        </Copy>
       </p>
     </Section>
   );
@@ -1117,18 +1275,24 @@ function SyntheticVideoSection({
           </dl>
 
           <p className="mt-3 text-xs opacity-70">
-            The probability is the provider&apos;s score for its own detector, shown as
-            returned. It is NVIDIA evidence, not an InspectRoot confidence, and it is not the
-            risk classification above.
+            <Copy>
+              The probability is the provider&apos;s score for its own detector, shown as
+              returned. It is NVIDIA evidence, not an InspectRoot confidence, and it is not the
+              risk classification above.
+            </Copy>
           </p>
 
           <h3 className="mt-4 text-sm font-medium">
-            Persisted strongest clips{" "}
-            <span className="font-normal opacity-60">(highest logit first)</span>
+            <Copy>Persisted strongest clips</Copy>{" "}
+            <span className="font-normal opacity-60">
+              <Copy>(highest logit first)</Copy>
+            </span>
           </h3>
           {signal.segments.length === 0 ? (
             <p className="mt-1 text-xs opacity-70">
-              No clip evidence is stored for this signal.
+              <Copy>
+                No clip evidence is stored for this signal.
+              </Copy>
             </p>
           ) : (
             <div className="mt-2 overflow-x-auto print:overflow-x-visible">
@@ -1139,8 +1303,8 @@ function SyntheticVideoSection({
               <table className="w-full min-w-[22rem] table-fixed text-left text-xs">
                 <thead>
                   <tr className="border-b border-black/15 dark:border-white/20">
-                    <th className="py-1 font-medium">Frame index</th>
-                    <th className="py-1 font-medium">Raw logit</th>
+                    <th className="py-1 font-medium"><Copy>Frame index</Copy></th>
+                    <th className="py-1 font-medium"><Copy>Raw logit</Copy></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1155,9 +1319,11 @@ function SyntheticVideoSection({
             </div>
           )}
           <p className="mt-2 text-xs opacity-70">
-            The frame index is NVIDIA&apos;s own index for the clip&apos;s middle frame. These
-            are the strongest clips the provider reported, not a claim that manipulation
-            occurs at those frames.
+            <Copy>
+              The frame index is NVIDIA&apos;s own index for the clip&apos;s middle frame. These
+              are the strongest clips the provider reported, not a claim that manipulation
+              occurs at those frames.
+            </Copy>
           </p>
         </>
       )}
@@ -1198,16 +1364,20 @@ function ProvenanceState({ signal }: { signal: ProvenanceSignal }) {
 
       {/* What the state is, in the largest type in the block — the line most likely to be
           read on its own, and the one a skimming reader takes away. */}
-      <p className="mt-1.5 text-lg font-semibold tracking-[-0.01em]">{wording.title}</p>
+      <p className="mt-1.5 text-lg font-semibold tracking-[-0.01em]">
+        <Copy text={wording.title} />
+      </p>
 
       {/* What was actually established, about the file or about the reading of it. */}
-      <p className="mt-1.5 max-w-[76ch] text-sm leading-relaxed">{wording.meaning}</p>
+      <p className="mt-1.5 max-w-[76ch] text-sm leading-relaxed">
+        <Copy text={wording.meaning} />
+      </p>
 
       {/* What it does not establish, given the same weight as the state rather than a
           footnote's. Distinct per state on purpose: "we looked and found nothing" and "we
           could not look" are never explained with the same sentence. */}
       <p className="mt-2.5 max-w-[76ch] border-t border-black/12 pt-2.5 text-sm leading-relaxed dark:border-white/20 print:border-black/40">
-        {wording.clarification}
+        <Copy text={wording.clarification} />
       </p>
     </div>
   );
@@ -1230,7 +1400,7 @@ function ProvenanceSection({
       title="C2PA provenance"
       subtitle={
         assembled
-          ? "What the stored artifact itself claims about its origin. It was assembled by DeepGuard from separate streams, so any credentials the source may have published alongside them are not expected to survive into it."
+          ? "What the stored artifact itself claims about its origin. It was assembled by InspectRoot from separate streams, so any credentials the source may have published alongside them are not expected to survive into it."
           : "What the file itself claims about its origin, read from the forensic original."
       }
     >
@@ -1247,11 +1417,15 @@ function ProvenanceSection({
             <Field
               label="Manifest present in the file"
               value={
-                signal.manifest_exists === null
-                  ? "unknown — the reading failed"
-                  : signal.manifest_exists
-                    ? "yes"
-                    : "no"
+                <Copy
+                  text={
+                    signal.manifest_exists === null
+                      ? "unknown — the reading failed"
+                      : signal.manifest_exists
+                        ? "yes"
+                        : "no"
+                  }
+                />
               }
             />
             <Field label="Validation state" value={signal.validation_state ?? ABSENT} />
@@ -1269,7 +1443,12 @@ function ProvenanceSection({
               made. It is scoped to the artifact DeepGuard read and says so outright, because
               a manifest can be stripped by any hop between a publisher and this fetch. */}
           {signal.manifest_exists === false ? (
-            <p className="mt-3 text-xs opacity-70">{credentialsAbsentStatement(analysis)}</p>
+            <p className="mt-3 text-xs opacity-70">
+              <Copy
+                text={credentialsAbsentSentence(analysis).text}
+                values={{ host: analysis.source_host }}
+              />
+            </p>
           ) : null}
           {/* What the state block above does not cover: the two limits that are facts about
               how this reading was taken rather than about what it found. Everything the
@@ -1278,10 +1457,18 @@ function ProvenanceSection({
               here in one sentence written for all three is how the three collapse back
               into one. */}
           <p className="mt-3 text-xs opacity-70">
-            Any remote manifest URL was recorded and never fetched.
-            {assembled
-              ? " These bytes were assembled by DeepGuard from separate video and audio streams, so this reading describes the stored artifact and not a file the source published. Reading it as a statement about the source would be a mistake in either direction."
-              : ""}
+            <Copy>Any remote manifest URL was recorded and never fetched.</Copy>
+            {assembled ? (
+              <>
+                {" "}
+                <Copy>
+                  These bytes were assembled by InspectRoot from separate video and audio
+                  streams, so this reading describes the stored artifact and not a file the
+                  source published. Reading it as a statement about the source would be a
+                  mistake in either direction.
+                </Copy>
+              </>
+            ) : null}
           </p>
         </>
       )}
@@ -1320,20 +1507,22 @@ function ActiveSpeakerSection({
             <Field
               label="Stored timeline truncated"
               value={
-                signal.segments_truncated === null
-                  ? ABSENT
-                  : signal.segments_truncated
-                    ? "yes"
-                    : "no"
+                signal.segments_truncated === null ? (
+                  ABSENT
+                ) : (
+                  <Copy text={signal.segments_truncated ? "yes" : "no"} />
+                )
               }
             />
           </dl>
 
           {signal.segments.length === 0 ? (
             <p className="mt-3 text-xs opacity-70">
-              {signal.status === "SUCCESS"
-                ? "The detector ran and recorded no speaking segments. That is an observation about this media, not a missing reading."
-                : "No speaking timeline is stored for this signal."}
+              <Copy>
+                {signal.status === "SUCCESS"
+                  ? "The detector ran and recorded no speaking segments. That is an observation about this media, not a missing reading."
+                  : "No speaking timeline is stored for this signal."}
+              </Copy>
             </p>
           ) : (
             <div className="mt-3 overflow-x-auto print:overflow-x-visible">
@@ -1344,10 +1533,10 @@ function ActiveSpeakerSection({
               <table className="w-full min-w-[30rem] table-fixed text-left text-xs">
                 <thead>
                   <tr className="border-b border-black/15 dark:border-white/20">
-                    <th className="py-1 font-medium">Start</th>
-                    <th className="py-1 font-medium">End</th>
-                    <th className="py-1 font-medium">Face ID</th>
-                    <th className="py-1 font-medium">Diarized speaker</th>
+                    <th className="py-1 font-medium"><Copy>Start</Copy></th>
+                    <th className="py-1 font-medium"><Copy>End</Copy></th>
+                    <th className="py-1 font-medium"><Copy>Face ID</Copy></th>
+                    <th className="py-1 font-medium"><Copy>Diarized speaker</Copy></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1360,7 +1549,7 @@ function ActiveSpeakerSection({
                       <td className="py-1 font-mono">{segment.end_time.toFixed(2)}s</td>
                       <td className="py-1 font-mono">{segment.face_id}</td>
                       <td className="py-1 font-mono">
-                        {segment.speaker_label ?? "no matched voice"}
+                        {segment.speaker_label ?? <Copy>no matched voice</Copy>}
                       </td>
                     </tr>
                   ))}
@@ -1370,9 +1559,11 @@ function ActiveSpeakerSection({
           )}
 
           <p className="mt-2 text-xs opacity-70">
-            The face ID is the provider&apos;s own identifier for a tracked face; the speaker
-            label is the diarized voice matched to it. This timeline says who was speaking
-            when. It makes no claim about whether the media is genuine.
+            <Copy>
+              The face ID is the provider&apos;s own identifier for a tracked face; the speaker
+              label is the diarized voice matched to it. This timeline says who was speaking
+              when. It makes no claim about whether the media is genuine.
+            </Copy>
           </p>
         </>
       )}
@@ -1419,20 +1610,22 @@ function AudioSection({
             <Field
               label="Stored windows truncated"
               value={
-                signal.windows_truncated === null
-                  ? ABSENT
-                  : signal.windows_truncated
-                    ? "yes"
-                    : "no"
+                signal.windows_truncated === null ? (
+                  ABSENT
+                ) : (
+                  <Copy text={signal.windows_truncated ? "yes" : "no"} />
+                )
               }
             />
           </dl>
 
           {signal.windows.length === 0 ? (
             <p className="mt-3 text-xs opacity-70">
-              {signal.status === "SUCCESS"
-                ? "The reading succeeded and stored no windows."
-                : "No audio evidence windows are stored for this signal."}
+              <Copy>
+                {signal.status === "SUCCESS"
+                  ? "The reading succeeded and stored no windows."
+                  : "No audio evidence windows are stored for this signal."}
+              </Copy>
             </p>
           ) : (
             <div className="mt-3 overflow-x-auto print:overflow-x-visible">
@@ -1443,11 +1636,11 @@ function AudioSection({
               <table className="w-full min-w-[34rem] table-fixed text-left text-xs">
                 <thead>
                   <tr className="border-b border-black/15 dark:border-white/20">
-                    <th className="py-1 font-medium">Window</th>
-                    <th className="py-1 font-medium">Start</th>
-                    <th className="py-1 font-medium">End</th>
-                    <th className="py-1 font-medium">Raw logit[0]</th>
-                    <th className="py-1 font-medium">Bona fide logit</th>
+                    <th className="py-1 font-medium"><Copy>Window</Copy></th>
+                    <th className="py-1 font-medium"><Copy>Start</Copy></th>
+                    <th className="py-1 font-medium"><Copy>End</Copy></th>
+                    <th className="py-1 font-medium"><Copy>Raw logit[0]</Copy></th>
+                    <th className="py-1 font-medium"><Copy>Bona fide logit</Copy></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1469,15 +1662,22 @@ function AudioSection({
           )}
 
           <p className="mt-3 text-xs opacity-80">
-            These figures are raw model output. They are <strong>not probabilities</strong>,{" "}
-            <strong>not confidence values</strong>, and <strong>not Fake/Real decisions</strong>
-            . The checkpoint publishes no threshold, no calibration and no classes, so no
-            classification is derived from them and none should be read into them.
+            <Copy
+              text="These figures are raw model output. They are {probabilities}, {confidence}, and {decisions}. The checkpoint publishes no threshold, no calibration and no classes, so no classification is derived from them and none should be read into them."
+              values={{
+                probabilities: <strong><Copy>not probabilities</Copy></strong>,
+                confidence: <strong><Copy>not confidence values</Copy></strong>,
+                decisions: <strong><Copy>not Fake/Real decisions</Copy></strong>,
+              }}
+            />
           </p>
           <p className="mt-2 text-xs opacity-80">
-            The time bounds are <strong>InspectRoot preprocessing windows</strong> — where the
-            audio was cut before being given to the model. They are not model-detected
-            manipulation timestamps, and the model reports no timeline of its own.
+            <Copy
+              text="The time bounds are {windows} — where the audio was cut before being given to the model. They are not model-detected manipulation timestamps, and the model reports no timeline of its own."
+              values={{
+                windows: <strong><Copy>InspectRoot preprocessing windows</Copy></strong>,
+              }}
+            />
           </p>
         </>
       )}
@@ -1551,31 +1751,38 @@ function FaceManipulationSection({
 
           {signal.status !== "SUCCESS" && (
             <p className="mt-3 text-xs opacity-70">
-              This reading did not produce a score. A clip in which no face was found is the
-              ordinary case, and it means the classifier was never asked — it is not a finding
-              that the media is genuine.
+              <Copy>
+                This reading did not produce a score. A clip in which no face was found is the
+                ordinary case, and it means the classifier was never asked — it is not a finding
+                that the media is genuine.
+              </Copy>
             </p>
           )}
 
           <p className="mt-3 text-xs opacity-80">
-            The score is the mean of the model&apos;s per-frame output over the frames above,
-            shown exactly as the model produced it. It is{" "}
-            <strong>not a probability that this media is manipulated</strong> and{" "}
-            <strong>not a Fake/Real decision</strong>.
+            <Copy
+              text="The score is the mean of the model's per-frame output over the frames above, shown exactly as the model produced it. It is {notProbability} and {notDecision}."
+              values={{
+                notProbability: (
+                  <strong><Copy>not a probability that this media is manipulated</Copy></strong>
+                ),
+                notDecision: <strong><Copy>not a Fake/Real decision</Copy></strong>,
+              }}
+            />
           </p>
           {decides ? (
             <p className="mt-2 text-xs opacity-80">
-              Under this ruleset the score is compared against{" "}
-              <span className="font-mono">{FACE_T_HIGH_DISPLAY}</span> — the threshold measured
-              for this detector in R4-T1, and for this detector only. It is never averaged or
-              combined with the other detectors&apos; scores; each is a separate question with
-              a separate answer, and the risk classification names which of them decided.
+              <Copy
+                text="Under this ruleset the score is compared against {threshold} — the threshold measured for this detector in R4-T1, and for this detector only. It is never averaged or combined with the other detectors' scores; each is a separate question with a separate answer, and the risk classification names which of them decided."
+                values={{ threshold: <span className="font-mono">{FACE_T_HIGH_DISPLAY}</span> }}
+              />
             </p>
           ) : (
             <p className="mt-2 text-xs opacity-80">
-              It is <strong>not calibrated</strong> under this ruleset, no threshold is applied
-              to it, and it does not contribute to the risk classification above and cannot
-              change it. This signal is recorded as an independent forensic fact only.
+              <Copy
+                text="It is {notCalibrated} under this ruleset, no threshold is applied to it, and it does not contribute to the risk classification above and cannot change it. This signal is recorded as an independent forensic fact only."
+                values={{ notCalibrated: <strong><Copy>not calibrated</Copy></strong> }}
+              />
             </p>
           )}
         </>
@@ -1661,67 +1868,82 @@ function LipForensicsSection({
 
           {signal.status !== "SUCCESS" && (
             <p className="mt-3 text-xs opacity-70">
-              This reading did not produce a score. A clip in which no run held a trackable
-              face throughout is the ordinary case, and it means the model was never asked —
-              it is not a finding that the media is genuine.
+              <Copy>
+                This reading did not produce a score. A clip in which no run held a trackable
+                face throughout is the ordinary case, and it means the model was never asked —
+                it is not a finding that the media is genuine.
+              </Copy>
             </p>
           )}
 
           <p className="mt-3 text-xs opacity-80">
-            The score is the model&apos;s output for the runs above — each a stretch of 25
-            consecutive frames, scored on how the mouth moves across them — shown exactly as
-            the model produced it. It is{" "}
-            <strong>not a probability that this media is manipulated</strong> and{" "}
-            <strong>not a Fake/Real decision</strong>.
+            <Copy
+              text="The score is the model's output for the runs above — each a stretch of 25 consecutive frames, scored on how the mouth moves across them — shown exactly as the model produced it. It is {notProbability} and {notDecision}."
+              values={{
+                notProbability: (
+                  <strong><Copy>not a probability that this media is manipulated</Copy></strong>
+                ),
+                notDecision: <strong><Copy>not a Fake/Real decision</Copy></strong>,
+              }}
+            />
           </p>
           <p className="mt-2 text-xs opacity-80">
-            Despite the model&apos;s name, this is{" "}
-            <strong>not a measure of audio/video lip synchronisation</strong>. The model is
-            given no audio at all: it reads the movement of the mouth in the picture and
-            nothing else, and what it was trained to separate is forged facial motion from
-            genuine facial motion.
+            <Copy
+              text="Despite the model's name, this is {notLipSync}. The model is given no audio at all: it reads the movement of the mouth in the picture and nothing else, and what it was trained to separate is forged facial motion from genuine facial motion."
+              values={{
+                notLipSync: (
+                  <strong><Copy>not a measure of audio/video lip synchronisation</Copy></strong>
+                ),
+              }}
+            />
           </p>
           {decides ? (
             <p className="mt-2 text-xs opacity-80">
-              Under this ruleset the score is compared against{" "}
-              <span className="font-mono">{LIP_T_HIGH_DISPLAY}</span> — the threshold measured
-              for this model in R5-T3, and for this model only. That figure is lower than the
-              thresholds above and this does not mean it is more easily convinced: the three
-              numbers are points on three unrelated scales and comparing them to each other is
-              not a comparison of anything. It was measured over 40 clips of a single dataset,
-              which is a smaller study than the one behind the two detectors above.
+              <Copy
+                text="Under this ruleset the score is compared against {threshold} — the threshold measured for this model in R5-T3, and for this model only. That figure is lower than the thresholds above and this does not mean it is more easily convinced: the three numbers are points on three unrelated scales and comparing them to each other is not a comparison of anything. It was measured over 40 clips of a single dataset, which is a smaller study than the one behind the two detectors above."
+                values={{ threshold: <span className="font-mono">{LIP_T_HIGH_DISPLAY}</span> }}
+              />
             </p>
           ) : evidenceOnly ? (
             <p className="mt-2 text-xs opacity-80">
-              An operating point was measured for this model in R5-T3 and under this ruleset it
-              is <strong>not applied</strong>: the model is read as{" "}
-              <strong>evidence only</strong>, and its score cannot reach the assessment above or
-              change it — including when it stands above that threshold. R7-T6 withdrew it from
-              the rules after R7-T5 measured what that operating point did to genuine media.
-              This signal is recorded as an independent forensic fact.
+              <Copy
+                text="An operating point was measured for this model in R5-T3 and under this ruleset it is {notApplied}: the model is read as {evidenceOnly}, and its score cannot reach the assessment above or change it — including when it stands above that threshold. R7-T6 withdrew it from the rules after R7-T5 measured what that operating point did to genuine media. This signal is recorded as an independent forensic fact."
+                values={{
+                  notApplied: <strong><Copy>not applied</Copy></strong>,
+                  evidenceOnly: <strong><Copy>evidence only</Copy></strong>,
+                }}
+              />
             </p>
           ) : roleUnstated ? (
             <p className="mt-2 text-xs opacity-80">
-              This model was within the scope of the ruleset that decided this analysis, and{" "}
-              <strong>this record does not state what that ruleset could do with it</strong> —
-              whether it applied the operating point measured in R5-T3 or read the score as
-              evidence only. The score below is shown as recorded, and nothing further is said
-              here about the part it played, because this record does not say.
+              <Copy
+                text="This model was within the scope of the ruleset that decided this analysis, and {unstated} — whether it applied the operating point measured in R5-T3 or read the score as evidence only. The score below is shown as recorded, and nothing further is said here about the part it played, because this record does not say."
+                values={{
+                  unstated: (
+                    <strong>
+                      <Copy>this record does not state what that ruleset could do with it</Copy>
+                    </strong>
+                  ),
+                }}
+              />
             </p>
           ) : (
             <p className="mt-2 text-xs opacity-80">
-              It is <strong>not calibrated</strong> under this ruleset, no threshold is applied
-              to it, and it does not contribute to the risk classification above and cannot
-              change it. This signal is recorded as an independent forensic fact only.
+              <Copy
+                text="It is {notCalibrated} under this ruleset, no threshold is applied to it, and it does not contribute to the risk classification above and cannot change it. This signal is recorded as an independent forensic fact only."
+                values={{ notCalibrated: <strong><Copy>not calibrated</Copy></strong> }}
+              />
             </p>
           )}
           <p className="mt-2 text-xs opacity-80">
-            It is <strong>not a second reading of the face-manipulation score above</strong>.
-            That model judges the appearance of a face crop; this one judges movement over
-            time. The two figures are on different scales and are never averaged, compared or
-            reconciled — agreement between them would not strengthen a finding, and
-            disagreement does not weaken one. Where both reached their own thresholds the risk
-            classification records that as two independent findings and not as a stronger one.
+            <Copy
+              text="It is {notSecondReading}. That model judges the appearance of a face crop; this one judges movement over time. The two figures are on different scales and are never averaged, compared or reconciled — agreement between them would not strengthen a finding, and disagreement does not weaken one. Where both reached their own thresholds the risk classification records that as two independent findings and not as a stronger one."
+              values={{
+                notSecondReading: (
+                  <strong><Copy>not a second reading of the face-manipulation score above</Copy></strong>
+                ),
+              }}
+            />
           </p>
         </>
       )}
@@ -1949,11 +2171,10 @@ export default async function Report({
      * top and bottom by the instrument's graphite.
      */
     <div className="light flex flex-1 flex-col bg-paper text-doc">
-      {/* `lang="en"`: the document is English until R16-T3, whatever the reader's language. Its
-          screen-only controls and the feedback form are the interface's words, and each of
-          those names its own language (`<T>`), so only the document is held to English. */}
+      {/* No `lang` of its own (R16-T3): the document follows the reader's language like the
+          controls around it. Every translated sentence names the language it was drawn in
+          (`<Copy>`), and a value from the record claims none. */}
       <main
-        lang="en"
         className="mx-auto w-full max-w-3xl px-6 py-10 sm:px-8 sm:py-12 print:max-w-none print:p-0"
       >
         {/* Page setup for printing. Plain CSS because @page has no Tailwind equivalent, and
@@ -1970,15 +2191,19 @@ export default async function Report({
         <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4 border-b border-black/15 pb-5 print:border-black/40">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold tracking-[0.16em] uppercase opacity-70">
-              InspectRoot
+              {/* The product's name, the same word in every language. Marked English so that
+                  `uppercase` under a Turkish page does not dot its `I`. */}
+              <span lang="en" translate="no">
+                InspectRoot
+              </span>
             </p>
             <h1 className="mt-1.5 text-2xl font-semibold tracking-[-0.02em]">
-              Forensic Evidence Report
+              <Copy>Forensic Evidence Report</Copy>
             </h1>
           </div>
           {/* Screen-only controls. Hidden in print so the document carries no dead UI. They are
-              the interface around the document and follow the reader's language (R16-T2);
-              the document itself does not yet (R16-T3). */}
+              the interface around the document and follow the reader's language (R16-T2), as
+              the document itself now does (R16-T3). */}
           <div className="flex shrink-0 items-center gap-4 print:hidden">
             <Link href={WORKSPACE_PATH} className="text-sm underline">
               <T k="report.dashboard" />
@@ -1994,7 +2219,13 @@ export default async function Report({
         <Field label="Analysis timestamp (UTC)" value={analysis.created_at} />
         <Field
           label="Size on disk"
-          value={analysis.size_bytes === null ? ABSENT : `${analysis.size_bytes} bytes`}
+          value={
+            analysis.size_bytes === null ? (
+              ABSENT
+            ) : (
+              <Copy text="{bytes} bytes" values={{ bytes: analysis.size_bytes }} />
+            )
+          }
         />
       </dl>
 
@@ -2024,16 +2255,20 @@ export default async function Report({
             — and the surest way to say so is to answer it here, as its own question, before the
             evidence behind the assessment begins. */}
         <h2 className="mt-10 border-b border-black/15 pb-2 text-[13px] font-semibold tracking-[0.1em] uppercase print:border-black/40">
-          Authenticity and provenance
+          <Copy>
+            Authenticity and provenance
+          </Copy>
         </h2>
         <p className="mt-3 max-w-[76ch] text-xs leading-relaxed opacity-70">
-          A separate question from the assessment above, answered from separate evidence.
-          Provenance is what the file itself carries about where it came from and who signed for
-          it; the detector evidence further down is what was measured about the picture and the
-          sound. Neither reaches the other: no assessment on this page was moved by the
-          provenance state below, and the provenance state below was not moved by any assessment
-          on this page. Nothing here reports the media as authentic or manipulated, and no
-          provenance state on this page can.
+          <Copy>
+            A separate question from the assessment above, answered from separate evidence.
+            Provenance is what the file itself carries about where it came from and who signed for
+            it; the detector evidence further down is what was measured about the picture and the
+            sound. Neither reaches the other: no assessment on this page was moved by the
+            provenance state below, and the provenance state below was not moved by any assessment
+            on this page. Nothing here reports the media as authentic or manipulated, and no
+            provenance state on this page can.
+          </Copy>
         </p>
 
         <ProvenanceSection signal={analysis.provenance} analysis={analysis} />
@@ -2044,11 +2279,15 @@ export default async function Report({
             by the two sections above existing, and a reader who needs the figures has one
             boundary to cross to reach all of them. */}
         <h2 className="mt-10 border-b border-black/15 pb-2 text-[13px] font-semibold tracking-[0.1em] uppercase print:border-black/40">
-          Technical forensic evidence
+          <Copy>
+            Technical forensic evidence
+          </Copy>
         </h2>
         <p className="mt-3 max-w-[76ch] text-xs leading-relaxed opacity-70">
-          The record behind the assessment: the decision as it was stored, the artifact it was
-          taken on, and every detector reading kept for it. None of it is recomputed here.
+          <Copy>
+            The record behind the assessment: the decision as it was stored, the artifact it was
+            taken on, and every detector reading kept for it. None of it is recomputed here.
+          </Copy>
         </p>
 
         {/* The classification card, on the decisions the assessment summary does not state.
@@ -2072,19 +2311,23 @@ export default async function Report({
         <MediaSection analysis={analysis} media={analysis.media} />
 
         <h3 className="mt-8 text-[11px] font-semibold tracking-[0.14em] uppercase opacity-70">
-          Independent detector evidence
+          <Copy>
+            Independent detector evidence
+          </Copy>
         </h3>
         <p className="mt-2 max-w-[76ch] text-xs leading-relaxed opacity-70">
-          Each source is recorded separately and none of them is combined into the other.
-          {analysis.risk_rules_version === RULES_VERSION_V5
-            ? " Two of them can reach the assessment above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. The mouth-dynamics model is calibrated and is recorded here as independent evidence; under this ruleset it cannot reach that assessment, and a reading it failed to produce does not reduce the decision coverage stated there. Speaking evidence and audio evidence have no calibrated threshold at all."
-            : analysis.risk_rules_version === RULES_VERSION_V4
-            ? " Two of them can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. The mouth-dynamics model is calibrated and is recorded here as independent evidence, but under this ruleset it cannot change that classification. Neither can speaking evidence or audio evidence, which have no calibrated threshold at all."
-            : analysis.risk_rules_version === RULES_VERSION_V3
-            ? " Three of them are calibrated and can reach the risk classification above — the synthetic-video detector, the face-manipulation classifier and the mouth-dynamics model — each against a threshold measured for it alone, and never by pooling their scores. Speaking evidence and audio evidence have no calibrated threshold and cannot change that classification."
-            : analysis.risk_rules_version === RULES_VERSION_V2
-              ? " Two of them are calibrated and can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. Speaking evidence, mouth-dynamics evidence and audio evidence have no calibrated threshold and cannot change that classification."
-              : " Only the synthetic-video detector contributes to the risk classification above; speaking evidence, face-manipulation evidence, mouth-dynamics evidence and audio evidence are recorded as independent forensic facts and cannot change that classification."}
+          <Copy>Each source is recorded separately and none of them is combined into the other.</Copy>{" "}
+          <Copy>
+            {analysis.risk_rules_version === RULES_VERSION_V5
+              ? "Two of them can reach the assessment above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. The mouth-dynamics model is calibrated and is recorded here as independent evidence; under this ruleset it cannot reach that assessment, and a reading it failed to produce does not reduce the decision coverage stated there. Speaking evidence and audio evidence have no calibrated threshold at all."
+              : analysis.risk_rules_version === RULES_VERSION_V4
+              ? "Two of them can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. The mouth-dynamics model is calibrated and is recorded here as independent evidence, but under this ruleset it cannot change that classification. Neither can speaking evidence or audio evidence, which have no calibrated threshold at all."
+              : analysis.risk_rules_version === RULES_VERSION_V3
+              ? "Three of them are calibrated and can reach the risk classification above — the synthetic-video detector, the face-manipulation classifier and the mouth-dynamics model — each against a threshold measured for it alone, and never by pooling their scores. Speaking evidence and audio evidence have no calibrated threshold and cannot change that classification."
+              : analysis.risk_rules_version === RULES_VERSION_V2
+                ? "Two of them are calibrated and can reach the risk classification above — the synthetic-video detector and the face-manipulation classifier — each against a threshold measured for it alone, and never by pooling their scores. Speaking evidence, mouth-dynamics evidence and audio evidence have no calibrated threshold and cannot change that classification."
+                : "Only the synthetic-video detector contributes to the risk classification above; speaking evidence, face-manipulation evidence, mouth-dynamics evidence and audio evidence are recorded as independent forensic facts and cannot change that classification."}
+          </Copy>
         </p>
 
         {/* What has run of the supplementary evidence, before the panels it is about. A
@@ -2110,11 +2353,13 @@ export default async function Report({
 
         <footer className="mt-10 break-inside-avoid border-t border-black/15 pt-4 text-xs leading-relaxed opacity-70 dark:border-white/20 print:border-black/40">
           <p className="max-w-[76ch]">
+          <Copy>
             This report is a rendering of forensic evidence persisted by InspectRoot for the
             analysis named above. It is not cryptographically signed, and reproducing it does
             not establish that its contents are unaltered. The SHA-256 shown is the hash of the
             submitted media, not of this report — and, where the media was normalized for
             detection, not of the derivative the detectors read.
+          </Copy>
           </p>
           {/* The closing guarantee, and the one sentence on this page that had to be
               rewritten rather than softened (M1). It used to read "nothing in this document
@@ -2128,10 +2373,12 @@ export default async function Report({
               provenance as a separate question that reaches neither. All three are stated
               here, and none of them is weakened to make the sentence shorter. */}
           <p className="mt-2 max-w-[76ch] font-medium">
-            Nothing in this document makes a binary Fake/Real authenticity determination.
-            Where applicable, the assessment above reports calibrated manipulation evidence
-            under the stated ruleset. Provenance is reported separately and does not determine
-            that assessment.
+            <Copy>
+              Nothing in this document makes a binary Fake/Real authenticity determination.
+              Where applicable, the assessment above reports calibrated manipulation evidence
+              under the stated ruleset. Provenance is reported separately and does not determine
+              that assessment.
+            </Copy>
           </p>
         </footer>
       </main>
