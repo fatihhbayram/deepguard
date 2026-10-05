@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 
 const REPORT = new URL("../../app/app/report/[id]/page.tsx", import.meta.url);
+const DASHBOARD = new URL("../../app/app/page.tsx", import.meta.url);
 const ANALYSIS = new URL("../../app/analysis.ts", import.meta.url);
 
 // The attributes whose string is drawn through `<Copy>` by the component that receives it.
@@ -77,10 +78,29 @@ function tagName(node) {
   return node.tagName.getText();
 }
 
+// The dashboard (R16-T5): the same `<Copy>`, its tooltip twin, and the labels of its own two
+// components, plus the declarations whose strings reach a `text` through a variable.
+const DASHBOARD_COPY_ATTRIBUTES = {
+  Copy: ["text"],
+  CopyTitle: ["text"],
+  Field: ["term"],
+  Note: ["term"],
+  Term: ["text"],
+};
+const DASHBOARD_COPY_DECLARATIONS = ["provenanceTitle", "detail"];
+
 export function reportPageCopy() {
+  return pageCopy(REPORT, COPY_ATTRIBUTES, COPY_DECLARATIONS);
+}
+
+export function dashboardPageCopy() {
+  return pageCopy(DASHBOARD, DASHBOARD_COPY_ATTRIBUTES, DASHBOARD_COPY_DECLARATIONS);
+}
+
+function pageCopy(file, copyAttributes, copyDeclarations) {
   const source = ts.createSourceFile(
     "page.tsx",
-    readFileSync(REPORT, "utf8"),
+    readFileSync(file, "utf8"),
     ts.ScriptTarget.Latest,
     true,
     ts.ScriptKind.TSX,
@@ -105,7 +125,7 @@ export function reportPageCopy() {
       for (const attribute of node.attributes.properties) {
         if (!ts.isJsxAttribute(attribute) || attribute.initializer === undefined) continue;
         const key = attribute.name.getText();
-        if (COPY_ATTRIBUTES[name]?.includes(key)) {
+        if (copyAttributes[name]?.includes(key)) {
           literals(attribute.initializer, found);
         }
         if (name === "NoSignal" && key === "what") {
@@ -116,12 +136,14 @@ export function reportPageCopy() {
 
     if (
       (ts.isVariableDeclaration(node) || ts.isFunctionDeclaration(node)) &&
-      COPY_DECLARATIONS.includes(node.name?.getText())
+      copyDeclarations.includes(node.name?.getText())
     ) {
       // Only what these return or hold is copy; a `case` label or a comparison is not.
       const visitValues = (child) => {
         if (ts.isVariableDeclaration(child) && child === node && child.initializer && ts.isStringLiteral(child.initializer)) {
           found.add(child.initializer.text);
+        } else if (ts.isVariableDeclaration(child) && child === node && child.initializer && ts.isConditionalExpression(child.initializer)) {
+          literals(child.initializer, found);
         } else if (ts.isReturnStatement(child) && child.expression) {
           literals(child.expression, found);
         } else if (ts.isPropertyAssignment(child)) {
@@ -224,4 +246,24 @@ export async function reportVocabularyCopy() {
   }
 
   return found;
+}
+
+/** The shared vocabulary's words that only the dashboard draws (R16-T5). */
+export async function dashboardVocabularyCopy() {
+  const analysis = await import(ANALYSIS.href);
+  return new Set([
+    analysis.UNAVAILABLE,
+    analysis.PENDING,
+    analysis.UNSUPPORTED,
+    analysis.NO_PROVENANCE,
+    analysis.REMOTE_PROVENANCE,
+    analysis.EXTRACTION_FAILED,
+    analysis.SPEAKER_UNAVAILABLE,
+    analysis.NO_SPEAKING_FACES,
+    analysis.UNMATCHED_VOICE,
+    analysis.AUDIO_UNAVAILABLE,
+    analysis.NO_AUDIO_WINDOWS,
+    analysis.FACE_SCORE_UNAVAILABLE,
+    analysis.LIP_FORENSICS_SCORE_UNAVAILABLE,
+  ]);
 }

@@ -21,7 +21,10 @@ const { default: Report } = await import("../app/app/report/[id]/page.tsx");
 const { FixedLocale } = await import("../app/i18n/client.tsx");
 const { REPORT_COPY, copySegments, translateCopy } = await import("../app/i18n/core.ts");
 const { FIXTURES, canonicalValues } = await import("./support/report-fixtures.mjs");
-const { reportPageCopy, reportVocabularyCopy } = await import("./support/report-copy-sources.mjs");
+const { valueTokens } = await import("./support/value-tokens.mjs");
+const { dashboardPageCopy, dashboardVocabularyCopy, reportPageCopy, reportVocabularyCopy } = await import(
+  "./support/report-copy-sources.mjs"
+);
 
 process.env.API_INTERNAL_URL = "http://api.invalid";
 
@@ -98,6 +101,19 @@ for (const [name, payload] of Object.entries(FIXTURES)) {
     // The same values, the same number of times, in the same order: the Turkish document is the
     // English one with its words replaced.
     assert.deepEqual(evidenceSequence(tr, values), english);
+  });
+
+  test(`${name}: every value from the record inside a sentence is printed identically, in the same order`, () => {
+    // R16-T5. A `<Copy>` sentence and the values in its slots render as one text node, so the
+    // node comparison above cannot see a host, a rule id or a status drawn inside a sentence.
+    // This scans the visible text for each value as a whole token, wherever it sits.
+    const { en, tr } = RENDERS[name];
+    const values = new Set([...canonicalValues(payload)].map(escapeHtml));
+    const english = valueTokens(en, values);
+    assert.deepEqual(valueTokens(tr, values), english);
+    for (const html of [en, tr]) {
+      assert.ok(!/\{[A-Za-z0-9_]+\}/.test(html.replace(/<[^>]*>/g, "")), "an unfilled {slot}");
+    }
   });
 
   test(`${name}: switching language changes the report's words`, () => {
@@ -180,7 +196,9 @@ test("every sentence the report can print has a Turkish entry, and every entry i
   const missing = [...sources].filter((sentence) => !entries.has(sentence));
   assert.deepEqual(missing, [], "sentences with no Turkish entry");
 
-  const stale = [...entries].filter((sentence) => !sources.has(sentence));
+  // The dashboard (R16-T5) shares this table, so a sentence only it prints is still in use.
+  const dashboard = new Set([...dashboardPageCopy(), ...(await dashboardVocabularyCopy())]);
+  const stale = [...entries].filter((sentence) => !sources.has(sentence) && !dashboard.has(sentence));
   assert.deepEqual(stale, [], "Turkish entries for sentences the report no longer prints");
 });
 
@@ -202,6 +220,15 @@ test("no Turkish entry renames the product or the evidence", () => {
     for (const token of english.match(/\b(?:\d+(?:\.\d+)?%?|R\d-T\d|p7-v1\.0\.0|r7-v4\.0\.0|HIGH|C2PA|NVIDIA|AASIST|NVCF|SHA-256)\b/g) ?? []) {
       assert.ok(turkish.includes(token.replace(/^(\d+(?:\.\d+)?)%$/, "%$1")), `${token} in: ${english}`);
     }
+  }
+});
+
+test("a final assessment is called final in Turkish, not certain (R16-T5)", () => {
+  // "Final" says the assessment will not change; "kesin" would also say it is certain, which
+  // is a stronger claim than the English makes.
+  for (const [english, turkish] of Object.entries(REPORT_COPY.tr)) {
+    assert.ok(!/\bkesin/i.test(turkish), `"kesin" in: ${english}`);
+    if (/\bfinal\b/.test(english)) assert.ok(turkish.includes("nihai"), english);
   }
 });
 

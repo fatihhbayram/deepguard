@@ -1,13 +1,13 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { CanonicalLabel, LanguageSelector, T } from "../i18n/client";
+import { CanonicalLabel, Copy, CopyTitle, LanguageSelector, T } from "../i18n/client";
 import { type MessageKey } from "../i18n/core";
 import { requestIdHeaders } from "../observability";
 import { ADMIN_PATH, LOGIN_PATH, SessionUser, USER_ROLE_ADMIN } from "../session";
 import {
   ABSENT,
-  acquisitionStatement,
+  acquisitionSentence,
   ANALYSIS_STATUS_COMPLETED,
   ANALYSIS_STATUS_FAILED,
   apiUrl,
@@ -29,6 +29,10 @@ import {
   ProvenanceSignal,
   REMOTE_PROVENANCE,
   RISK_LABELS,
+  RULES_VERSION_V1,
+  RULES_VERSION_V2,
+  RULES_VERSION_V3,
+  RULES_VERSION_V4,
   RULES_VERSION_V5,
   SIGNAL_STATUS_SUCCESS,
   SPEAKER_UNAVAILABLE,
@@ -338,13 +342,23 @@ function probabilityText(signal: SyntheticVideoSignal | null): string {
   return `${(signal.score * 100).toFixed(2)}%`;
 }
 
-/** The exact stored figure, so rounding to two decimals never hides the real number. */
-function probabilityTitle(signal: SyntheticVideoSignal | null): string | undefined {
+/**
+ * The figure, with the exact stored score on hover so rounding to two decimals never hides the
+ * real number. `N/A` is this page's word and is drawn in the reader's language; a figure is not.
+ */
+function Probability({ signal }: { signal: SyntheticVideoSignal | null }) {
+  const text = probabilityText(signal);
+  const shown = text === UNAVAILABLE ? <Copy text={UNAVAILABLE} /> : text;
+
   if (signal === null || signal.score === null) {
-    return undefined;
+    return <span>{shown}</span>;
   }
 
-  return `NVIDIA score: ${signal.score}`;
+  return (
+    <CopyTitle text="NVIDIA score: {score}" values={{ score: signal.score }}>
+      {shown}
+    </CopyTitle>
+  );
 }
 
 /**
@@ -362,14 +376,19 @@ function ClipEvidence({ signal }: { signal: SyntheticVideoSignal | null }) {
   }
 
   if (signal.segments.length === 0) {
-    return <>{UNAVAILABLE}</>;
+    return <Copy text={UNAVAILABLE} />;
   }
 
   return (
     <ul className="space-y-1">
       {signal.segments.map((segment) => (
-        <li key={segment.clip_index} title={`NVIDIA clip logit: ${segment.logit}`}>
-          frame {segment.clip_index} · {segment.logit.toFixed(2)}
+        <li key={segment.clip_index}>
+          <CopyTitle text="NVIDIA clip logit: {logit}" values={{ logit: segment.logit }}>
+            <Copy
+              text="frame {frame} · {logit}"
+              values={{ frame: segment.clip_index, logit: segment.logit.toFixed(2) }}
+            />
+          </CopyTitle>
         </li>
       ))}
     </ul>
@@ -394,11 +413,15 @@ function ActiveSpeaker({ signal }: { signal: ActiveSpeakerSignal | null }) {
   }
 
   if (signal.status !== SIGNAL_STATUS_SUCCESS) {
-    return <span title={`Active speaker: ${signal.status}`}>{SPEAKER_UNAVAILABLE}</span>;
+    return (
+      <CopyTitle text="Active speaker: {status}" values={{ status: signal.status }}>
+        <Copy text={SPEAKER_UNAVAILABLE} />
+      </CopyTitle>
+    );
   }
 
   if (signal.segments.length === 0) {
-    return <>{NO_SPEAKING_FACES}</>;
+    return <Copy text={NO_SPEAKING_FACES} />;
   }
 
   // The stored count is what is listed; the detection's own total is named beside it
@@ -406,18 +429,33 @@ function ActiveSpeaker({ signal }: { signal: ActiveSpeakerSignal | null }) {
   const total = signal.total_speaking_segments;
   const shown = signal.segments.length;
   const truncated = total !== null && total > shown;
-  const count = truncated ? `${shown} of ${total}` : `${shown}`;
 
   return (
     <details className="group/inner">
       <summary className="cursor-pointer text-bone transition-colors duration-150 select-none hover:text-accent">
-        {count} segment{shown === 1 && !truncated ? "" : "s"}
+        <Copy
+          text={
+            truncated
+              ? "{shown} of {total} segments"
+              : shown === 1
+                ? "{shown} segment"
+                : "{shown} segments"
+          }
+          values={{ shown, total }}
+        />
       </summary>
       <ul className="mt-2 space-y-1 text-muted">
         {signal.segments.map((segment) => (
           <li key={`${segment.start_time}-${segment.face_id}`}>
-            {segment.start_time.toFixed(2)}s–{segment.end_time.toFixed(2)}s · Face{" "}
-            {segment.face_id} · {segment.speaker_label ?? UNMATCHED_VOICE}
+            <Copy
+              text="{start}s–{end}s · Face {face} · {speaker}"
+              values={{
+                start: segment.start_time.toFixed(2),
+                end: segment.end_time.toFixed(2),
+                face: segment.face_id,
+                speaker: segment.speaker_label ?? <Copy text={UNMATCHED_VOICE} />,
+              }}
+            />
           </li>
         ))}
       </ul>
@@ -448,11 +486,15 @@ function AudioEvidence({ signal }: { signal: AudioAuthenticitySignal | null }) {
   }
 
   if (signal.status !== SIGNAL_STATUS_SUCCESS) {
-    return <span title={`Audio authenticity: ${signal.status}`}>{AUDIO_UNAVAILABLE}</span>;
+    return (
+      <CopyTitle text="Audio authenticity: {status}" values={{ status: signal.status }}>
+        <Copy text={AUDIO_UNAVAILABLE} />
+      </CopyTitle>
+    );
   }
 
   if (signal.windows.length === 0) {
-    return <>{NO_AUDIO_WINDOWS}</>;
+    return <Copy text={NO_AUDIO_WINDOWS} />;
   }
 
   // The stored count is what is listed; the sweep's own total is named beside it whenever
@@ -460,21 +502,42 @@ function AudioEvidence({ signal }: { signal: AudioAuthenticitySignal | null }) {
   const total = signal.total_audio_windows;
   const shown = signal.windows.length;
   const truncated = total !== null && total > shown;
-  const count = truncated ? `${shown} of ${total}` : `${shown}`;
+  const count = (
+    <Copy
+      text={
+        truncated
+          ? "{shown} of {total} audio windows"
+          : shown === 1
+            ? "{shown} audio window"
+            : "{shown} audio windows"
+      }
+      values={{ shown, total }}
+    />
+  );
 
   return (
     <details className="group/inner">
-      <summary
-        className="cursor-pointer text-bone transition-colors duration-150 select-none hover:text-accent"
-        title={audioModelTitle(signal)}
-      >
-        {count} audio window{shown === 1 && !truncated ? "" : "s"}
+      <summary className="cursor-pointer text-bone transition-colors duration-150 select-none hover:text-accent">
+        {signal.provider_version ? (
+          <CopyTitle text="Checkpoint: {version}" values={{ version: signal.provider_version }}>
+            {count}
+          </CopyTitle>
+        ) : (
+          count
+        )}
       </summary>
       <ul className="mt-2 space-y-1 text-muted">
         {signal.windows.map((window) => (
           <li key={window.clip_index}>
-            {window.start_time.toFixed(2)}s–{window.end_time.toFixed(2)}s · Raw logit[0]:{" "}
-            {window.logit.toFixed(2)} · Bona fide logit: {window.bona_fide_logit.toFixed(2)}
+            <Copy
+              text="{start}s–{end}s · Raw logit[0]: {logit} · Bona fide logit: {bonaFide}"
+              values={{
+                start: window.start_time.toFixed(2),
+                end: window.end_time.toFixed(2),
+                logit: window.logit.toFixed(2),
+                bonaFide: window.bona_fide_logit.toFixed(2),
+              }}
+            />
           </li>
         ))}
       </ul>
@@ -502,26 +565,35 @@ function FaceManipulation({ signal }: { signal: FaceManipulationSignal | null })
 
   if (signal.status !== SIGNAL_STATUS_SUCCESS || signal.score === null) {
     return (
-      <span title={`Face manipulation: ${signal.status}`}>{FACE_SCORE_UNAVAILABLE}</span>
+      <CopyTitle text="Face manipulation: {status}" values={{ status: signal.status }}>
+        <Copy text={FACE_SCORE_UNAVAILABLE} />
+      </CopyTitle>
     );
   }
 
-  const frames =
-    signal.frames_scored === null || signal.frames_requested === null
-      ? null
-      : `${signal.frames_scored} of ${signal.frames_requested} sampled frames`;
-
-  return (
-    <span title={faceModelTitle(signal)}>
+  const reading = (
+    <>
       {signal.score.toFixed(4)}
-      {frames === null ? null : <span className="text-muted"> · {frames}</span>}
-    </span>
+      {signal.frames_scored === null || signal.frames_requested === null ? null : (
+        <span className="text-muted">
+          {" · "}
+          <Copy
+            text="{scored} of {requested} sampled frames"
+            values={{ scored: signal.frames_scored, requested: signal.frames_requested }}
+          />
+        </span>
+      )}
+    </>
   );
-}
 
-/** Which checkpoint produced this score. A different revision is a different reading. */
-function faceModelTitle(signal: FaceManipulationSignal): string | undefined {
-  return signal.provider_version ? `Checkpoint: ${signal.provider_version}` : undefined;
+  // Which checkpoint produced this score. A different revision is a different reading.
+  return signal.provider_version ? (
+    <CopyTitle text="Checkpoint: {version}" values={{ version: signal.provider_version }}>
+      {reading}
+    </CopyTitle>
+  ) : (
+    <span>{reading}</span>
+  );
 }
 
 /**
@@ -539,33 +611,36 @@ function LipForensics({ signal }: { signal: LipForensicsSignal | null }) {
 
   if (signal.status !== SIGNAL_STATUS_SUCCESS || signal.score === null) {
     return (
-      <span title={`Mouth dynamics: ${signal.status}`}>
-        {LIP_FORENSICS_SCORE_UNAVAILABLE}
-      </span>
+      <CopyTitle text="Mouth dynamics: {status}" values={{ status: signal.status }}>
+        <Copy text={LIP_FORENSICS_SCORE_UNAVAILABLE} />
+      </CopyTitle>
     );
   }
 
-  const windows =
-    signal.windows_scored === null || signal.windows_requested === null
-      ? null
-      : `${signal.windows_scored} of ${signal.windows_requested} sampled runs`;
-
-  return (
-    <span title={lipForensicsModelTitle(signal)}>
+  const reading = (
+    <>
       {signal.score.toFixed(4)}
-      {windows === null ? null : <span className="text-muted"> · {windows}</span>}
-    </span>
+      {signal.windows_scored === null || signal.windows_requested === null ? null : (
+        <span className="text-muted">
+          {" · "}
+          <Copy
+            text="{scored} of {requested} sampled runs"
+            values={{ scored: signal.windows_scored, requested: signal.windows_requested }}
+          />
+        </span>
+      )}
+    </>
   );
-}
 
-/** Which artifacts produced this score. A different revision or checkpoint is a different reading. */
-function lipForensicsModelTitle(signal: LipForensicsSignal): string | undefined {
-  return signal.provider_version ? `Model: ${signal.provider_version}` : undefined;
-}
-
-/** Which checkpoint produced these figures. A different revision is a different reading. */
-function audioModelTitle(signal: AudioAuthenticitySignal): string | undefined {
-  return signal.provider_version ? `Checkpoint: ${signal.provider_version}` : undefined;
+  // Which artifacts produced this score. A different revision or checkpoint is a different
+  // reading.
+  return signal.provider_version ? (
+    <CopyTitle text="Model: {version}" values={{ version: signal.provider_version }}>
+      {reading}
+    </CopyTitle>
+  ) : (
+    <span>{reading}</span>
+  );
 }
 
 /**
@@ -608,17 +683,25 @@ function provenanceText(signal: ProvenanceSignal | null): string {
  * of an uploaded file, and offering it as something to click would hand the reader the
  * fetch the worker refused to make.
  */
-function provenanceTitle(signal: ProvenanceSignal | null): string | undefined {
+function provenanceTitle(
+  signal: ProvenanceSignal | null,
+): { text: string; values: Record<string, string> } | undefined {
   if (signal === null) {
     return undefined;
   }
 
-  const parts = [
-    signal.provider_version ? `C2PA SDK: ${signal.provider_version}` : null,
-    signal.remote_manifest_url ? `Manifest URL (not fetched): ${signal.remote_manifest_url}` : null,
-  ].filter((part) => part !== null);
-
-  return parts.length > 0 ? parts.join(" · ") : undefined;
+  const version = signal.provider_version;
+  const url = signal.remote_manifest_url;
+  if (version && url) {
+    return { text: "C2PA SDK: {version} · Manifest URL (not fetched): {url}", values: { version, url } };
+  }
+  if (version) {
+    return { text: "C2PA SDK: {version}", values: { version } };
+  }
+  if (url) {
+    return { text: "Manifest URL (not fetched): {url}", values: { url } };
+  }
+  return undefined;
 }
 
 /** Who the manifest says made the media, or who signed for it. Absent unless named. */
@@ -632,10 +715,26 @@ function provenanceSource(signal: ProvenanceSignal | null): string | null {
 
 function Provenance({ signal }: { signal: ProvenanceSignal | null }) {
   const source = provenanceSource(signal);
+  const text = provenanceText(signal);
+  // C2PA's own validation state is the record's word and is drawn as it is; the rest are this
+  // page's words.
+  const shown =
+    text === ABSENT || (signal !== null && text === signal.validation_state) ? (
+      <span>{text}</span>
+    ) : (
+      <Copy text={text} />
+    );
+  const title = provenanceTitle(signal);
 
   return (
     <>
-      <div title={provenanceTitle(signal)}>{provenanceText(signal)}</div>
+      {title ? (
+        <CopyTitle as="div" text={title.text} values={title.values}>
+          {shown}
+        </CopyTitle>
+      ) : (
+        <div>{shown}</div>
+      )}
       {source && <div className="mt-1 text-muted">{source}</div>}
     </>
   );
@@ -714,12 +813,13 @@ function Risk({ analysis }: { analysis: AnalysisSummary }) {
     return isDecided(analysis.status) ? (
       <span className="font-mono text-[11px] text-muted">{ABSENT}</span>
     ) : (
-      <span
+      <CopyTitle
         className="font-mono text-[11px] text-muted"
-        title={`Analysis ${analysis.status}: no risk decision has been taken yet.`}
+        text="Analysis {status}: no risk decision has been taken yet."
+        values={{ status: analysis.status }}
       >
-        {PENDING}
-      </span>
+        <Copy text={PENDING} />
+      </CopyTitle>
     );
   }
 
@@ -742,15 +842,20 @@ function Risk({ analysis }: { analysis: AnalysisSummary }) {
   if (label === UNSUPPORTED) {
     return (
       <div className="font-mono text-[11px]">
-        <span className="text-muted">RISK — </span>
-        <span
-          className={`px-1.5 py-0.5 ${style}`}
-          title={`Stored risk state ${level} is not a supported InspectRoot risk classification${
-            analysis.risk_rules_version ? ` (ruleset ${analysis.risk_rules_version})` : ""
-          }.`}
-        >
-          {UNSUPPORTED}
+        <span className="text-muted">
+          <Copy>RISK —</Copy>{" "}
         </span>
+        <CopyTitle
+          className={`px-1.5 py-0.5 ${style}`}
+          text={
+            analysis.risk_rules_version
+              ? "Stored risk state {level} is not a supported InspectRoot risk classification (ruleset {ruleset})."
+              : "Stored risk state {level} is not a supported InspectRoot risk classification."
+          }
+          values={{ level, ruleset: analysis.risk_rules_version ?? "" }}
+        >
+          <Copy text={UNSUPPORTED} />
+        </CopyTitle>
       </div>
     );
   }
@@ -758,12 +863,16 @@ function Risk({ analysis }: { analysis: AnalysisSummary }) {
   return (
     <div className="font-mono text-[11px]">
       <div>
-        <span className="text-muted">RISK — </span>
-        <span className={`px-1.5 py-0.5 ${style}`}>{label}</span>
+        <span className="text-muted">
+          <Copy>RISK —</Copy>{" "}
+        </span>
+        <span className={`px-1.5 py-0.5 ${style}`}>
+          <Copy text={label} />
+        </span>
       </div>
       {analysis.risk_rules_version && (
         <div className="mt-1.5 text-[10px] tracking-[0.04em] text-muted">
-          ruleset {analysis.risk_rules_version}
+          <Copy text="ruleset {ruleset}" values={{ ruleset: analysis.risk_rules_version }} />
         </div>
       )}
       {/* The rest of the trace, one <details> away. A level is only explainable alongside
@@ -771,16 +880,27 @@ function Risk({ analysis }: { analysis: AnalysisSummary }) {
           all three stay reachable without a detail page or any client-side state. */}
       <details className="group/inner mt-1.5">
         <summary className="cursor-pointer text-[11px] text-muted transition-colors duration-150 select-none hover:text-bone">
-          Trace
+          <Copy>Trace</Copy>
         </summary>
         <ul className="mt-1.5 space-y-1 text-[10px] text-muted">
-          <li>Rule: {analysis.risk_rule_id ?? ABSENT}</li>
-          <li>Ruleset: {analysis.risk_rules_version ?? ABSENT}</li>
+          <li>
+            <Copy text="Rule: {rule}" values={{ rule: analysis.risk_rule_id ?? ABSENT }} />
+          </li>
+          <li>
+            <Copy
+              text="Ruleset: {ruleset}"
+              values={{ ruleset: analysis.risk_rules_version ?? ABSENT }}
+            />
+          </li>
           <li title={analysis.risk_calibration_id ?? undefined}>
-            Calibration:{" "}
-            {analysis.risk_calibration_id
-              ? shortCalibration(analysis.risk_calibration_id)
-              : ABSENT}
+            <Copy
+              text="Calibration: {calibration}"
+              values={{
+                calibration: analysis.risk_calibration_id
+                  ? shortCalibration(analysis.risk_calibration_id)
+                  : ABSENT,
+              }}
+            />
           </li>
         </ul>
         {/* The rule in words. Derived from the persisted rule and ruleset — never from the
@@ -788,7 +908,7 @@ function Risk({ analysis }: { analysis: AnalysisSummary }) {
             recomputed here. A ruleset this build does not know shows the trace alone. */}
         {rationale !== null && (
           <p className="mt-1.5 max-w-prose text-[10px] leading-relaxed text-muted">
-            {rationale.summary}
+            <Copy text={rationale.summary} />
           </p>
         )}
       </details>
@@ -820,23 +940,31 @@ function Media({ media }: { media: MediaFacts }) {
       ? `${media.analyzed_width}×${media.analyzed_height}`
       : `${media.original_width}×${media.original_height}`;
 
-  const detail = [
-    `${media.duration.toFixed(2)}s`,
-    media.pix_fmt,
-    media.constant_frame_rate ? "constant frame rate" : "variable frame rate",
-    // Named in the hover, where there is room to say which figure is which.
-    `encoded ${media.original_width}×${media.original_height}`,
-  ]
-    .filter((part) => part !== null)
-    .join(" · ");
+  // Named in the hover, where there is room to say which figure is which.
+  const detail =
+    media.pix_fmt === null
+      ? media.constant_frame_rate
+        ? "{duration}s · constant frame rate · encoded {encoded}"
+        : "{duration}s · variable frame rate · encoded {encoded}"
+      : media.constant_frame_rate
+        ? "{duration}s · {pixFmt} · constant frame rate · encoded {encoded}"
+        : "{duration}s · {pixFmt} · variable frame rate · encoded {encoded}";
 
   return (
-    <div title={detail}>
+    <CopyTitle
+      as="div"
+      text={detail}
+      values={{
+        duration: media.duration.toFixed(2),
+        pixFmt: media.pix_fmt ?? "",
+        encoded: `${media.original_width}×${media.original_height}`,
+      }}
+    >
       <div>
         {media.codec_name} · {analysed} · {frameRateText(media.frame_rate)} fps
       </div>
       <div className="mt-1 text-muted">{media.format_name}</div>
-    </div>
+    </CopyTitle>
   );
 }
 
@@ -859,7 +987,7 @@ function Field({
       {/* The label names a reading and is set in the UI typeface; the reading itself is a
           machine value and keeps the figure typeface below it. */}
       <dt className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
-        {term}
+        <Copy text={term} />
       </dt>
       <dd className="mt-1.5 font-mono text-[11px] leading-relaxed break-words text-bone">
         {children}
@@ -944,8 +1072,11 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
             between a single served file and one assembled here is exactly what the wording
             exists to carry, and a truncation would drop it. It is not a finding about the
             media. */}
-        <p lang="en" className="mt-1.5 text-[12px] leading-relaxed text-muted">
-          {acquisitionStatement(analysis)}
+        <p className="mt-1.5 text-[12px] leading-relaxed text-muted">
+          <Copy
+            text={acquisitionSentence(analysis).text}
+            values={{ host: analysis.source_host }}
+          />
         </p>
       </div>
 
@@ -956,7 +1087,7 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
       {/* DeepGuard's own classification of the calibrated evidence — a risk level and the
           ruleset that produced it, never a Fake/Real verdict. Read from the analysis row as
           the engine committed it, never recomputed here. */}
-      <div lang="en" className="col-start-2 lg:col-start-auto">
+      <div className="col-start-2 lg:col-start-auto">
         <Risk analysis={analysis} />
       </div>
 
@@ -979,7 +1110,6 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
         </summary>
 
         <dl
-          lang="en"
           className="mt-3.5 grid gap-x-8 gap-y-5 border-t border-hair pt-4 sm:grid-cols-2 lg:grid-cols-3"
         >
           <Field term="Declared type">{analysis.declared_content_type}</Field>
@@ -990,7 +1120,9 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
             <Media media={analysis.media} />
           </Field>
 
-          <Field term="Normalized">{analysis.was_normalized ? "yes" : "no"}</Field>
+          <Field term="Normalized">
+            <Copy text={analysis.was_normalized ? "yes" : "no"} />
+          </Field>
           {/* Acquisition is no longer listed here: it is stated in full on the row above,
               where a reader sees it without opening anything. It is still the one sentence
               `acquisitionStatement` gives the report (R7-T12) — the dashboard and the report
@@ -999,21 +1131,22 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
           {/* The detector's own state, verbatim: SUCCESS, FAILED or TIMEOUT are three
               different forensic facts, and an analysis may carry no signal at all. */}
           <Field term="NVIDIA SVD">
-            <span
-              title={
-                analysis.synthetic_video?.provider_version
-                  ? `Provider version: ${analysis.synthetic_video.provider_version}`
-                  : undefined
-              }
-            >
-              {analysis.synthetic_video?.status ?? "no signal"}
-            </span>
+            {analysis.synthetic_video === null ? (
+              <Copy>no signal</Copy>
+            ) : analysis.synthetic_video.provider_version ? (
+              <CopyTitle
+                text="Provider version: {version}"
+                values={{ version: analysis.synthetic_video.provider_version }}
+              >
+                {analysis.synthetic_video.status}
+              </CopyTitle>
+            ) : (
+              <span>{analysis.synthetic_video.status}</span>
+            )}
           </Field>
 
           <Field term="Synthetic probability">
-            <span title={probabilityTitle(analysis.synthetic_video)}>
-              {probabilityText(analysis.synthetic_video)}
-            </span>
+            <Probability signal={analysis.synthetic_video} />
           </Field>
 
           <Field term="Clips">{analysis.synthetic_video?.total_clips ?? ABSENT}</Field>
@@ -1035,14 +1168,14 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
             <AudioEvidence signal={analysis.audio_authenticity} />
           </Field>
 
-          {/* The local face classifier's own score for the clip, uncalibrated and outside
-              the risk classification entirely. Shown as stored and never thresholded. */}
+          {/* The local face classifier's own score for the clip, shown as stored. The rulesets
+              compare it against its R4-T1 threshold; this drawer never does. */}
           <Field term="Face manipulation">
             <FaceManipulation signal={analysis.face_manipulation} />
           </Field>
 
-          {/* The local mouth-dynamics model's own score for the clip, uncalibrated and outside the
-              risk classification entirely. A separate question from the row above it — mouth
+          {/* The local mouth-dynamics model's own score for the clip, shown as stored; evidence
+              only under the current rulesets (R7-T6). A separate question from the row above it — mouth
               movement rather than the appearance of a face crop — on a separate scale, and
               never compared with it. Shown as stored and never thresholded. */}
           <Field term="Mouth dynamics">
@@ -1293,10 +1426,19 @@ function Note({ term, children }: { term: string; children: React.ReactNode }) {
           system speaking about itself — seven accented labels in one panel would both break
           that rule and read as decoration. */}
       <dt className="text-[11px] font-semibold tracking-[0.08em] text-bone uppercase">
-        {term}
+        <Copy text={term} />
       </dt>
       <dd className="mt-1.5 max-w-[62ch] text-sm leading-relaxed text-muted">{children}</dd>
     </div>
+  );
+}
+
+/** A word this page or the shared vocabulary names, set as the figure it stands beside. */
+function Term({ text }: { text: string }) {
+  return (
+    <span className="font-mono">
+      <Copy text={text} />
+    </span>
   );
 }
 
@@ -1308,17 +1450,19 @@ function Note({ term, children }: { term: string; children: React.ReactNode }) {
  * not the sort of copy a visual pass gets to shorten. What changed is that they are now
  * titled and grouped, so a reader looking up one reading is not made to read the other six.
  *
+ * Each note is one sentence of `<Copy>` (R16-T5), so it is read in the reader's language. The
+ * names it explains — a verdict, a state, a ruleset — are slots filled from the same tables the
+ * column beside it reads, never typed out here.
+ *
  * A native `<details>`, closed by default and reachable by click, tap and keyboard. Not a
  * tooltip and not a separate page: forensic semantics a reader cannot get to on a phone
  * are semantics the product did not actually publish.
  */
 function Methodology() {
   return (
-    // English until R16-T3 localizes the forensic vocabulary, and marked so: under a Turkish
-    // `<html lang>` the browser would otherwise upper-case these labels by Turkish rules.
-    <details lang="en" className="group rounded-lg border border-line bg-ink-2">
+    <details className="group rounded-lg border border-line bg-ink-2">
       <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-lg px-4 py-3 text-[13px] font-medium text-bone transition-colors duration-150 select-none hover:text-accent [&::-webkit-details-marker]:hidden">
-        How to interpret these results
+        <Copy>How to interpret these results</Copy>
         <Chevron className="text-muted" />
       </summary>
 
@@ -1332,120 +1476,91 @@ function Methodology() {
             never be able to say the verdict differently. Nothing here is a forensic statement
             of its own — it names what the engine committed and what each name does not claim. */}
         <Note term="Risk">
-          Risk is a deterministic InspectRoot classification based on calibrated forensic
-          evidence. It is not a Fake/Real determination. Under ruleset{" "}
-          <span className="font-mono">{RULES_VERSION_V5}</span> two detectors are read for the
-          decision — one calibrated for generated video, one for face swaps — each against its
-          own measured threshold; the scores are never averaged, combined or voted on, and the
-          rule in the trace names which detector reached its threshold. The mouth-dynamics
-          model still runs and is reported on the report, but under this ruleset it is evidence
-          only: it cannot reach the assessment, and a reading it failed to produce removes no
-          decision coverage.{" "}
-          <span className="font-mono">
-            {V5_VERDICT_WORDING.MANIPULATION_DETECTED.title}
-          </span>{" "}
-          means at least one of those two reached its operating point.{" "}
-          <span className="font-mono">
-            {V5_VERDICT_WORDING.NO_CALIBRATED_MANIPULATION_SIGNAL.title}
-          </span>{" "}
-          means both produced usable readings and neither did — which does not establish that
-          the media is authentic, genuine or source-verified, since a detector reports a score
-          below its threshold for a manipulation family it is blind to as readily as for
-          unmanipulated media.{" "}
-          <span className="font-mono">{V5_VERDICT_WORDING.INCONCLUSIVE.title}</span> means a
-          deciding detector produced no usable reading, so the calibrated assessment could not
-          be completed; it is neither evidence of manipulation nor evidence of authenticity.
-          Analyses decided under an earlier ruleset carry that ruleset&apos;s vocabulary
-          instead —{" "}
-          <span className="font-mono">{RISK_LABELS.HIGH}</span>,{" "}
-          <span className="font-mono">{RISK_LABELS.MEDIUM}</span> and{" "}
-          <span className="font-mono">{RISK_LABELS.UNKNOWN}</span>, where{" "}
-          <span className="font-mono">{RISK_LABELS.UNKNOWN}</span> means the engine ran and
-          could not classify. Every decision is shown with the ruleset that produced it, since
-          the same word means something different under a different one, and neither vocabulary
-          is ever read through the other&apos;s. None of this is the same as{" "}
-          <span className="font-mono">{PENDING}</span>, where no decision has been taken yet,
-          or <span className="font-mono">{ABSENT}</span>, where an analysis finished before
-          there was an engine to take one.{" "}
-          <span className="font-mono">{UNSUPPORTED}</span> means the stored state is not one
-          this build classifies under, so it is reported as unsupported rather than shown as
-          a risk class InspectRoot has no calibrated meaning for.
+          <Copy
+            text="Risk is a deterministic InspectRoot classification based on calibrated forensic evidence. It is not a Fake/Real determination. Under ruleset {ruleset} two detectors are read for the decision — one calibrated for generated video, one for face swaps — each against its own measured threshold; the scores are never averaged, combined or voted on, and the rule in the trace names which detector reached its threshold. The mouth-dynamics model still runs and is reported on the report, but under this ruleset it is evidence only: it cannot reach the assessment, and a reading it failed to produce removes no decision coverage. {detected} means at least one of those two reached its operating point. {noSignal} means both produced usable readings and neither did — which does not establish that the media is authentic, genuine or source-verified, since a detector reports a score below its threshold for a manipulation family it is blind to as readily as for unmanipulated media. {inconclusive} means a deciding detector produced no usable reading, so the calibrated assessment could not be completed; it is neither evidence of manipulation nor evidence of authenticity. Analyses decided under an earlier ruleset carry that ruleset's vocabulary instead — {high}, {medium} and {unknown}, where {unknown} means the engine ran and could not classify. Every decision is shown with the ruleset that produced it, since the same word means something different under a different one, and neither vocabulary is ever read through the other's. None of this is the same as {pending}, where no decision has been taken yet, or {absent}, where an analysis finished before there was an engine to take one. {unsupported} means the stored state is not one this build classifies under, so it is reported as unsupported rather than shown as a risk class InspectRoot has no calibrated meaning for."
+            values={{
+              ruleset: <span className="font-mono">{RULES_VERSION_V5}</span>,
+              detected: <Term text={V5_VERDICT_WORDING.MANIPULATION_DETECTED.title} />,
+              noSignal: <Term text={V5_VERDICT_WORDING.NO_CALIBRATED_MANIPULATION_SIGNAL.title} />,
+              inconclusive: <Term text={V5_VERDICT_WORDING.INCONCLUSIVE.title} />,
+              high: <Term text={RISK_LABELS.HIGH} />,
+              medium: <Term text={RISK_LABELS.MEDIUM} />,
+              unknown: <Term text={RISK_LABELS.UNKNOWN} />,
+              pending: <Term text={PENDING} />,
+              absent: <span className="font-mono">{ABSENT}</span>,
+              unsupported: <Term text={UNSUPPORTED} />,
+            }}
+          />
         </Note>
 
         <Note term="Synthetic probability">
-          Synthetic probability is NVIDIA&apos;s own score for its synthetic-video detector,
-          shown as returned. It is not a verdict.
+          <Copy text="Synthetic probability is NVIDIA's own score for its synthetic-video detector, shown as returned. It is not a verdict." />
         </Note>
 
         <Note term="Provenance (C2PA)">
-          Provenance is what the file itself carries: C2PA Content Credentials, read from
-          the forensic original and shown in C2PA&apos;s own words. Most media carries none,
-          so <span className="font-mono">{NO_PROVENANCE}</span> is the ordinary case and not
-          a finding — and an invalid manifest means the credentials do not verify, not that
-          the media is fake. <span className="font-mono">{REMOTE_PROVENANCE}</span> means the
-          file named a manifest stored somewhere else; that URL was recorded and deliberately
-          never visited, so nothing is known about what it holds.
+          <Copy
+            text="Provenance is what the file itself carries: C2PA Content Credentials, read from the forensic original and shown in C2PA's own words. Most media carries none, so {none} is the ordinary case and not a finding — and an invalid manifest means the credentials do not verify, not that the media is fake. {remote} means the file named a manifest stored somewhere else; that URL was recorded and deliberately never visited, so nothing is known about what it holds."
+            values={{ none: <Term text={NO_PROVENANCE} />, remote: <Term text={REMOTE_PROVENANCE} /> }}
+          />
         </Note>
 
         <Note term="Media (ffprobe)">
-          Media is what ffprobe read out of the original before any detector ran, shown as
-          ffprobe reported it. The container is its demuxer family — one name covers MOV and
-          MP4 alike — and it is not narrowed to a container the stored evidence cannot prove.
-          The declared type beside it is only what the client claimed.
+          <Copy text="Media is what ffprobe read out of the original before any detector ran, shown as ffprobe reported it. The container is its demuxer family — one name covers MOV and MP4 alike — and it is not narrowed to a container the stored evidence cannot prove. The declared type beside it is only what the client claimed." />
         </Note>
 
         <Note term="Active speaker">
-          Active speaker is when NVIDIA saw a tracked face speaking, in seconds from the start
-          of the analysed video, with the face it tracked and the diarized voice matched to
-          it. It is a record of what was observed, not a finding:{" "}
-          <span className="font-mono">{NO_SPEAKING_FACES}</span> means the detector ran and
-          saw nobody speaking, which is the ordinary case for most footage, and{" "}
-          <span className="font-mono">{SPEAKER_UNAVAILABLE}</span> means it did not get to
-          look at all. Neither says the video is fake.
+          <Copy
+            text="Active speaker is when NVIDIA saw a tracked face speaking, in seconds from the start of the analysed video, with the face it tracked and the diarized voice matched to it. It is a record of what was observed, not a finding: {none} means the detector ran and saw nobody speaking, which is the ordinary case for most footage, and {unavailable} means it did not get to look at all. Neither says the video is fake."
+            values={{
+              none: <Term text={NO_SPEAKING_FACES} />,
+              unavailable: <Term text={SPEAKER_UNAVAILABLE} />,
+            }}
+          />
         </Note>
 
         <Note term="Audio">
-          Audio is the two raw logits a local anti-spoofing checkpoint emitted for each
-          window of audio it was given, shown as emitted. The times are the bounds of those
-          windows — InspectRoot cut the audio into fixed 4.04s pieces because that is all the
-          model accepts — and not stretches the model found anything in. The model publishes
-          no threshold and no calibration, so neither figure is a probability, a confidence
-          or a verdict, and consecutive windows of genuine speech routinely disagree.{" "}
-          <span className="font-mono">{NO_AUDIO_WINDOWS}</span> means the reading ran and
-          stored none, which is not proof the file carries no audio, and{" "}
-          <span className="font-mono">{AUDIO_UNAVAILABLE}</span> means it did not get to run.
+          <Copy
+            text="Audio is the two raw logits a local anti-spoofing checkpoint emitted for each window of audio it was given, shown as emitted. The times are the bounds of those windows — InspectRoot cut the audio into fixed 4.04s pieces because that is all the model accepts — and not stretches the model found anything in. The model publishes no threshold and no calibration, so neither figure is a probability, a confidence or a verdict, and consecutive windows of genuine speech routinely disagree. {none} means the reading ran and stored none, which is not proof the file carries no audio, and {unavailable} means it did not get to run."
+            values={{
+              none: <Term text={NO_AUDIO_WINDOWS} />,
+              unavailable: <Term text={AUDIO_UNAVAILABLE} />,
+            }}
+          />
         </Note>
 
         <Note term="Face manipulation">
-          Face manipulation is the score a local EfficientNet-B7 gave the face it found in
-          evenly sampled frames of the video, averaged over those frames and shown as the
-          model produced it. It is <strong>uncalibrated</strong>: no threshold is applied to
-          it anywhere in InspectRoot, it is not a probability that this media is manipulated,
-          and it does not affect the risk classification.{" "}
-          <span className="font-mono">{FACE_SCORE_UNAVAILABLE}</span> means the reading did
-          not produce a score — most often because no face was found, in which case the model
-          was never asked and nothing was established either way.
+          <Copy
+            text="Face manipulation is the score a local EfficientNet-B7 gave the face it found in evenly sampled frames of the video, averaged over those frames and shown as the model produced it. It is not a probability that this media is manipulated. It is calibrated: under {rulesetTwo}, {rulesetThree}, {rulesetFour} and {rulesetFive} it is one of the deciding detectors, compared only against its own threshold measured in R4-T1, and reaching that threshold on its own is enough to set the risk classification — the trace names the rule when it does. Its score is never averaged or combined with another detector's, and a score below its threshold is not a finding that the media is genuine. Only analyses decided under {rulesetOne} read it as evidence alone. {unavailable} means the reading did not produce a score — most often because no face was found, in which case the model was never asked and nothing was established either way."
+            values={{
+              rulesetOne: <span className="font-mono">{RULES_VERSION_V1}</span>,
+              rulesetTwo: <span className="font-mono">{RULES_VERSION_V2}</span>,
+              rulesetThree: <span className="font-mono">{RULES_VERSION_V3}</span>,
+              rulesetFour: <span className="font-mono">{RULES_VERSION_V4}</span>,
+              rulesetFive: <span className="font-mono">{RULES_VERSION_V5}</span>,
+              unavailable: <Term text={FACE_SCORE_UNAVAILABLE} />,
+            }}
+          />
         </Note>
 
         <Note term="Mouth dynamics">
-          Mouth dynamics is the score a local LipForensics model gave the movement of the mouth
-          across evenly spaced runs of 25 consecutive frames, shown as the model produced it.
-          It is a forgery reading taken from how a mouth moves, and it is emphatically{" "}
-          <strong>not a measure of audio/video lip synchronisation</strong> — the model is
-          never given the audio at all. It is a different question from the face-manipulation
-          score above — movement over time, not the appearance of a face crop — on a different
-          scale, and the two are never compared or combined. It is <strong>uncalibrated</strong>: no threshold is applied to it anywhere
-          in InspectRoot, it is not a probability that this media is manipulated, and it does
-          not affect the risk classification.{" "}
-          <span className="font-mono">{LIP_FORENSICS_SCORE_UNAVAILABLE}</span> means the reading did
-          not produce a score — most often because no run held a trackable face throughout, in
-          which case the model was never asked and nothing was established either way.
+          <Copy
+            text="Mouth dynamics is the score a local LipForensics model gave the movement of the mouth across evenly spaced runs of 25 consecutive frames, shown as the model produced it. It is a forgery reading taken from how a mouth moves, and it is emphatically {notLipSync} — the model is never given the audio at all. It is a different question from the face-manipulation score above — movement over time, not the appearance of a face crop — on a different scale, and the two are never compared or combined. It is not a probability that this media is manipulated. An operating point was measured for it in R5-T3, and under {rulesetThree} it was one of the deciding detectors. R7-T6 withdrew it from the rules after R7-T5 measured what that operating point did to genuine media, so under {rulesetFour} and {rulesetFive} it is evidence only: no threshold is applied to it, and it cannot change the risk classification, including when its score stands above that operating point. {unavailable} means the reading did not produce a score — most often because no run held a trackable face throughout, in which case the model was never asked and nothing was established either way."
+            values={{
+              notLipSync: (
+                <strong>
+                  <Copy>not a measure of audio/video lip synchronisation</Copy>
+                </strong>
+              ),
+              rulesetThree: <span className="font-mono">{RULES_VERSION_V3}</span>,
+              rulesetFour: <span className="font-mono">{RULES_VERSION_V4}</span>,
+              rulesetFive: <span className="font-mono">{RULES_VERSION_V5}</span>,
+              unavailable: <Term text={LIP_FORENSICS_SCORE_UNAVAILABLE} />,
+            }}
+          />
         </Note>
 
         <Note term="Strongest clips (logit)">
-          Strongest clips are the highest-scoring of the clips NVIDIA examined, identified by
-          frame index because the detector reports no timestamps. The figure is its raw model
-          logit, not a probability and not comparable with the percentage beside it.
+          <Copy text="Strongest clips are the highest-scoring of the clips NVIDIA examined, identified by frame index because the detector reports no timestamps. The figure is its raw model logit, not a probability and not comparable with the percentage beside it." />
         </Note>
       </dl>
     </details>

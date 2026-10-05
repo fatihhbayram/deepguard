@@ -132,6 +132,39 @@ export function Copy({
 }
 
 /**
+ * `<Copy>` for a `title` (R16-T5): the dashboard's hover text, in the reader's language.
+ *
+ * A server component cannot know the reader's language, and an attribute cannot hold a client
+ * island, so the element that carries the title is drawn here. Slot values are written in as the
+ * record holds them, exactly as `<Copy>` draws them.
+ */
+export function CopyTitle({
+  text,
+  values,
+  as: Tag = "span",
+  className,
+  children,
+}: {
+  text: string;
+  values?: Record<string, string | number>;
+  as?: "span" | "div";
+  className?: string;
+  children: ReactNode;
+}) {
+  const [locale] = useLocale();
+  const title = copySegments(translateCopy(locale, text).text)
+    .map((segment) =>
+      typeof segment === "string" ? segment : String(values?.[segment.slot] ?? `{${segment.slot}}`),
+    )
+    .join("");
+  return (
+    <Tag className={className} title={title}>
+      {children}
+    </Tag>
+  );
+}
+
+/**
  * A value the API produced, named in the reader's language — or, when this application has no
  * name for it, shown exactly as the API spelled it. See `translateCanonical`.
  *

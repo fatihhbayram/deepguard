@@ -527,7 +527,7 @@ export const REPORT_COPY = {
     "Decision state":
       "Karar durumu",
     "This states what had run when this page was rendered. A copy printed or exported before the supplementary detectors finished records the state above as it stood at that moment; the assessment it accompanies is final either way, and no detector named here can reach it under this ruleset.":
-      "Bu, bu sayfa oluşturulduğunda neyin çalışmış olduğunu belirtir. Ek dedektörler bitmeden önce yazdırılan ya da dışa aktarılan bir kopya, yukarıdaki durumu o anki haliyle kaydeder; eşlik ettiği değerlendirme her iki durumda da kesindir ve burada adı geçen hiçbir dedektör bu kural setinde ona ulaşamaz.",
+      "Bu, bu sayfa oluşturulduğunda neyin çalışmış olduğunu belirtir. Ek dedektörler bitmeden önce yazdırılan ya da dışa aktarılan bir kopya, yukarıdaki durumu o anki haliyle kaydeder; eşlik ettiği değerlendirme her iki durumda da nihaidir ve burada adı geçen hiçbir dedektör bu kural setinde ona ulaşamaz.",
     "Direct-risk evidence. The figures below are NVIDIA's own output on NVIDIA's own scale.":
       "Doğrudan risk kanıtı. Aşağıdaki değerler NVIDIA'nın kendi çıktısıdır ve NVIDIA'nın kendi ölçeğindedir.",
     "Signal type":
@@ -809,11 +809,11 @@ export const REPORT_COPY = {
     "Supplementary evidence queued":
       "Ek kanıt kuyrukta",
     "The assessment above is final. Supplementary detectors are queued and have not started. Nothing they produce can change the assessment, the rule that was applied, or the decision coverage stated with it.":
-      "Yukarıdaki değerlendirme kesindir. Ek dedektörler kuyruktadır ve başlamadı. Üretecekleri hiçbir şey değerlendirmeyi, uygulanan kuralı ya da onunla birlikte belirtilen karar kapsamını değiştiremez.",
+      "Yukarıdaki değerlendirme nihaidir. Ek dedektörler kuyruktadır ve başlamadı. Üretecekleri hiçbir şey değerlendirmeyi, uygulanan kuralı ya da onunla birlikte belirtilen karar kapsamını değiştiremez.",
     "Supplementary evidence still running":
       "Ek kanıt hâlâ çalışıyor",
     "The assessment above is final and this report is complete as a decision. Supplementary detectors are still running, so the evidence panels below may be incomplete at this moment. Nothing they produce can change the assessment, the rule that was applied, or the decision coverage stated with it.":
-      "Yukarıdaki değerlendirme kesindir ve bu rapor bir karar olarak tamamdır. Ek dedektörler hâlâ çalışıyor; bu nedenle aşağıdaki kanıt panelleri şu anda eksik olabilir. Üretecekleri hiçbir şey değerlendirmeyi, uygulanan kuralı ya da onunla birlikte belirtilen karar kapsamını değiştiremez.",
+      "Yukarıdaki değerlendirme nihaidir ve bu rapor bir karar olarak tamamdır. Ek dedektörler hâlâ çalışıyor; bu nedenle aşağıdaki kanıt panelleri şu anda eksik olabilir. Üretecekleri hiçbir şey değerlendirmeyi, uygulanan kuralı ya da onunla birlikte belirtilen karar kapsamını değiştiremez.",
     "Supplementary evidence complete":
       "Ek kanıt tamamlandı",
     "Every supplementary detector reached a terminal state and each of them answered. A detector that reported nothing to score — no trackable face, no audio stream — answered the question it was asked, and is counted here as having done so.":
@@ -831,7 +831,7 @@ export const REPORT_COPY = {
     "The API reported a state this build has no wording for. It is shown below as the record's own word, and nothing is concluded from it.":
       "API, bu sürümün karşılığında bir ifadesi olmayan bir durum bildirdi. Aşağıda kaydın kendi sözcüğü olarak gösterilir ve ondan hiçbir sonuç çıkarılmaz.",
     "This report is a snapshot. Deep analysis enrichment is currently processing, and the detectors below may not have produced a reading yet. The assessment above is already final and is not provisional: what is still running is supplementary evidence, and nothing it produces can change the assessment, the rule that was applied, or the decision coverage stated with it.":
-      "Bu rapor bir anlık görüntüdür. Derin analiz zenginleştirmesi şu anda işleniyor ve aşağıdaki dedektörler henüz bir okuma üretmemiş olabilir. Yukarıdaki değerlendirme zaten kesindir ve geçici değildir: hâlâ çalışan şey ek kanıttır ve ürettiği hiçbir şey değerlendirmeyi, uygulanan kuralı ya da onunla birlikte belirtilen karar kapsamını değiştiremez.",
+      "Bu rapor bir anlık görüntüdür. Derin analiz zenginleştirmesi şu anda işleniyor ve aşağıdaki dedektörler henüz bir okuma üretmemiş olabilir. Yukarıdaki değerlendirme zaten nihaidir ve geçici değildir: hâlâ çalışan şey ek kanıttır ve ürettiği hiçbir şey değerlendirmeyi, uygulanan kuralı ya da onunla birlikte belirtilen karar kapsamını değiştiremez.",
     "Not requested":
       "İstenmedi",
     "Pending":
@@ -943,7 +943,7 @@ export const REPORT_COPY = {
     "More than one calibrated detector independently reached its own threshold on this media.":
       "Kalibre edilmiş birden fazla dedektör bu medyada bağımsız olarak kendi eşiğine ulaştı.",
     "Two or more independent findings, reached separately. The rule records that more than one detector reached its threshold and deliberately does not name which — each detector's own panel below shows its score and its threshold. The scores were not combined, averaged, weighted or voted on, and agreement did not raise the level: there is no band above HIGH, and no measurement says two findings mean more than one.":
-      "Ayrı ayrı ulaşılmış iki ya da daha fazla bağımsız bulgu. Kural, birden fazla dedektörün eşiğine ulaştığını kaydeder ve bilinçli olarak hangileri olduğunu belirtmez — her dedektörün aşağıdaki kendi paneli skorunu ve eşiğini gösterir. Skorlar birleştirilmedi, ortalanmadı, ağırlıklandırılmadı ya da oylanmadı ve uyuşma düzeyi yükseltmedi: HIGH'ın üzerinde bir bant yoktur ve hiçbir ölçüm iki bulgunun birden fazlasını ifade ettiğini söylemez.",
+      "Ayrı ayrı ulaşılmış iki ya da daha fazla bağımsız bulgu. Kural, birden fazla dedektörün eşiğine ulaştığını kaydeder ve bilinçli olarak hangileri olduğunu belirtmez — her dedektörün aşağıdaki kendi paneli skorunu ve eşiğini gösterir. Skorlar birleştirilmedi, ortalanmadı, ağırlıklandırılmadı ya da oylanmadı ve uyuşma düzeyi yükseltmedi: HIGH'ın üzerinde bir bant yoktur ve hiçbir ölçüm iki bulgunun tek bir bulgudan daha fazlasını ifade ettiğini söylemez.",
     "See this detector's own panel below for its score and the threshold it was compared against.":
       "Skoru ve karşılaştırıldığı eşik için bu dedektörün aşağıdaki kendi paneline bakın.",
     "The LipForensics mouth-dynamics model reached its calibrated threshold. That finding alone produced this level.":
@@ -975,7 +975,7 @@ export const REPORT_COPY = {
     "Both of the calibrated detectors this ruleset decides from independently reached their own thresholds on this media.":
       "Bu kural setinin karar verdiği kalibre edilmiş her iki dedektör de bu medyada bağımsız olarak kendi eşiğine ulaştı.",
     "Two independent findings, reached separately and on unrelated scales. The scores were not combined, averaged, weighted or voted on, and agreement did not raise the level: there is no band above HIGH, and no measurement says two findings mean more than one. Two detectors can produce this classification under r7-v4.0.0: the synthetic-video detector and the face-manipulation classifier, each against a threshold measured for it alone. The mouth-dynamics model is reported beside them as independent evidence and cannot change the level.":
-      "Ayrı ayrı ve ilişkisiz ölçeklerde ulaşılmış iki bağımsız bulgu. Skorlar birleştirilmedi, ortalanmadı, ağırlıklandırılmadı ya da oylanmadı ve uyuşma düzeyi yükseltmedi: HIGH'ın üzerinde bir bant yoktur ve hiçbir ölçüm iki bulgunun birden fazlasını ifade ettiğini söylemez. r7-v4.0.0 altında bu sınıflandırmayı iki dedektör üretebilir: sentetik video dedektörü ve yüz manipülasyonu sınıflandırıcısı; her biri yalnızca kendisi için ölçülmüş bir eşiğe göre. Ağız dinamiği modeli bunların yanında bağımsız kanıt olarak raporlanır ve düzeyi değiştiremez.",
+      "Ayrı ayrı ve ilişkisiz ölçeklerde ulaşılmış iki bağımsız bulgu. Skorlar birleştirilmedi, ortalanmadı, ağırlıklandırılmadı ya da oylanmadı ve uyuşma düzeyi yükseltmedi: HIGH'ın üzerinde bir bant yoktur ve hiçbir ölçüm iki bulgunun tek bir bulgudan daha fazlasını ifade ettiğini söylemez. r7-v4.0.0 altında bu sınıflandırmayı iki dedektör üretebilir: sentetik video dedektörü ve yüz manipülasyonu sınıflandırıcısı; her biri yalnızca kendisi için ölçülmüş bir eşiğe göre. Ağız dinamiği modeli bunların yanında bağımsız kanıt olarak raporlanır ve düzeyi değiştiremez.",
     "All three calibrated detectors produced a usable reading, and neither detector this ruleset decides from reached its threshold.":
       "Kalibre edilmiş üç dedektörün tamamı kullanılabilir bir okuma üretti ve bu kural setinin karar verdiği dedektörlerin hiçbiri eşiğine ulaşmadı.",
     "A generated-video question, a face-appearance question and a mouth-motion question were all asked of this media, and neither of the two questions that can produce a level was answered above its threshold. That is not a finding that the media is genuine: both deciding detectors are deliberately set to a point that almost never flags legitimate footage, which means a great deal of manipulated media also falls below them. Two detectors can produce this classification under r7-v4.0.0: the synthetic-video detector and the face-manipulation classifier, each against a threshold measured for it alone. The mouth-dynamics model is reported beside them as independent evidence and cannot change the level.":
@@ -1024,6 +1024,142 @@ export const REPORT_COPY = {
       "Bu artefaktın nasıl edinildiği bu analiz için kaydedilmedi.",
     "How this artifact was acquired was not recorded for this analysis. It was assembled by InspectRoot from separate video and audio streams.":
       "Bu artefaktın nasıl edinildiği bu analiz için kaydedilmedi. Ayrı video ve ses akışlarından InspectRoot tarafından birleştirildi.",
+    // The dashboard (R16-T5): the queue row, its evidence drawer and the methodology notes.
+    // Same rule as above: keyed by the English the page prints, record values only as slots.
+    "How to interpret these results":
+      "Bu sonuçlar nasıl yorumlanmalı",
+    "RISK —":
+      "RİSK —",
+    "ruleset {ruleset}":
+      "kural seti {ruleset}",
+    "Trace":
+      "İz",
+    "Rule: {rule}":
+      "Kural: {rule}",
+    "Ruleset: {ruleset}":
+      "Kural seti: {ruleset}",
+    "Calibration: {calibration}":
+      "Kalibrasyon: {calibration}",
+    "Analysis {status}: no risk decision has been taken yet.":
+      "Analiz {status}: henüz bir risk kararı alınmadı.",
+    "Stored risk state {level} is not a supported InspectRoot risk classification (ruleset {ruleset}).":
+      "Kayıtlı risk durumu {level}, desteklenen bir InspectRoot risk sınıflandırması değildir (kural seti {ruleset}).",
+    "Stored risk state {level} is not a supported InspectRoot risk classification.":
+      "Kayıtlı risk durumu {level}, desteklenen bir InspectRoot risk sınıflandırması değildir.",
+    "Declared type":
+      "Bildirilen tür",
+    "Media (ffprobe)":
+      "Medya (ffprobe)",
+    "Normalized":
+      "Normalleştirildi",
+    "NVIDIA SVD":
+      "NVIDIA SVD",
+    "no signal":
+      "sinyal yok",
+    "Provider version: {version}":
+      "Sağlayıcı sürümü: {version}",
+    "Synthetic probability":
+      "Sentetik olasılık",
+    "NVIDIA score: {score}":
+      "NVIDIA skoru: {score}",
+    "N/A":
+      "Yok",
+    "Clips":
+      "Klipler",
+    "Strongest clips (logit)":
+      "En güçlü klipler (logit)",
+    "NVIDIA clip logit: {logit}":
+      "NVIDIA klip logit değeri: {logit}",
+    "frame {frame} · {logit}":
+      "kare {frame} · {logit}",
+    "Active speaker":
+      "Aktif konuşmacı",
+    "Active speaker: {status}":
+      "Aktif konuşmacı: {status}",
+    "Unavailable":
+      "Kullanılamıyor",
+    "No speaking faces detected":
+      "Konuşan yüz tespit edilmedi",
+    "{shown} of {total} segments":
+      "{shown}/{total} bölüm",
+    "{shown} segment":
+      "{shown} bölüm",
+    "{shown} segments":
+      "{shown} bölüm",
+    "{start}s–{end}s · Face {face} · {speaker}":
+      "{start}s–{end}s · Yüz {face} · {speaker}",
+    "Audio":
+      "Ses",
+    "Audio authenticity: {status}":
+      "Ses özgünlüğü: {status}",
+    "No audio evidence windows":
+      "Ses kanıtı penceresi yok",
+    "{shown} of {total} audio windows":
+      "{shown}/{total} ses penceresi",
+    "{shown} audio window":
+      "{shown} ses penceresi",
+    "{shown} audio windows":
+      "{shown} ses penceresi",
+    "Checkpoint: {version}":
+      "Checkpoint: {version}",
+    "{start}s–{end}s · Raw logit[0]: {logit} · Bona fide logit: {bonaFide}":
+      "{start}s–{end}s · Ham logit[0]: {logit} · Bona fide logit: {bonaFide}",
+    "Face manipulation":
+      "Yüz manipülasyonu",
+    "Face manipulation: {status}":
+      "Yüz manipülasyonu: {status}",
+    "{scored} of {requested} sampled frames":
+      "{scored}/{requested} örneklenen kare",
+    "Mouth dynamics":
+      "Ağız dinamiği",
+    "Mouth dynamics: {status}":
+      "Ağız dinamiği: {status}",
+    "{scored} of {requested} sampled runs":
+      "{scored}/{requested} örneklenen dizi",
+    "Model: {version}":
+      "Model: {version}",
+    "Provenance (C2PA)":
+      "Köken bilgisi (C2PA)",
+    "No provenance":
+      "Köken bilgisi yok",
+    "Remote provenance (not fetched)":
+      "Uzak köken bilgisi (getirilmedi)",
+    "Extraction failed":
+      "Okuma başarısız oldu",
+    "C2PA SDK: {version} · Manifest URL (not fetched): {url}":
+      "C2PA SDK: {version} · Manifest URL'si (getirilmedi): {url}",
+    "C2PA SDK: {version}":
+      "C2PA SDK: {version}",
+    "Manifest URL (not fetched): {url}":
+      "Manifest URL'si (getirilmedi): {url}",
+    "{duration}s · constant frame rate · encoded {encoded}":
+      "{duration}s · sabit kare hızı · kodlanmış {encoded}",
+    "{duration}s · variable frame rate · encoded {encoded}":
+      "{duration}s · değişken kare hızı · kodlanmış {encoded}",
+    "{duration}s · {pixFmt} · constant frame rate · encoded {encoded}":
+      "{duration}s · {pixFmt} · sabit kare hızı · kodlanmış {encoded}",
+    "{duration}s · {pixFmt} · variable frame rate · encoded {encoded}":
+      "{duration}s · {pixFmt} · değişken kare hızı · kodlanmış {encoded}",
+    "Risk":
+      "Risk",
+    "Risk is a deterministic InspectRoot classification based on calibrated forensic evidence. It is not a Fake/Real determination. Under ruleset {ruleset} two detectors are read for the decision — one calibrated for generated video, one for face swaps — each against its own measured threshold; the scores are never averaged, combined or voted on, and the rule in the trace names which detector reached its threshold. The mouth-dynamics model still runs and is reported on the report, but under this ruleset it is evidence only: it cannot reach the assessment, and a reading it failed to produce removes no decision coverage. {detected} means at least one of those two reached its operating point. {noSignal} means both produced usable readings and neither did — which does not establish that the media is authentic, genuine or source-verified, since a detector reports a score below its threshold for a manipulation family it is blind to as readily as for unmanipulated media. {inconclusive} means a deciding detector produced no usable reading, so the calibrated assessment could not be completed; it is neither evidence of manipulation nor evidence of authenticity. Analyses decided under an earlier ruleset carry that ruleset's vocabulary instead — {high}, {medium} and {unknown}, where {unknown} means the engine ran and could not classify. Every decision is shown with the ruleset that produced it, since the same word means something different under a different one, and neither vocabulary is ever read through the other's. None of this is the same as {pending}, where no decision has been taken yet, or {absent}, where an analysis finished before there was an engine to take one. {unsupported} means the stored state is not one this build classifies under, so it is reported as unsupported rather than shown as a risk class InspectRoot has no calibrated meaning for.":
+      "Risk, kalibre edilmiş adli kanıta dayanan deterministik bir InspectRoot sınıflandırmasıdır. Sahte/Gerçek belirlemesi değildir. {ruleset} kural setinde karar için iki dedektör okunur — biri üretilmiş video, biri yüz değiştirmeler için kalibre edilmiştir — her biri kendi ölçülmüş eşiğine göre; skorların hiçbir zaman ortalaması alınmaz, birleştirilmez ya da oylanmaz ve izdeki kural hangi dedektörün eşiğine ulaştığını belirtir. Ağız dinamiği modeli hâlâ çalışır ve raporda bildirilir, ancak bu kural setinde yalnızca kanıttır: değerlendirmeye ulaşamaz ve üretemediği bir okuma karar kapsamından hiçbir şey eksiltmez. {detected}, bu ikisinden en az birinin çalışma noktasına ulaştığı anlamına gelir. {noSignal}, ikisinin de kullanılabilir okuma ürettiği ve hiçbirinin ulaşmadığı anlamına gelir — bu, medyanın özgün, gerçek ya da kaynağı doğrulanmış olduğunu belirlemez; çünkü bir dedektör, kör olduğu bir manipülasyon ailesi için de manipüle edilmemiş medya için olduğu kadar kolayca eşiğinin altında bir skor bildirir. {inconclusive}, karar veren bir dedektörün kullanılabilir bir okuma üretmediği, dolayısıyla kalibre edilmiş değerlendirmenin tamamlanamadığı anlamına gelir; ne manipülasyonun ne de özgünlüğün kanıtıdır. Daha önceki bir kural seti altında karar verilmiş analizler bunun yerine o kural setinin sözcüklerini taşır — {high}, {medium} ve {unknown}; burada {unknown}, motorun çalıştığı ancak sınıflandıramadığı anlamına gelir. Her karar, onu üreten kural setiyle birlikte gösterilir, çünkü aynı sözcük farklı bir kural setinde farklı bir anlama gelir ve iki sözcük dağarcığından hiçbiri diğerininki üzerinden okunmaz. Bunların hiçbiri, henüz bir karar alınmamış olan {pending} ile ya da bir analizin, karar alacak bir motor var olmadan önce tamamlandığı {absent} ile aynı şey değildir. {unsupported}, kayıtlı durumun bu sürümün sınıflandırdığı bir durum olmadığı anlamına gelir; bu nedenle InspectRoot'un kalibre edilmiş bir anlamı olmayan bir risk sınıfı olarak gösterilmek yerine desteklenmeyen olarak raporlanır.",
+    "Synthetic probability is NVIDIA's own score for its synthetic-video detector, shown as returned. It is not a verdict.":
+      "Sentetik olasılık, NVIDIA'nın sentetik video dedektörü için verdiği kendi skorudur ve döndürüldüğü haliyle gösterilir. Bir karar değildir.",
+    "Provenance is what the file itself carries: C2PA Content Credentials, read from the forensic original and shown in C2PA's own words. Most media carries none, so {none} is the ordinary case and not a finding — and an invalid manifest means the credentials do not verify, not that the media is fake. {remote} means the file named a manifest stored somewhere else; that URL was recorded and deliberately never visited, so nothing is known about what it holds.":
+      "Köken bilgisi, dosyanın kendisinin taşıdığı bilgidir: adli orijinalden okunan ve C2PA'nın kendi sözcükleriyle gösterilen C2PA Content Credentials. Medyanın çoğu hiçbirini taşımaz; bu nedenle {none} olağan durumdur ve bir bulgu değildir — geçersiz bir manifest de medyanın sahte olduğu değil, kimlik bilgilerinin doğrulanmadığı anlamına gelir. {remote}, dosyanın başka bir yerde saklanan bir manifesti adlandırdığı anlamına gelir; o URL kaydedildi ve bilinçli olarak hiç ziyaret edilmedi, dolayısıyla içinde ne olduğu hakkında hiçbir şey bilinmiyor.",
+    "Media is what ffprobe read out of the original before any detector ran, shown as ffprobe reported it. The container is its demuxer family — one name covers MOV and MP4 alike — and it is not narrowed to a container the stored evidence cannot prove. The declared type beside it is only what the client claimed.":
+      "Medya, herhangi bir dedektör çalışmadan önce ffprobe'un orijinalden okuduğu bilgilerdir ve ffprobe'un bildirdiği haliyle gösterilir. Kapsayıcı, onun demuxer ailesidir — tek bir ad hem MOV'u hem MP4'ü kapsar — ve kayıtlı kanıtın kanıtlayamadığı bir kapsayıcıya daraltılmaz. Yanındaki bildirilen tür yalnızca istemcinin iddia ettiği şeydir.",
+    "Active speaker is when NVIDIA saw a tracked face speaking, in seconds from the start of the analysed video, with the face it tracked and the diarized voice matched to it. It is a record of what was observed, not a finding: {none} means the detector ran and saw nobody speaking, which is the ordinary case for most footage, and {unavailable} means it did not get to look at all. Neither says the video is fake.":
+      "Aktif konuşmacı, NVIDIA'nın izlenen bir yüzü konuşurken gördüğü zamandır; analiz edilen videonun başından itibaren saniye cinsinden, izlediği yüz ve ona eşleştirilen ayrıştırılmış (diarize edilmiş) sesle birlikte verilir. Bu bir bulgu değil, gözlemlenenin kaydıdır: {none}, dedektörün çalıştığı ve kimseyi konuşurken görmediği anlamına gelir; bu, görüntülerin çoğu için olağan durumdur. {unavailable} ise hiç bakma fırsatı bulmadığı anlamına gelir. Hiçbiri videonun sahte olduğunu söylemez.",
+    "Audio is the two raw logits a local anti-spoofing checkpoint emitted for each window of audio it was given, shown as emitted. The times are the bounds of those windows — InspectRoot cut the audio into fixed 4.04s pieces because that is all the model accepts — and not stretches the model found anything in. The model publishes no threshold and no calibration, so neither figure is a probability, a confidence or a verdict, and consecutive windows of genuine speech routinely disagree. {none} means the reading ran and stored none, which is not proof the file carries no audio, and {unavailable} means it did not get to run.":
+      "Ses, yerel bir sahtecilik karşıtı (anti-spoofing) checkpoint'in kendisine verilen her ses penceresi için ürettiği iki ham logit değeridir ve üretildiği haliyle gösterilir. Süreler bu pencerelerin sınırlarıdır — InspectRoot sesi sabit 4.04s'lik parçalara böldü, çünkü model yalnızca bunu kabul eder — ve modelin bir şey bulduğu kesitler değildir. Model hiçbir eşik ve kalibrasyon yayımlamaz; bu nedenle iki değerden hiçbiri bir olasılık, güven değeri ya da karar değildir ve gerçek konuşmanın ardışık pencereleri sık sık birbiriyle uyuşmaz. {none}, okumanın çalıştığı ve hiç pencere kaydetmediği anlamına gelir; bu, dosyanın ses taşımadığının kanıtı değildir. {unavailable} ise okumanın hiç çalışma fırsatı bulmadığı anlamına gelir.",
+    "Face manipulation is the score a local EfficientNet-B7 gave the face it found in evenly sampled frames of the video, averaged over those frames and shown as the model produced it. It is not a probability that this media is manipulated. It is calibrated: under {rulesetTwo}, {rulesetThree}, {rulesetFour} and {rulesetFive} it is one of the deciding detectors, compared only against its own threshold measured in R4-T1, and reaching that threshold on its own is enough to set the risk classification — the trace names the rule when it does. Its score is never averaged or combined with another detector's, and a score below its threshold is not a finding that the media is genuine. Only analyses decided under {rulesetOne} read it as evidence alone. {unavailable} means the reading did not produce a score — most often because no face was found, in which case the model was never asked and nothing was established either way.":
+      "Yüz manipülasyonu, yerel bir EfficientNet-B7'nin videonun eşit aralıklarla örneklenen karelerinde bulduğu yüze verdiği skordur; bu kareler üzerinden ortalaması alınır ve modelin ürettiği haliyle gösterilir. Bu medyanın manipüle edilmiş olma olasılığı değildir. Kalibre edilmiştir: {rulesetTwo}, {rulesetThree}, {rulesetFour} ve {rulesetFive} kural setlerinde karar veren dedektörlerden biridir; yalnızca R4-T1'de kendisi için ölçülmüş eşikle karşılaştırılır ve bu eşiğe tek başına ulaşması risk sınıflandırmasını belirlemeye yeter — böyle olduğunda iz, kuralı belirtir. Skoru hiçbir zaman başka bir dedektörün skoruyla ortalanmaz ya da birleştirilmez ve eşiğinin altındaki bir skor, medyanın gerçek olduğuna dair bir bulgu değildir. Yalnızca {rulesetOne} altında karar verilmiş analizler onu tek başına kanıt olarak okur. {unavailable}, okumanın bir skor üretmediği anlamına gelir — çoğunlukla hiç yüz bulunamadığı için; bu durumda modele hiç sorulmadı ve iki yönde de hiçbir şey belirlenmedi.",
+    "Mouth dynamics is the score a local LipForensics model gave the movement of the mouth across evenly spaced runs of 25 consecutive frames, shown as the model produced it. It is a forgery reading taken from how a mouth moves, and it is emphatically {notLipSync} — the model is never given the audio at all. It is a different question from the face-manipulation score above — movement over time, not the appearance of a face crop — on a different scale, and the two are never compared or combined. It is not a probability that this media is manipulated. An operating point was measured for it in R5-T3, and under {rulesetThree} it was one of the deciding detectors. R7-T6 withdrew it from the rules after R7-T5 measured what that operating point did to genuine media, so under {rulesetFour} and {rulesetFive} it is evidence only: no threshold is applied to it, and it cannot change the risk classification, including when its score stands above that operating point. {unavailable} means the reading did not produce a score — most often because no run held a trackable face throughout, in which case the model was never asked and nothing was established either way.":
+      "Ağız dinamiği, yerel bir LipForensics modelinin 25 ardışık karelik, eşit aralıklı diziler boyunca ağzın hareketine verdiği skordur ve modelin ürettiği haliyle gösterilir. Bir ağzın nasıl hareket ettiğinden alınan bir sahtecilik okumasıdır ve özellikle belirtmek gerekir ki bu skor {notLipSync} — modele ses hiç verilmez. Yukarıdaki yüz manipülasyonu skorundan farklı bir sorudur — bir yüz kırpıntısının görünümü değil, zaman içindeki hareket — farklı bir ölçektedir ve ikisi hiçbir zaman karşılaştırılmaz ya da birleştirilmez. Bu medyanın manipüle edilmiş olma olasılığı değildir. R5-T3'te onun için bir çalışma noktası ölçüldü ve {rulesetThree} altında karar veren dedektörlerden biriydi. R7-T5 bu çalışma noktasının gerçek medyaya ne yaptığını ölçtükten sonra R7-T6 onu kurallardan çıkardı; bu nedenle {rulesetFour} ve {rulesetFive} altında yalnızca kanıttır: ona hiçbir eşik uygulanmaz ve skoru o çalışma noktasının üzerinde olduğunda bile risk sınıflandırmasını değiştiremez. {unavailable}, okumanın bir skor üretmediği anlamına gelir — çoğunlukla hiçbir dizi baştan sona izlenebilir bir yüz içermediği için; bu durumda modele hiç sorulmadı ve iki yönde de hiçbir şey belirlenmedi.",
+    "Strongest clips are the highest-scoring of the clips NVIDIA examined, identified by frame index because the detector reports no timestamps. The figure is its raw model logit, not a probability and not comparable with the percentage beside it.":
+      "En güçlü klipler, NVIDIA'nın incelediği klipler arasında en yüksek skoru alanlardır; dedektör zaman damgası bildirmediği için kare indeksiyle tanımlanır. Değer, ham model logit değeridir; bir olasılık değildir ve yanındaki yüzdeyle karşılaştırılamaz.",
   },
 } as const satisfies Partial<Record<Locale, Record<string, string>>>;
 
