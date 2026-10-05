@@ -94,7 +94,10 @@ export default async function AdminLayout({
 
         {/* The one `main` on this surface. Every page below returns its content into it, which
             is what makes the page gutter a single decision instead of seven. */}
-        <main className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-8 sm:px-6 lg:px-8">
+        {/* `lang="en"`: the console's pages are English (R16-T2 localizes the rail, not them),
+            and under a Turkish `<html lang>` their `uppercase` labels would otherwise be cased
+            by Turkish rules. The translated words inside name their own language. */}
+        <main lang="en" className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-8 sm:px-6 lg:px-8">
           {children}
         </main>
       </div>

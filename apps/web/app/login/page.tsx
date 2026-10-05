@@ -2,8 +2,10 @@
  * Sign in. Two fields, one button, one refusal.
  *
  * A plain HTML form posting to `/session`, like the ingest form on the dashboard and for the
- * same reason: this page ships no JavaScript, the API serves no CORS headers for a browser to
- * post across, and a form is what works without either. The handler on the other side talks to
+ * same reason: signing in needs no JavaScript, the API serves no CORS headers for a browser to
+ * post across, and a form is what works without either. The only script on this page is the
+ * language switch and the words it repaints (R16-T2); with it disabled the page reads in
+ * English and the form still signs in. The handler on the other side talks to
  * the API from the server and relays the cookie the API sets, so the internal API address is
  * never in anything the browser can read.
  *
@@ -16,8 +18,7 @@
  * probe from outside which of the two happened.
  */
 
-// The single failure. Not "invalid password", not "unknown user" — see above.
-const SIGN_IN_FAILED = "Sign in failed. Check your email and password and try again.";
+import { LanguageSelector, T } from "../i18n/client";
 
 /** One query-string value, or null. A repeated parameter is not an outcome. */
 function singleParam(value: string | string[] | undefined): string | null {
@@ -37,30 +38,32 @@ export default async function Login({
 
   return (
     <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 py-16">
-      <div className="flex items-center gap-2.5">
-        <span aria-hidden className="size-1.5 rounded-full bg-accent" />
-        {/* A name, not a machine value — set in the UI typeface, as it is in the header of
-            the dashboard this page leads to. */}
-        <h1 className="text-[14px] font-semibold tracking-[0.14em] text-bone uppercase">
-          InspectRoot
-        </h1>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-2.5">
+          <span aria-hidden className="size-1.5 rounded-full bg-accent" />
+          {/* A name, not a machine value — set in the UI typeface, as it is in the header of
+              the dashboard this page leads to. */}
+          <h1 className="text-[14px] font-semibold tracking-[0.14em] text-bone uppercase">
+            InspectRoot
+          </h1>
+        </div>
+        <LanguageSelector variant="bar" />
       </div>
 
       <p className="mt-8 text-[11px] font-medium tracking-[0.16em] text-accent uppercase">
-        Sign in
+        <T k="auth.signIn" />
       </p>
       <h2 className="mt-2.5 text-2xl font-semibold tracking-[-0.02em] text-bone">
-        Authenticate
+        <T k="login.title" />
       </h2>
       <p className="mt-3 text-[15px] leading-relaxed text-muted">
-        Analyses are visible to the account that submitted them. Accounts are created by an
-        administrator.
+        <T k="login.intro" />
       </p>
 
       <form action="/session" method="post" className="mt-8 flex flex-col gap-5">
         <label className="flex flex-col gap-2">
           <span className="text-[11px] font-medium tracking-[0.1em] text-muted uppercase">
-            Email
+            <T k="login.email" />
           </span>
           <input
             type="email"
@@ -74,7 +77,7 @@ export default async function Login({
 
         <label className="flex flex-col gap-2">
           <span className="text-[11px] font-medium tracking-[0.1em] text-muted uppercase">
-            Password
+            <T k="login.password" />
           </span>
           <input
             type="password"
@@ -89,7 +92,7 @@ export default async function Login({
           type="submit"
           className="mt-1 rounded-md bg-accent px-5 py-2.5 text-[13px] font-semibold text-ink transition-[opacity,transform] duration-150 hover:opacity-90 active:translate-y-px"
         >
-          Sign in
+          <T k="auth.signIn" />
         </button>
       </form>
 
@@ -99,7 +102,10 @@ export default async function Login({
           className="mt-6 flex items-start gap-3 rounded-md border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-[13px] leading-relaxed text-rose-200"
         >
           <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-rose-400" />
-          <span>{SIGN_IN_FAILED}</span>
+          {/* The single failure. Not "invalid password", not "unknown user" — see above. */}
+          <span>
+            <T k="login.failed" />
+          </span>
         </p>
       )}
     </main>

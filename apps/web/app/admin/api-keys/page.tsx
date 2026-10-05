@@ -212,7 +212,7 @@ export default async function ApiKeys({
     <>
       <AdminPageHeader
         title="API keys"
-        description="The credentials customers authenticate the public API with. A key is shown in full once, when it is issued, and never again — DeepGuard stores only a hash of it. Revoking a key ends its access immediately and leaves the analyses it submitted on file."
+        description="The credentials customers authenticate the public API with. A key is shown in full once, when it is issued, and never again — InspectRoot stores only a hash of it. Revoking a key ends its access immediately and leaves the analyses it submitted on file."
         actions={
           // A reload of this page, and deliberately a link rather than a button: the table is a
           // view of state another administrator can change, and the only script on this screen

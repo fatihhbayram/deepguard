@@ -22,6 +22,8 @@
 
 import { useEffect } from "react";
 
+import { T } from "./i18n/client";
+
 export default function ErrorPage({
   error,
   retry,
@@ -38,12 +40,16 @@ export default function ErrorPage({
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-4 p-8">
-      <h1 className="text-xl font-semibold">Something went wrong</h1>
+      <h1 className="text-xl font-semibold">
+        <T k="error.title" />
+      </h1>
       <p className="text-sm opacity-80">
-        This page could not be rendered. Nothing about any analysis has been changed.
+        <T k="error.page" />
       </p>
       {error.digest && (
-        <p className="font-mono text-xs opacity-60">Reference: {error.digest}</p>
+        <p className="font-mono text-xs opacity-60">
+          <T k="error.reference" /> {error.digest}
+        </p>
       )}
       <div>
         <button
@@ -51,7 +57,7 @@ export default function ErrorPage({
           onClick={() => retry()}
           className="rounded border px-3 py-1.5 text-sm"
         >
-          Try again
+          <T k="error.retry" />
         </button>
       </div>
     </main>

@@ -1,6 +1,13 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
+import {
+  CanonicalLabel,
+  CanonicalOption,
+  LanguageSelector,
+  MessageOption,
+  T,
+} from "../../../i18n/client";
 import { LOGIN_PATH, WORKSPACE_PATH } from "../../../session";
 import {
   ACQUISITION_METHOD_URL,
@@ -1756,26 +1763,29 @@ function FeedbackSection({
       id="feedback"
       className="mt-10 rounded-lg border border-black/12 px-5 py-4 print:hidden"
     >
-      <h2 className="text-[15px] font-semibold tracking-[-0.01em]">Your feedback</h2>
+      {/* Screen-only and outside the record, so its words are the interface's (R16-T2) rather
+          than the report's. The values the form posts are the API's and are never translated:
+          only the words beside the controls follow the reader's language. */}
+      <h2 className="text-[15px] font-semibold tracking-[-0.01em]">
+        <T k="feedback.title" />
+      </h2>
       <p className="mt-1 max-w-[72ch] text-xs leading-relaxed opacity-70">
-        Do you agree with this result? Your answer is recorded as your feedback only. It does not
-        change the assessment or any evidence in this report, and it is not treated as a verified
-        statement about the media.
+        <T k="feedback.intro" />
       </p>
 
       {error && (
         <p role="alert" className="mt-3 text-xs font-medium text-rose-700">
-          {error}
+          <CanonicalLabel domain="webMessage" value={error} />
         </p>
       )}
       {saved && !error && (
         <p role="status" className="mt-3 text-xs font-medium">
-          Thank you — your feedback was saved. The report was not changed.
+          <T k="feedback.saved" />
         </p>
       )}
       {!result.ok && (
         <p role="alert" className="mt-3 text-xs opacity-70">
-          Your earlier feedback could not be loaded.
+          <T k="feedback.loadFailed" />
         </p>
       )}
 
@@ -1783,9 +1793,11 @@ function FeedbackSection({
         <input type="hidden" name="analysis_id" value={analysisId} />
 
         <fieldset>
-          <legend className="sr-only">Your assessment of this result</legend>
+          <legend className="sr-only">
+            <T k="feedback.assessmentLegend" />
+          </legend>
           <div className="flex flex-wrap gap-2">
-            {Object.entries(FEEDBACK_ASSESSMENT_LABELS).map(([value, label]) => (
+            {Object.keys(FEEDBACK_ASSESSMENT_LABELS).map((value) => (
               <label
                 key={value}
                 className="flex cursor-pointer items-center gap-2 rounded-md border border-black/15 px-3 py-1.5 text-[13px] has-[:checked]:border-black/60 has-[:checked]:font-medium"
@@ -1797,18 +1809,20 @@ function FeedbackSection({
                   required
                   defaultChecked={feedback?.assessment === value}
                 />
-                {label}
+                <CanonicalLabel domain="feedbackAssessment" value={value} />
               </label>
             ))}
           </div>
         </fieldset>
 
         <details className="mt-4" open={hasDetails}>
-          <summary className="cursor-pointer text-xs underline">Add details (optional)</summary>
+          <summary className="cursor-pointer text-xs underline">
+            <T k="feedback.details" />
+          </summary>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <label className="text-xs opacity-70" htmlFor="feedback-claimed-label">
-              What do you believe this media is?
+              <T k="feedback.claimQuestion" />
             </label>
             <select
               id="feedback-claimed-label"
@@ -1817,18 +1831,16 @@ function FeedbackSection({
               className="rounded-md border border-black/15 bg-paper px-2.5 py-1.5 text-[13px]"
             >
               {/* Empty first: no claim is stated on the reader's behalf. */}
-              <option value="">No claim</option>
-              {Object.entries(FEEDBACK_CLAIMED_LABEL_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
+              <MessageOption value="" k="feedback.noClaim" />
+              {Object.keys(FEEDBACK_CLAIMED_LABEL_LABELS).map((value) => (
+                <CanonicalOption key={value} domain="feedbackClaimedLabel" value={value} />
               ))}
             </select>
           </div>
 
           <div className="mt-3">
             <label className="text-xs opacity-70" htmlFor="feedback-notes">
-              Notes
+              <T k="feedback.notes" />
             </label>
             <textarea
               id="feedback-notes"
@@ -1845,7 +1857,7 @@ function FeedbackSection({
           type="submit"
           className="mt-4 rounded-md border border-black/25 px-3 py-1.5 text-[13px] font-medium hover:border-black/60"
         >
-          {feedback?.assessment ? "Update feedback" : "Send feedback"}
+          <T k={feedback?.assessment ? "feedback.update" : "feedback.send"} />
         </button>
       </form>
     </section>
@@ -1903,11 +1915,18 @@ export default async function Report({
       // suggest they had landed somewhere else.
       <div className="light flex flex-1 flex-col bg-paper text-doc">
         <main className="mx-auto w-full max-w-3xl px-6 py-10 sm:px-8">
-          <Link href={WORKSPACE_PATH} className="text-sm underline print:hidden">
-            ← Back to dashboard
-          </Link>
-          <h1 className="mt-6 text-xl font-semibold">Report unavailable</h1>
-          <p className="mt-2 text-sm opacity-70">{result.error}</p>
+          <div className="flex flex-wrap items-center justify-between gap-4 print:hidden">
+            <Link href={WORKSPACE_PATH} className="text-sm underline">
+              <T k="report.backToDashboard" />
+            </Link>
+            <LanguageSelector variant="document" />
+          </div>
+          <h1 className="mt-6 text-xl font-semibold">
+            <T k="report.unavailable" />
+          </h1>
+          <p className="mt-2 text-sm opacity-70">
+            <CanonicalLabel domain="webMessage" value={result.error} />
+          </p>
           <p className="mt-1 font-mono text-xs break-all opacity-60">{id}</p>
         </main>
       </div>
@@ -1930,7 +1949,13 @@ export default async function Report({
      * top and bottom by the instrument's graphite.
      */
     <div className="light flex flex-1 flex-col bg-paper text-doc">
-      <main className="mx-auto w-full max-w-3xl px-6 py-10 sm:px-8 sm:py-12 print:max-w-none print:p-0">
+      {/* `lang="en"`: the document is English until R16-T3, whatever the reader's language. Its
+          screen-only controls and the feedback form are the interface's words, and each of
+          those names its own language (`<T>`), so only the document is held to English. */}
+      <main
+        lang="en"
+        className="mx-auto w-full max-w-3xl px-6 py-10 sm:px-8 sm:py-12 print:max-w-none print:p-0"
+      >
         {/* Page setup for printing. Plain CSS because @page has no Tailwind equivalent, and
             the report must print correctly with JavaScript disabled. */}
         <style>{`
@@ -1951,11 +1976,14 @@ export default async function Report({
               Forensic Evidence Report
             </h1>
           </div>
-          {/* Screen-only controls. Hidden in print so the document carries no dead UI. */}
+          {/* Screen-only controls. Hidden in print so the document carries no dead UI. They are
+              the interface around the document and follow the reader's language (R16-T2);
+              the document itself does not yet (R16-T3). */}
           <div className="flex shrink-0 items-center gap-4 print:hidden">
             <Link href={WORKSPACE_PATH} className="text-sm underline">
-              ← Dashboard
+              <T k="report.dashboard" />
             </Link>
+            <LanguageSelector variant="document" />
             <PrintButton />
           </div>
         </div>

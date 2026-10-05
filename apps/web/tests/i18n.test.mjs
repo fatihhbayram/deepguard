@@ -11,10 +11,12 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
+  CANONICAL,
   createLocaleStore,
   DEFAULT_LOCALE,
   isLocale,
   LOCALE_STORAGE_KEY,
+  MESSAGES,
   translate,
   translateCanonical,
 } from "../app/i18n/core.ts";
@@ -193,4 +195,102 @@ test("the localization module reaches no network, cookie, header or URL", () => 
       assert.doesNotMatch(source, forbidden);
     }
   }
+});
+
+/* ------------------------------------------------------------------ *
+ * R16-T2 — the interface around the evidence
+ * ------------------------------------------------------------------ */
+
+/** A source file as code only, so a sentence quoted in a comment does not count as written. */
+function code(path) {
+  return readFileSync(new URL(path, import.meta.url), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+}
+
+test("every interface string has a Turkish entry, and Turkish has no key English lacks", () => {
+  const en = Object.keys(MESSAGES.en).sort();
+  const tr = Object.keys(MESSAGES.tr).sort();
+  assert.deepEqual(tr, en);
+  for (const locale of ["en", "tr"]) {
+    for (const [key, value] of Object.entries(MESSAGES[locale])) {
+      assert.ok(value.trim().length > 0, `${locale}: ${key} is empty`);
+    }
+  }
+});
+
+test("every canonical domain names the same values in both languages", () => {
+  for (const [domain, tables] of Object.entries(CANONICAL)) {
+    // `webMessage` is the exception by design: English is the source spelling, so its
+    // English table is empty and every sentence reaches the page as it was written.
+    if (domain === "webMessage") {
+      assert.deepEqual(tables.en, {});
+      continue;
+    }
+    assert.deepEqual(Object.keys(tables.tr).sort(), Object.keys(tables.en).sort(), domain);
+  }
+});
+
+test("each canonical table's English is the identity, except for the feedback labels", () => {
+  for (const [domain, tables] of Object.entries(CANONICAL)) {
+    if (domain.startsWith("feedback")) {
+      continue;
+    }
+    for (const [value, label] of Object.entries(tables.en)) {
+      assert.equal(label, value, `${domain}: ${value}`);
+    }
+  }
+});
+
+test("the feedback labels' English is the wording user-feedback.ts already uses", () => {
+  const source = code("../app/user-feedback.ts");
+  for (const domain of ["feedbackAssessment", "feedbackClaimedLabel"]) {
+    for (const [value, label] of Object.entries(CANONICAL[domain].en)) {
+      assert.ok(
+        source.includes(`${value}: "${label}"`),
+        `${domain}: ${value} is not "${label}" in user-feedback.ts`,
+      );
+    }
+  }
+});
+
+test("every translated web sentence is still written, word for word, by the code that sends it", () => {
+  // A sentence edited in a route handler and not here would silently stop translating; this
+  // makes that drift a failing test instead.
+  const sources = [
+    "../app/submit/route.ts",
+    "../app/submit-feedback/route.ts",
+    "../app/analysis.ts",
+  ]
+    .map(code)
+    .join("\n");
+  for (const sentence of Object.keys(CANONICAL.webMessage.tr)) {
+    assert.ok(sources.includes(`"${sentence}"`), `no longer written anywhere: ${sentence}`);
+  }
+});
+
+test("the API's own refusal text, and sentences carrying a status code, reach the page untouched", () => {
+  for (const raw of [
+    "Unsupported media type.",
+    "The API refused the submission (HTTP 413).",
+    "The feedback was refused (HTTP 500).",
+    "the api could not be reached.", // a known sentence in another case is a different sentence
+  ]) {
+    assert.equal(translateCanonical("tr", "webMessage", raw), raw);
+    assert.equal(translateCanonical("en", "webMessage", raw), raw);
+  }
+  assert.equal(
+    translateCanonical("tr", "webMessage", "The API could not be reached."),
+    "API'ye ulaşılamadı.",
+  );
+});
+
+test("an unknown analysis status, role or health word is shown exactly as the API spelled it", () => {
+  assert.equal(translateCanonical("tr", "analysisStatus", "completed"), "tamamlandı");
+  assert.equal(translateCanonical("tr", "analysisStatus", "archived"), "archived");
+  assert.equal(translateCanonical("tr", "userRole", "ADMIN"), "YÖNETİCİ");
+  assert.equal(translateCanonical("tr", "userRole", "AUDITOR"), "AUDITOR");
+  assert.equal(translateCanonical("tr", "userRole", "admin"), "admin");
+  assert.equal(translateCanonical("tr", "healthState", "ok"), "tamam");
+  assert.equal(translateCanonical("tr", "healthState", "rebooting"), "rebooting");
 });

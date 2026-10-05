@@ -85,7 +85,7 @@ function Secret({ value, onDismiss }: { value: string; onDismiss: () => void }) 
         Copy this key now. It will not be shown again.
       </p>
       <p className="mt-1.5 max-w-[68ch] text-[13px] leading-relaxed text-muted">
-        DeepGuard stores only a hash of it and cannot recover the value. If it is lost, the only
+        InspectRoot stores only a hash of it and cannot recover the value. If it is lost, the only
         remedy is to revoke this key and issue another.
       </p>
 

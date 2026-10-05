@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import { CanonicalLabel, LanguageSelector, T } from "../i18n/client";
+import { type MessageKey } from "../i18n/core";
 import { requestIdHeaders } from "../observability";
 import { ADMIN_PATH, LOGIN_PATH, SessionUser, USER_ROLE_ADMIN } from "../session";
 import {
@@ -162,17 +164,19 @@ function Chevron({ className = "" }: { className?: string }) {
  * no green: a healthy system is the ordinary case and does not need to announce itself, and
  * reserving colour for the exception is what makes the exception visible at a glance.
  */
-function StatusRow({ label, ok, detail }: { label: string; ok: boolean; detail: string }) {
+function StatusRow({ label, ok, detail }: { label: MessageKey; ok: boolean; detail: string }) {
   return (
     <div className="flex items-center justify-between gap-6 py-2">
-      <span className="text-[12px] text-muted">{label}</span>
+      <span className="text-[12px] text-muted">
+        <T k={label} />
+      </span>
       {/* The component's own word for its state, so it stays in the figure typeface. */}
       <span className="flex items-center gap-2 font-mono text-[11px] text-bone">
         <span
           aria-hidden
           className={`inline-block size-1.5 rounded-full ${ok ? "bg-bone" : "bg-rose-400"}`}
         />
-        {detail}
+        <CanonicalLabel domain="healthState" value={detail} />
       </span>
     </div>
   );
@@ -182,7 +186,7 @@ function StatusRow({ label, ok, detail }: { label: string; ok: boolean; detail: 
  * System health as a header control rather than a block of the page.
  *
  * A native `<details>`, deliberately: the detail behind the summary has to be reachable by
- * click, tap and keyboard, and this page ships no JavaScript to open a scripted popover
+ * click, tap and keyboard, and this page ships no script to open a scripted popover
  * with. The panel is absolutely positioned and the header clips nothing, so it escapes the
  * bar instead of being cut off by it.
  *
@@ -208,13 +212,15 @@ function HealthControl({
   return (
     <details className="group relative">
       <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md border border-line px-2.5 py-1.5 text-[12px] font-medium transition-colors duration-150 select-none hover:border-rule [&::-webkit-details-marker]:hidden">
-        <span className="sr-only">System status: </span>
+        <span className="sr-only">
+          <T k="header.systemStatus" />
+        </span>
         <span
           aria-hidden
           className={`inline-block size-1.5 rounded-full ${systemOk ? "bg-bone" : "bg-rose-400"}`}
         />
         <span className={systemOk ? "text-bone" : "text-rose-300"}>
-          {systemOk ? "Operational" : "Degraded"}
+          <T k={systemOk ? "header.operational" : "header.degraded"} />
         </span>
         <Chevron className="text-muted" />
       </summary>
@@ -223,17 +229,19 @@ function HealthControl({
           and a hairline; the deep drop shadow it used to carry made a connectivity check
           read as the most urgent thing on the page. */}
       <div className="absolute right-0 z-30 mt-2 w-80 rounded-lg border border-line bg-ink-2 p-4">
-        <p className="text-[12px] text-muted">Web → API → DB connectivity check</p>
+        <p className="text-[12px] text-muted">
+          <T k="health.check" />
+        </p>
 
         <div className="mt-3 divide-y divide-hair">
-          <StatusRow label="Web" ok detail="running" />
+          <StatusRow label="health.web" ok detail="running" />
           <StatusRow
-            label="API"
+            label="health.api"
             ok={apiOk}
             detail={result.reachable ? result.health.status : "unreachable"}
           />
           <StatusRow
-            label="Database"
+            label="health.database"
             ok={dbOk}
             detail={result.reachable ? result.health.database : "unknown"}
           />
@@ -285,16 +293,17 @@ function SessionControl({ user }: { user: SessionUser }) {
       >
         {user.email}
       </span>
-      {/* The API's own word for the role, so it stays in the figure typeface. */}
+      {/* The API's own word for the role, so it stays in the figure typeface. Named in the
+          reader's language; the API's spelling stays on hover whenever the two differ. */}
       <span className="rounded-md border border-line px-2 py-1 font-mono text-[10px] tracking-[0.12em] text-bone">
-        {user.role}
+        <CanonicalLabel domain="userRole" value={user.role} />
       </span>
       {user.role === USER_ROLE_ADMIN && (
         <Link
           href={ADMIN_PATH}
           className="rounded-md border border-line px-2.5 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
         >
-          Admin console
+          <T k="header.adminConsole" />
         </Link>
       )}
       <form action="/logout" method="post">
@@ -302,7 +311,7 @@ function SessionControl({ user }: { user: SessionUser }) {
           type="submit"
           className="rounded-md border border-line px-2.5 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
         >
-          Sign out
+          <T k="auth.signOut" />
         </button>
       </form>
     </div>
@@ -869,7 +878,9 @@ function Status({ status }: { status: string }) {
         : "text-muted";
 
   return (
-    <span className={`font-mono text-[11px] tracking-[0.08em] ${tone}`}>{status}</span>
+    <span className={`font-mono text-[11px] tracking-[0.08em] ${tone}`}>
+      <CanonicalLabel domain="analysisStatus" value={status} />
+    </span>
   );
 }
 
@@ -917,7 +928,9 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
           >
             →
           </span>
-          <span className="sr-only">— open report</span>
+          <span className="sr-only">
+            <T k="queue.openReport" />
+          </span>
         </Link>
 
         {/* The full id stays in the title so it remains available without a detail page. */}
@@ -931,7 +944,7 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
             between a single served file and one assembled here is exactly what the wording
             exists to carry, and a truncation would drop it. It is not a finding about the
             media. */}
-        <p className="mt-1.5 text-[12px] leading-relaxed text-muted">
+        <p lang="en" className="mt-1.5 text-[12px] leading-relaxed text-muted">
           {acquisitionStatement(analysis)}
         </p>
       </div>
@@ -943,7 +956,7 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
       {/* DeepGuard's own classification of the calibrated evidence — a risk level and the
           ruleset that produced it, never a Fake/Real verdict. Read from the analysis row as
           the engine committed it, never recomputed here. */}
-      <div className="col-start-2 lg:col-start-auto">
+      <div lang="en" className="col-start-2 lg:col-start-auto">
         <Risk analysis={analysis} />
       </div>
 
@@ -952,7 +965,7 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
           record does not hold. */}
       <div className="col-start-2 lg:col-start-auto">
         <div className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase lg:hidden">
-          Submitted
+          <T k="queue.column.submitted" />
         </div>
         <div className="mt-1 font-mono text-[11px] break-words text-muted lg:mt-0">
           {analysis.created_at}
@@ -961,11 +974,14 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
 
       <details className="group col-start-2 lg:col-span-4 lg:col-start-2">
         <summary className="inline-flex cursor-pointer list-none items-center gap-2 rounded-sm text-[12px] font-medium text-muted transition-colors duration-150 select-none hover:text-bone [&::-webkit-details-marker]:hidden">
-          Evidence
+          <T k="queue.evidence" />
           <Chevron />
         </summary>
 
-        <dl className="mt-3.5 grid gap-x-8 gap-y-5 border-t border-hair pt-4 sm:grid-cols-2 lg:grid-cols-3">
+        <dl
+          lang="en"
+          className="mt-3.5 grid gap-x-8 gap-y-5 border-t border-hair pt-4 sm:grid-cols-2 lg:grid-cols-3"
+        >
           <Field term="Declared type">{analysis.declared_content_type}</Field>
 
           {/* What the bytes actually are, as opposed to what the client declared them to
@@ -1053,10 +1069,18 @@ function CaseLog({ analyses }: { analyses: AnalysisSummary[] }) {
       {/* The column legend, on the viewports where there are columns to legend. */}
       <div className="hidden border-b border-line bg-ink-2 px-4 py-2.5 text-[11px] font-medium tracking-[0.08em] text-muted uppercase lg:grid lg:grid-cols-[2.5rem_minmax(0,1fr)_6.5rem_12rem_11rem] lg:gap-x-6">
         <span>#</span>
-        <span>Media</span>
-        <span>Status</span>
-        <span>Risk</span>
-        <span>Submitted</span>
+        <span>
+          <T k="queue.column.media" />
+        </span>
+        <span>
+          <T k="queue.column.status" />
+        </span>
+        <span>
+          <T k="queue.column.risk" />
+        </span>
+        <span>
+          <T k="queue.column.submitted" />
+        </span>
       </div>
 
       <ol>
@@ -1105,8 +1129,10 @@ function Alert({
 /**
  * The one control on this dashboard: submit a local file, or a URL, for analysis.
  *
- * A plain HTML form posting to `/submit`, which forwards to the API. No client component and
- * no JavaScript: the rest of this page is server-rendered, the API serves no CORS headers
+ * A plain HTML form posting to `/submit`, which forwards to the API. It needs no JavaScript —
+ * the only client code on this page is the language switch and the words it repaints (R16-T2),
+ * and with it disabled the form reads in English and still submits — the rest of this page is
+ * server-rendered, the API serves no CORS headers
  * for a browser to post across, and a form is what works without either. The trade is that
  * the outcome arrives as a redirect rather than as an in-place update, which is why the
  * result of the last submission is read out of the query string here.
@@ -1130,12 +1156,14 @@ function IngestBay({
 }) {
   return (
     <section>
-      <Legend>Ingest</Legend>
-      <Heading>Analyse media</Heading>
+      <Legend>
+        <T k="ingest.legend" />
+      </Legend>
+      <Heading>
+        <T k="ingest.heading" />
+      </Heading>
       <p className="mt-3 max-w-[68ch] text-[15px] leading-relaxed text-muted">
-        An MP4 or MOV file, or a link to one. A URL is downloaded by the API first, so the
-        page waits for the download before the analysis is queued; both then go through the
-        same pipeline and appear in the queue below. Live streams cannot be analysed.
+        <T k="ingest.intro" />
       </p>
 
       {/* One workspace, not two channels facing each other across a divider.
@@ -1149,7 +1177,7 @@ function IngestBay({
           <div className="grid gap-5 p-5 sm:grid-cols-2 sm:gap-6">
             <label className="flex min-w-0 flex-col gap-2">
               <span className="text-[11px] font-medium tracking-[0.1em] text-muted uppercase">
-                Local file
+                <T k="ingest.localFile" />
               </span>
               <input
                 type="file"
@@ -1161,7 +1189,7 @@ function IngestBay({
 
             <label className="flex min-w-0 flex-col gap-2">
               <span className="text-[11px] font-medium tracking-[0.1em] text-muted uppercase">
-                Media URL
+                <T k="ingest.mediaUrl" />
               </span>
               {/* Monospace, because what goes in here is a machine value the reader has to
                   be able to check character by character. The label above it is not. */}
@@ -1185,7 +1213,9 @@ function IngestBay({
               without opening anything, and so the form keeps working with no JavaScript
               like the rest of this page. */}
           <fieldset className="border-t border-hair px-5 py-4">
-            <legend className="sr-only">Analysis mode</legend>
+            <legend className="sr-only">
+              <T k="ingest.mode" />
+            </legend>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
               <label className="flex items-center gap-2 text-[13px] text-bone">
                 <input
@@ -1195,7 +1225,7 @@ function IngestBay({
                   defaultChecked
                   className="accent-accent"
                 />
-                Deep analysis
+                <T k="ingest.deepAnalysis" />
               </label>
               <label className="flex items-center gap-2 text-[13px] text-bone">
                 <input
@@ -1204,24 +1234,23 @@ function IngestBay({
                   value="quick_scan"
                   className="accent-accent"
                 />
-                Quick scan
+                <T k="ingest.quickScan" />
               </label>
               <p className="text-[13px] leading-relaxed text-muted">
-                Both reach the same verdict from the same detectors. A quick scan does not
-                run the supplementary evidence detectors, which cannot change that verdict.
+                <T k="ingest.modeNote" />
               </p>
             </div>
           </fieldset>
 
           <div className="flex flex-col gap-3 border-t border-hair px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
             <p className="text-[13px] leading-relaxed text-muted">
-              If both are filled in, the URL is used.
+              <T k="ingest.urlWins" />
             </p>
             <button
               type="submit"
               className="shrink-0 rounded-md bg-accent px-5 py-2.5 text-[13px] font-semibold tracking-[0.02em] text-ink transition-[opacity,transform] duration-150 hover:opacity-90 active:translate-y-px"
             >
-              Run analysis
+              <T k="ingest.submit" />
             </button>
           </div>
         </div>
@@ -1229,16 +1258,20 @@ function IngestBay({
 
       {/* The API's own refusal, shown as text. It is DeepGuard's client-facing wording —
           extractor, socket and storage detail stay in the server log — and it says which
-          rule the submission broke rather than what went wrong inside. */}
+          rule the submission broke rather than what went wrong inside. The sentences
+          `/submit` writes itself are named in the reader's language; the API's own wording
+          matches none of them and is shown exactly as it arrived. */}
       {error && (
         <div className="mt-5">
-          <Alert tone="error">{error}</Alert>
+          <Alert tone="error">
+            <CanonicalLabel domain="webMessage" value={error} />
+          </Alert>
         </div>
       )}
       {submitted !== null && !error && (
         <div className="mt-5">
           <Alert tone="success">
-            Queued for analysis
+            <T k="ingest.queued" />
             {submitted ? <span className="font-mono"> · {submitted.slice(0, 8)}</span> : null}
             .
           </Alert>
@@ -1281,7 +1314,9 @@ function Note({ term, children }: { term: string; children: React.ReactNode }) {
  */
 function Methodology() {
   return (
-    <details className="group rounded-lg border border-line bg-ink-2">
+    // English until R16-T3 localizes the forensic vocabulary, and marked so: under a Turkish
+    // `<html lang>` the browser would otherwise upper-case these labels by Turkish rules.
+    <details lang="en" className="group rounded-lg border border-line bg-ink-2">
       <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-lg px-4 py-3 text-[13px] font-medium text-bone transition-colors duration-150 select-none hover:text-accent [&::-webkit-details-marker]:hidden">
         How to interpret these results
         <Chevron className="text-muted" />
@@ -1475,7 +1510,8 @@ export default async function Home({
             </h1>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <LanguageSelector variant="bar" />
             <HealthControl result={result} apiOk={apiOk} dbOk={dbOk} systemOk={systemOk} />
             <SessionControl user={user} />
           </div>
@@ -1495,15 +1531,17 @@ export default async function Home({
         />
 
         <section className="mt-14">
-          <Legend>Queue</Legend>
-          <Heading>Recent analyses</Heading>
+          <Legend>
+            <T k="queue.legend" />
+          </Legend>
+          <Heading>
+            <T k="queue.heading" />
+          </Heading>
           {/* What the log is a log of, which differs by role and is worth saying rather than
               leaving the reader to infer from what is missing. This is a caption on a list
               the API already narrowed; it does not do the narrowing. */}
           <p className="mt-3 max-w-[68ch] text-[15px] leading-relaxed text-muted">
-            {user.role === USER_ROLE_ADMIN
-              ? "Every analysis in the system, as an administrator sees it."
-              : "The analyses submitted by this account."}
+            <T k={user.role === USER_ROLE_ADMIN ? "queue.captionAdmin" : "queue.captionUser"} />
           </p>
 
           <div className="mt-5">
@@ -1512,13 +1550,16 @@ export default async function Home({
 
           <div className="mt-5">
             {!analysesResult.ok ? (
-              <Alert tone="error">{analysesResult.error}</Alert>
+              <Alert tone="error">
+                <CanonicalLabel domain="webMessage" value={analysesResult.error} />
+              </Alert>
             ) : analysesResult.analyses.length === 0 ? (
               <div className="rounded-lg border border-dashed border-line px-6 py-14 text-center">
-                <p className="text-[15px] font-medium text-bone">No analyses yet</p>
+                <p className="text-[15px] font-medium text-bone">
+                  <T k="queue.emptyTitle" />
+                </p>
                 <p className="mx-auto mt-3 max-w-[46ch] text-sm text-muted">
-                  Submit a file or a URL above. Each accepted submission becomes a record
-                  here.
+                  <T k="queue.emptyBody" />
                 </p>
               </div>
             ) : (

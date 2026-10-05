@@ -14,27 +14,29 @@
 
 import Link from "next/link";
 
+import { LanguageSelector, T } from "./i18n/client";
 import { LOGIN_PATH, WORKSPACE_PATH } from "./session";
 
 export default function Landing() {
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center px-4 py-20 sm:px-8">
-      <div className="flex items-center gap-2.5">
-        <span aria-hidden className="size-1.5 rounded-full bg-accent" />
-        {/* A name, set in the UI typeface — as it is in the dashboard header and above the
-            sign-in form. The figure typeface is reserved for values the pipeline produced. */}
-        <h1 className="text-[14px] font-semibold tracking-[0.14em] text-bone uppercase">
-          InspectRoot
-        </h1>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-2.5">
+          <span aria-hidden className="size-1.5 rounded-full bg-accent" />
+          {/* A name, set in the UI typeface — as it is in the dashboard header and above the
+              sign-in form. The figure typeface is reserved for values the pipeline produced. */}
+          <h1 className="text-[14px] font-semibold tracking-[0.14em] text-bone uppercase">
+            InspectRoot
+          </h1>
+        </div>
+        <LanguageSelector variant="bar" />
       </div>
 
       <h2 className="mt-10 max-w-[20ch] text-4xl font-semibold tracking-[-0.03em] text-balance text-bone">
-        Media forensics, signal by signal.
+        <T k="landing.tagline" />
       </h2>
       <p className="mt-5 max-w-[62ch] text-[15px] leading-relaxed text-muted">
-        Submit a file or a URL and read what each detector established on its own — provenance,
-        synthetic video, face manipulation, voice — kept as separate evidence rather than
-        averaged into one number that would mean nothing.
+        <T k="landing.intro" />
       </p>
 
       <div className="mt-10 flex flex-wrap items-center gap-4">
@@ -42,7 +44,7 @@ export default function Landing() {
           href={LOGIN_PATH}
           className="rounded-md bg-accent px-5 py-2.5 text-[13px] font-semibold text-ink transition-[opacity,transform] duration-150 hover:opacity-90 active:translate-y-px"
         >
-          Sign in
+          <T k="auth.signIn" />
         </Link>
         {/* For a reader who already has a session: the guard on `/app` sends them to sign in
             if they do not, so this link is safe to show to everyone. */}
@@ -50,13 +52,12 @@ export default function Landing() {
           href={WORKSPACE_PATH}
           className="text-[13px] text-muted underline hover:text-bone"
         >
-          Go to workspace
+          <T k="landing.goToWorkspace" />
         </Link>
       </div>
 
       <p className="mt-14 max-w-[62ch] text-[13px] leading-relaxed text-muted">
-        Accounts are created by an administrator. Analyses are visible to the account that
-        submitted them.
+        <T k="landing.accounts" />
       </p>
     </main>
   );

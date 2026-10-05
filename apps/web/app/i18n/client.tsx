@@ -55,10 +55,17 @@ export function useLocale(): [Locale, (locale: Locale) => void] {
   return [locale, store.set];
 }
 
-/** One interface string, in the reader's language. */
+/**
+ * One interface string, in the reader's language.
+ *
+ * It says which language it is in. Until R16-T3 the report and the forensic vocabulary stay in
+ * English and are marked `lang="en"` while `<html lang>` follows the reader; a word of this
+ * interface drawn inside one of those regions has to name its own language, or the browser
+ * would apply the region's rules to it — case mapping under `uppercase` first among them.
+ */
 export function T({ k }: { k: MessageKey }) {
   const [locale] = useLocale();
-  return <>{translate(locale, k)}</>;
+  return <span lang={locale}>{translate(locale, k)}</span>;
 }
 
 /**
@@ -71,8 +78,49 @@ export function T({ k }: { k: MessageKey }) {
 export function CanonicalLabel({ domain, value }: { domain: CanonicalDomain; value: string }) {
   const [locale] = useLocale();
   const label = translateCanonical(locale, domain, value);
-  return <span title={label === value ? undefined : value}>{label}</span>;
+  // A value shown as the API spelled it is not a word of the reader's language, so it claims
+  // none and takes the language of whatever it is drawn inside.
+  return label === value ? <span>{label}</span> : <span lang={locale} title={value}>{label}</span>;
 }
+
+/**
+ * One `<option>` naming an interface string. An `<option>` may hold only text, so the word is
+ * computed here and handed to it as a string rather than rendered through `<T>`.
+ */
+export function MessageOption({ value, k }: { value: string; k: MessageKey }) {
+  const [locale] = useLocale();
+  return <option value={value}>{translate(locale, k)}</option>;
+}
+
+/** One `<option>` naming a value the API owns. `value` is what the form posts, untouched. */
+export function CanonicalOption({ domain, value }: { domain: CanonicalDomain; value: string }) {
+  const [locale] = useLocale();
+  return <option value={value}>{translateCanonical(locale, domain, value)}</option>;
+}
+
+/*
+ * Where the switch sits. `rail` is the admin navigation it was written for; `bar` is the
+ * workspace's header and the sign-in pages, on the same graphite ground but beside other
+ * controls rather than above them; `document` is the report's light masthead.
+ */
+const SELECTOR_STYLES = {
+  rail: {
+    label: "flex items-center justify-between gap-2 px-3 text-[12px] text-muted",
+    word: "",
+    select: "rounded-md border border-line bg-ink px-2 py-1 text-[12px] text-bone",
+  },
+  bar: {
+    label: "flex items-center gap-2 text-[12px] text-muted",
+    // The word is spoken to a screen reader on a phone, where the header has no room for it.
+    word: "sr-only sm:not-sr-only",
+    select: "rounded-md border border-line bg-ink px-2 py-1 text-[12px] text-bone",
+  },
+  document: {
+    label: "flex items-center gap-2 text-sm",
+    word: "sr-only",
+    select: "rounded-md border border-black/20 bg-paper px-2 py-1 text-sm text-doc",
+  },
+} as const;
 
 /**
  * The language switch.
@@ -82,16 +130,21 @@ export function CanonicalLabel({ domain, value }: { domain: CanonicalDomain; val
  * not touch the address bar. It also keeps `<html lang>` in step with what is painted, which is
  * the one piece of the document outside React's tree that a language change has to reach.
  */
-export function LanguageSelector() {
+export function LanguageSelector({
+  variant = "rail",
+}: {
+  variant?: keyof typeof SELECTOR_STYLES;
+}) {
   const [locale, setLocale] = useLocale();
+  const styles = SELECTOR_STYLES[variant];
 
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
 
   return (
-    <label className="flex items-center justify-between gap-2 px-3 text-[12px] text-muted">
-      <span>{translate(locale, "locale.selector")}</span>
+    <label className={styles.label}>
+      <span className={styles.word}>{translate(locale, "locale.selector")}</span>
       <select
         value={locale}
         onChange={(event) => {
@@ -99,7 +152,7 @@ export function LanguageSelector() {
             setLocale(event.target.value);
           }
         }}
-        className="rounded-md border border-line bg-ink px-2 py-1 text-[12px] text-bone"
+        className={styles.select}
       >
         {LOCALES.map((option) => (
           <option key={option} value={option}>
