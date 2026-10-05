@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
@@ -144,12 +145,15 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="min-w-0 break-inside-avoid">
       {/* The label names a reading; the reading is a machine value. Only the second gets the
-          figure typeface, and `break-all` on it is what keeps a hash from widening the
-          document past the viewport on a phone. */}
+          figure typeface, and `wrap-anywhere` on it is what keeps a hash from widening the
+          document past the viewport on a phone. It breaks inside a token only where the token
+          has no break of its own, so a hash still wraps but a sentence in this slot — the
+          acquisition statement, long in Turkish — wraps between its words rather than through
+          them, which `break-all` did. */}
       <dt className="text-[11px] font-medium tracking-[0.06em] uppercase opacity-70">
         <Copy text={label} />
       </dt>
-      <dd className="mt-1 font-mono text-xs leading-relaxed break-all">{value}</dd>
+      <dd className="mt-1 font-mono text-xs leading-relaxed wrap-anywhere">{value}</dd>
     </div>
   );
 }
@@ -170,12 +174,20 @@ function Section({
     // darkened for print rather than dropped — nothing on this page is hidden to shorten the
     // printed report. The tint is dropped for print too: a filled block costs toner on every
     // section and separates nothing that the darkened rule does not already separate.
-    <section className="mt-5 break-inside-avoid rounded-lg border border-black/12 bg-paper-2 px-5 py-4 dark:border-white/20 print:border-black/40 print:bg-transparent print:px-4">
-      <h2 className="text-[15px] font-semibold tracking-[-0.01em]">
+    //
+    // On paper a section may run across a page break (R16-T4). Held whole, a panel taller than
+    // what is left of a page was pushed to the next one and left the rest of the page blank —
+    // half a page at a time, with the heading above it stranded at the foot. What may not be cut
+    // is still held: every figure (`Field`) and every detector's standing stays whole, the title
+    // stays with the first thing it introduces, and a table that runs on repeats its header row
+    // overleaf (the browser's own behaviour for `<thead>`). `box-decoration-clone`
+    // closes the border at the break and opens it again overleaf, so each part is a whole panel.
+    <section className="mt-5 break-inside-avoid rounded-lg border border-black/12 bg-paper-2 px-5 py-4 dark:border-white/20 print:break-inside-auto print:box-decoration-clone print:border-black/40 print:bg-transparent print:px-4">
+      <h2 className="break-after-avoid text-[15px] font-semibold tracking-[-0.01em]">
         <Copy text={title} />
       </h2>
       {subtitle && (
-        <p className="mt-1 max-w-[72ch] text-xs leading-relaxed opacity-70">
+        <p className="mt-1 max-w-[72ch] break-inside-avoid break-after-avoid text-xs leading-relaxed opacity-70">
           <Copy text={subtitle} />
         </p>
       )}
@@ -341,7 +353,7 @@ function MediaSection({
         </dt>
         {/* Printed in full, never abbreviated: an abbreviated hash cannot be checked, and
             checking it against the source file is the whole reason it is here. */}
-        <dd className="mt-0.5 font-mono text-xs break-all">
+        <dd className="mt-0.5 font-mono text-xs wrap-anywhere">
           {analysis.original_sha256 ?? ABSENT}
         </dd>
         <p className="mt-1 text-xs opacity-70">
@@ -448,7 +460,7 @@ function Contribution({
   status?: string | null;
 }) {
   return (
-    <div className="border-t border-black/10 pt-2 dark:border-white/15">
+    <div className="break-inside-avoid border-t border-black/10 pt-2 dark:border-white/15">
       <p className="text-sm font-medium">
         <Copy text={detector} />
       </p>
@@ -631,14 +643,14 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
 
       {rationale !== null && (
         <div className="mt-4">
-          <h3 className="text-sm font-semibold">
+          <h3 className="break-after-avoid text-sm font-semibold">
             <Copy>Why this classification</Copy>
           </h3>
           <p className="mt-1 text-sm">
             <Copy text={rationale.summary} />
           </p>
 
-          <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide opacity-70">
+          <h4 className="mt-3 break-after-avoid text-xs font-semibold uppercase tracking-wide opacity-70">
             <Copy>How each detector contributed</Copy>
           </h4>
           <div className="mt-2 space-y-2">
@@ -659,7 +671,7 @@ function RiskSection({ analysis }: { analysis: AnalysisSummary }) {
             />
           </div>
 
-          <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide opacity-70">
+          <h4 className="mt-3 break-after-avoid text-xs font-semibold uppercase tracking-wide opacity-70">
             <Copy>What this covers</Copy>
           </h4>
           <p className="mt-1 text-xs opacity-80">
@@ -847,10 +859,10 @@ function RiskTraceSection({ trace }: { trace: RiskTrace }) {
           report; this is where they are shown to have been read back from the trace, beside the
           rule and the calibration that produced them, and dropping them here would leave the
           decision breakdown explaining a decision it does not state. */}
-      <p className="text-xs uppercase tracking-wide opacity-60">
+      <p className="break-after-avoid text-xs uppercase tracking-wide opacity-60">
         <Copy>Decision as stored</Copy>
       </p>
-      <p className="mt-0.5 text-lg font-semibold break-words">
+      <p className="mt-0.5 break-after-avoid text-lg font-semibold break-words">
         {/* Read through the trace's own version, which is the version the decision was taken
             under — the same resolution the summary at the top of the report makes. */}
         <Copy text={riskLabel(trace.risk_level, trace.rules_version)} />
@@ -888,7 +900,7 @@ function RiskTraceSection({ trace }: { trace: RiskTrace }) {
 
       {trace.contributions.length > 0 ? (
         <div className="mt-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wide opacity-70">
+          <h3 className="break-after-avoid text-xs font-semibold uppercase tracking-wide opacity-70">
             <Copy>How each detector stood in this decision</Copy>
           </h3>
           <div className="mt-2 space-y-3">
@@ -1282,7 +1294,7 @@ function SyntheticVideoSection({
             </Copy>
           </p>
 
-          <h3 className="mt-4 text-sm font-medium">
+          <h3 className="mt-4 break-after-avoid text-sm font-medium">
             <Copy>Persisted strongest clips</Copy>{" "}
             <span className="font-normal opacity-60">
               <Copy>(highest logit first)</Copy>
@@ -2086,6 +2098,22 @@ function FeedbackSection({
   );
 }
 
+/**
+ * The document's title, which is what the browser prints in a page header and offers as the
+ * file name when the report is saved as PDF (R16-T4). The analysis id is the record's own
+ * identifier and the same in every language, so a printed page or a saved file names the
+ * analysis it belongs to without this title taking a language. It is already in the URL, so
+ * it says nothing about whether the id exists or who may see it.
+ */
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}): Promise<Metadata> {
+  const { id } = await params;
+  return { title: `InspectRoot · ${id}` };
+}
+
 /** One query-string value, or null. A repeated parameter is not an outcome. */
 function singleParam(value: string | string[] | undefined): string | null {
   return typeof value === "string" ? value : null;
@@ -2203,8 +2231,9 @@ export default async function Report({
           </div>
           {/* Screen-only controls. Hidden in print so the document carries no dead UI. They are
               the interface around the document and follow the reader's language (R16-T2), as
-              the document itself now does (R16-T3). */}
-          <div className="flex shrink-0 items-center gap-4 print:hidden">
+              the document itself now does (R16-T3). On a phone they wrap rather than push the
+              page sideways: the Turkish print label alone is wider than a 360px column. */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:shrink-0 print:hidden">
             <Link href={WORKSPACE_PATH} className="text-sm underline">
               <T k="report.dashboard" />
             </Link>
@@ -2254,12 +2283,12 @@ export default async function Report({
             direction — no assessment above moved this state and this state moved no assessment
             — and the surest way to say so is to answer it here, as its own question, before the
             evidence behind the assessment begins. */}
-        <h2 className="mt-10 border-b border-black/15 pb-2 text-[13px] font-semibold tracking-[0.1em] uppercase print:border-black/40">
+        <h2 className="mt-10 break-after-avoid border-b border-black/15 pb-2 text-[13px] font-semibold tracking-[0.1em] uppercase print:border-black/40">
           <Copy>
             Authenticity and provenance
           </Copy>
         </h2>
-        <p className="mt-3 max-w-[76ch] text-xs leading-relaxed opacity-70">
+        <p className="mt-3 max-w-[76ch] break-after-avoid text-xs leading-relaxed opacity-70">
           <Copy>
             A separate question from the assessment above, answered from separate evidence.
             Provenance is what the file itself carries about where it came from and who signed for
@@ -2278,12 +2307,12 @@ export default async function Report({
             artifact it was taken on; nothing below it is removed, shortened or summarised away
             by the two sections above existing, and a reader who needs the figures has one
             boundary to cross to reach all of them. */}
-        <h2 className="mt-10 border-b border-black/15 pb-2 text-[13px] font-semibold tracking-[0.1em] uppercase print:border-black/40">
+        <h2 className="mt-10 break-after-avoid border-b border-black/15 pb-2 text-[13px] font-semibold tracking-[0.1em] uppercase print:border-black/40">
           <Copy>
             Technical forensic evidence
           </Copy>
         </h2>
-        <p className="mt-3 max-w-[76ch] text-xs leading-relaxed opacity-70">
+        <p className="mt-3 max-w-[76ch] break-after-avoid text-xs leading-relaxed opacity-70">
           <Copy>
             The record behind the assessment: the decision as it was stored, the artifact it was
             taken on, and every detector reading kept for it. None of it is recomputed here.
@@ -2310,12 +2339,12 @@ export default async function Report({
 
         <MediaSection analysis={analysis} media={analysis.media} />
 
-        <h3 className="mt-8 text-[11px] font-semibold tracking-[0.14em] uppercase opacity-70">
+        <h3 className="mt-8 break-after-avoid text-[11px] font-semibold tracking-[0.14em] uppercase opacity-70">
           <Copy>
             Independent detector evidence
           </Copy>
         </h3>
-        <p className="mt-2 max-w-[76ch] text-xs leading-relaxed opacity-70">
+        <p className="mt-2 max-w-[76ch] break-after-avoid text-xs leading-relaxed opacity-70">
           <Copy>Each source is recorded separately and none of them is combined into the other.</Copy>{" "}
           <Copy>
             {analysis.risk_rules_version === RULES_VERSION_V5
