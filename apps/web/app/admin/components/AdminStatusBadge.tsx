@@ -13,6 +13,10 @@
  * honest treatment of a word nobody here understands — the alternative is a blank chip that
  * hides exactly the case a reader needs to see.
  *
+ * Since R16-T1 a call site may hand in `<CanonicalLabel>` instead of the bare value, which names a
+ * known status in the reader's language and draws an unknown one exactly as it came. That is the
+ * call site's choice and the localization module's rule; this component still translates nothing.
+ *
  * The five tones, and there is no sixth:
  *
  * - `neutral`  — a normal, working state. Active, completed.

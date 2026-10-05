@@ -27,6 +27,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { fetchSession } from "../../analysis";
+import { CanonicalLabel } from "../../i18n/client";
 import { ADMIN_JOBS_PATH, adminAnalysisPath, LOGIN_PATH } from "../../session";
 import { AdminAlert } from "../components/AdminAlert";
 import { AdminPageHeader } from "../components/AdminPageHeader";
@@ -65,8 +66,10 @@ function Status({ status }: { status: string }) {
             : "muted"
       }
     >
-      {/* The API's own spelling, never title-cased or softened. */}
-      {status}
+      {/* The API's own spelling, or its name in the reader's language — never title-cased or
+          softened, and a status this application does not know is drawn exactly as it came
+          (R16-T1; see `translateCanonical`). The tone above still keys off the raw value. */}
+      <CanonicalLabel domain="jobStatus" value={status} />
     </AdminStatusBadge>
   );
 }

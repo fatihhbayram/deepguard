@@ -29,8 +29,12 @@
 
 import { useState } from "react";
 
+import { T, useLocale } from "../../i18n/client";
+import { translate } from "../../i18n/core";
+
 export function AdminMobileNav({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  const [locale] = useLocale();
 
   return (
     <>
@@ -45,10 +49,10 @@ export function AdminMobileNav({ children }: { children: React.ReactNode }) {
           <span aria-hidden className="mr-2">
             ☰
           </span>
-          Menu
+          <T k="nav.menu" />
         </button>
         <span className="text-[11px] font-medium tracking-[0.16em] text-muted uppercase">
-          Administration
+          <T k="nav.label" />
         </span>
       </div>
 
@@ -81,7 +85,7 @@ export function AdminMobileNav({ children }: { children: React.ReactNode }) {
                 onClick={() => setOpen(false)}
                 className="rounded-md border border-line px-2.5 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
               >
-                Close
+                <T k="nav.close" />
               </button>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
@@ -91,7 +95,7 @@ export function AdminMobileNav({ children }: { children: React.ReactNode }) {
               tabbing to it and pressing Enter. */}
           <button
             type="button"
-            aria-label="Close navigation"
+            aria-label={translate(locale, "nav.closeNavigation")}
             onClick={() => setOpen(false)}
             className="flex-1 bg-ink/80"
           />

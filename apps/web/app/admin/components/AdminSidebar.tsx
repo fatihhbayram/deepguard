@@ -30,6 +30,8 @@
 
 import Link from "next/link";
 
+import { LanguageSelector, T } from "../../i18n/client";
+import type { MessageKey } from "../../i18n/core";
 import { AdminNavLink } from "./AdminNavLink";
 import {
   ADMIN_ANALYTICS_PATH,
@@ -46,28 +48,32 @@ import {
  * string written here, for the reason that module gives: a literal `"/admin/jobs"` in a
  * navigation component and another in the page it points at are two copies of one address.
  */
+/*
+ * Headings and labels are dictionary keys rather than words since R16-T1; the words are in
+ * `../../i18n/core.ts`, and `<T>` paints them in the reader's language.
+ */
 const GROUPS: {
-  heading: string;
-  items: { href: string; label: string; prefix?: string }[];
+  heading: MessageKey;
+  items: { href: string; label: MessageKey; prefix?: string }[];
 }[] = [
   {
-    heading: "Operations",
+    heading: "nav.group.operations",
     items: [
       // `/admin/users/[id]` has no entry of its own — the account list is `/admin` — so Accounts
       // owns it and stays marked while a reader is on one account. See `AdminNavLink`.
-      { href: ADMIN_PATH, label: "Accounts", prefix: "/admin/users" },
-      { href: ADMIN_JOBS_PATH, label: "Detection jobs", prefix: ADMIN_JOBS_PATH },
-      { href: ADMIN_REVIEW_QUEUE_PATH, label: "Review queue", prefix: ADMIN_REVIEW_QUEUE_PATH },
-      { href: ADMIN_ANALYTICS_PATH, label: "Operational summary", prefix: ADMIN_ANALYTICS_PATH },
+      { href: ADMIN_PATH, label: "nav.accounts", prefix: "/admin/users" },
+      { href: ADMIN_JOBS_PATH, label: "nav.jobs", prefix: ADMIN_JOBS_PATH },
+      { href: ADMIN_REVIEW_QUEUE_PATH, label: "nav.reviewQueue", prefix: ADMIN_REVIEW_QUEUE_PATH },
+      { href: ADMIN_ANALYTICS_PATH, label: "nav.analytics", prefix: ADMIN_ANALYTICS_PATH },
     ],
   },
   {
-    heading: "Governance",
-    items: [{ href: ADMIN_AUDIT_PATH, label: "Audit log", prefix: ADMIN_AUDIT_PATH }],
+    heading: "nav.group.governance",
+    items: [{ href: ADMIN_AUDIT_PATH, label: "nav.audit", prefix: ADMIN_AUDIT_PATH }],
   },
   {
-    heading: "Access",
-    items: [{ href: ADMIN_API_KEYS_PATH, label: "API keys", prefix: ADMIN_API_KEYS_PATH }],
+    heading: "nav.group.access",
+    items: [{ href: ADMIN_API_KEYS_PATH, label: "nav.apiKeys", prefix: ADMIN_API_KEYS_PATH }],
   },
 ];
 
@@ -92,13 +98,13 @@ export function AdminSidebar() {
                 navigation, and at `text-[10px]` it separates the items without competing with
                 them for the reader's eye. */}
             <p className="px-3 pb-1 text-[10px] font-medium tracking-[0.16em] text-muted/80 uppercase">
-              {group.heading}
+              <T k={group.heading} />
             </p>
             <ul className="space-y-px">
               {group.items.map((item) => (
                 <li key={item.href}>
                   <AdminNavLink href={item.href} prefix={item.prefix}>
-                    {item.label}
+                    <T k={item.label} />
                   </AdminNavLink>
                 </li>
               ))}
@@ -116,8 +122,16 @@ export function AdminSidebar() {
           href={WORKSPACE_PATH}
           className="block rounded-md px-3 py-1.5 text-[13px] text-muted transition-colors duration-150 hover:bg-plate hover:text-bone"
         >
-          <span aria-hidden>⟵ </span>Back to workspace
+          <span aria-hidden>⟵ </span>
+          <T k="nav.backToWorkspace" />
         </Link>
+      </div>
+
+      {/* The reader's language (R16-T1). At the foot of the rail because it is a preference
+          about this browser, not a place to go; it changes what is painted and nothing that is
+          sent. Inside the rail, so the drawer carries it on a narrow screen too. */}
+      <div className="mt-3 border-t border-hair pt-3">
+        <LanguageSelector />
       </div>
     </nav>
   );
