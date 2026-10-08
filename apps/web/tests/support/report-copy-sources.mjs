@@ -52,6 +52,9 @@ function jsxText(raw) {
 /** Every string literal under `node`, as the sentence it spells. */
 function literals(node, into) {
   const visit = (child) => {
+    // `<CanonicalLabel domain="…">` inside a slot (R16-T8): the domain names a lookup table, and
+    // the word it draws is an API value, not a sentence of this file.
+    if (ts.isJsxAttribute(child) && child.name.getText() === "domain") return;
     if (ts.isConditionalExpression(child)) {
       // The branches are what is drawn; the condition is a comparison.
       visit(child.whenTrue);

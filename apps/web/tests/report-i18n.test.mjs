@@ -19,7 +19,7 @@ const { createElement } = await import("react");
 const { renderToStaticMarkup } = await import("react-dom/server");
 const { default: Report } = await import("../app/app/report/[id]/page.tsx");
 const { FixedLocale } = await import("../app/i18n/client.tsx");
-const { REPORT_COPY, copySegments, translateCopy } = await import("../app/i18n/core.ts");
+const { CANONICAL, REPORT_COPY, copySegments, translateCopy } = await import("../app/i18n/core.ts");
 const { FIXTURES, canonicalValues } = await import("./support/report-fixtures.mjs");
 const { valueTokens } = await import("./support/value-tokens.mjs");
 const { dashboardPageCopy, dashboardVocabularyCopy, reportPageCopy, reportVocabularyCopy } = await import(
@@ -75,6 +75,31 @@ function evidenceSequence(html, values) {
     .filter((node) => escaped.has(node));
 }
 
+/**
+ * The document with each word the reader's language named put back as the record's own word.
+ *
+ * R16-T8: a status, a state, a condition or a rule summary the API sent is drawn in Turkish with
+ * its canonical spelling kept as the element's `data-canonical` — a `<CanonicalLabel>` chip, or a
+ * `<CopyBesideRecord>` sentence whose raw word English paints beside it. Each is checked to be
+ * exactly the name its table gives that word and then replaced by the word itself, so the
+ * comparisons below still hold the Turkish document to the English one's evidence, value for
+ * value and in order. A chip whose name is not its table's entry fails here rather than passing
+ * as evidence.
+ */
+function asRecord(html) {
+  const unescape = (value) =>
+    value.replaceAll("&quot;", '"').replaceAll("&#x27;", "'").replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+  return html
+    .replace(/<span lang="tr" data-canonical="([^"]*)">([^<]*)<\/span>/g, (_, value, name) => {
+      const raw = unescape(value);
+      const table = Object.values(CANONICAL).find((domain) => Object.hasOwn(domain.tr, raw));
+      assert.ok(table, `a chip for a word no table names: ${raw}`);
+      assert.equal(name, escapeHtml(table.tr[raw]), raw);
+      return `<span>${value}</span>`;
+    })
+    .replace(/<span data-canonical="([^"]*)"><span lang="tr">[^<]*<\/span><\/span>/g, "<span>$1</span>");
+}
+
 const RENDERS = {};
 for (const [name, payload] of Object.entries(FIXTURES)) {
   RENDERS[name] = { en: await render(payload, "en"), tr: await render(payload, "tr") };
@@ -92,6 +117,7 @@ for (const [name, payload] of Object.entries(FIXTURES)) {
 
     const values = canonicalValues(payload);
     const english = evidenceSequence(en, values);
+    const turkish = evidenceSequence(asRecord(tr), values);
 
     // The identity of the evidence is on every report, whatever else the fixture leaves out.
     for (const value of [payload.id, payload.created_at, payload.original_sha256]) {
@@ -100,7 +126,7 @@ for (const [name, payload] of Object.entries(FIXTURES)) {
 
     // The same values, the same number of times, in the same order: the Turkish document is the
     // English one with its words replaced.
-    assert.deepEqual(evidenceSequence(tr, values), english);
+    assert.deepEqual(turkish, english);
   });
 
   test(`${name}: every value from the record inside a sentence is printed identically, in the same order`, () => {
@@ -110,7 +136,7 @@ for (const [name, payload] of Object.entries(FIXTURES)) {
     const { en, tr } = RENDERS[name];
     const values = new Set([...canonicalValues(payload)].map(escapeHtml));
     const english = valueTokens(en, values);
-    assert.deepEqual(valueTokens(tr, values), english);
+    assert.deepEqual(valueTokens(asRecord(tr), values), english);
     for (const html of [en, tr]) {
       assert.ok(!/\{[A-Za-z0-9_]+\}/.test(html.replace(/<[^>]*>/g, "")), "an unfilled {slot}");
     }
@@ -137,9 +163,17 @@ test("a host is drawn into the Turkish sentence exactly as recorded", () => {
   assert.ok(RENDERS.v5Processing.en.includes(`Media was acquired from ${host} as a single served file.`));
 });
 
-test("the API's own rule summary is carried verbatim and not translated", () => {
+test("a rule summary this build has no entry for is carried verbatim and not translated", () => {
   const summary = escapeHtml(FIXTURES.v5Processing.risk_trace.rule_summary);
-  assert.equal(occurrences(RENDERS.v5Processing.tr, summary), 1);
+  assert.equal(occurrences(RENDERS.v5Processing.tr, `<span>${summary}</span>`), 1);
+});
+
+test("a rule summary the API is known to send is drawn in Turkish, its English kept as data-canonical (R16-T8)", () => {
+  const english = FIXTURES.raporA.risk_trace.rule_summary;
+  const turkish = CANONICAL.ruleSummary.tr[english];
+  assert.ok(turkish, "R9-200 has a Turkish entry");
+  assert.ok(RENDERS.raporA.tr.includes(`<span lang="tr" data-canonical="${escapeHtml(english)}">${escapeHtml(turkish)}</span>`));
+  assert.ok(RENDERS.raporA.en.includes(`<span>${escapeHtml(english)}</span>`));
 });
 
 /* ------------------------------------------------------------------ *

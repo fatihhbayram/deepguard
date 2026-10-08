@@ -275,6 +275,123 @@ export const CANONICAL = {
       unknown: "bilinmiyor",
     },
   },
+  /*
+   * R16-T8 remediation: the report's and the dashboard's own machine words, which R16-T3 had
+   * printed raw in both languages and which a Turkish reader met as English. Each is drawn
+   * through `<CanonicalLabel>`, so the API's spelling stays on the element as `data-canonical`, and a
+   * value with no entry here is still drawn exactly as it arrived.
+   */
+  // `app/db/models.py` — `SIGNAL_STATUS_*`, one detector's answer.
+  signalStatus: {
+    en: { SUCCESS: "SUCCESS", FAILED: "FAILED", TIMEOUT: "TIMEOUT" },
+    tr: { SUCCESS: "başarılı", FAILED: "başarısız", TIMEOUT: "zaman aşımı" },
+  },
+  // `app/risk_trace.py` — `COVERAGE_COMPLETE` and `COVERAGE_PARTIAL`.
+  coverageStatus: {
+    en: { complete: "complete", partial: "partial" },
+    tr: { complete: "tam", partial: "kısmi" },
+  },
+  // `../analysis` — `PROVENANCE_STATUSES` and `PROVENANCE_AVAILABILITIES`. Neither Turkish word
+  // says more than the axis does: `UNVERIFIED` is "nothing verified", not "found false".
+  provenanceStatus: {
+    en: { UNVERIFIED: "UNVERIFIED", PROVENANCE_PRESENT: "PROVENANCE_PRESENT" },
+    tr: { UNVERIFIED: "doğrulanmamış", PROVENANCE_PRESENT: "köken bilgisi mevcut" },
+  },
+  provenanceAvailability: {
+    en: { AVAILABLE: "AVAILABLE", UNAVAILABLE: "UNAVAILABLE" },
+    tr: { AVAILABLE: "okunabildi", UNAVAILABLE: "okunamadı" },
+  },
+  // `../analysis` — `ENRICHMENT_STATES` and `DECISION_STATES`.
+  enrichmentState: {
+    en: {
+      ENRICHMENT_NOT_REQUESTED: "ENRICHMENT_NOT_REQUESTED",
+      ENRICHMENT_PENDING: "ENRICHMENT_PENDING",
+      ENRICHMENT_PROCESSING: "ENRICHMENT_PROCESSING",
+      ENRICHMENT_COMPLETE: "ENRICHMENT_COMPLETE",
+      ENRICHMENT_PARTIAL: "ENRICHMENT_PARTIAL",
+      ENRICHMENT_FAILED: "ENRICHMENT_FAILED",
+      LEGACY_SINGLE_STAGE: "LEGACY_SINGLE_STAGE",
+      ENRICHMENT_NOT_APPLICABLE: "ENRICHMENT_NOT_APPLICABLE",
+    },
+    tr: {
+      ENRICHMENT_NOT_REQUESTED: "istenmedi",
+      ENRICHMENT_PENDING: "bekliyor",
+      ENRICHMENT_PROCESSING: "işleniyor",
+      ENRICHMENT_COMPLETE: "tamamlandı",
+      ENRICHMENT_PARTIAL: "kısmen tamamlandı",
+      ENRICHMENT_FAILED: "başarısız",
+      LEGACY_SINGLE_STAGE: "eski tek aşamalı analiz",
+      ENRICHMENT_NOT_APPLICABLE: "uygulanamaz",
+    },
+  },
+  decisionState: {
+    en: { DECISION_PENDING: "DECISION_PENDING", DECIDED: "DECIDED", DECISION_FAILED: "DECISION_FAILED" },
+    tr: { DECISION_PENDING: "karar bekleniyor", DECIDED: "karar verildi", DECISION_FAILED: "karar verilemedi" },
+  },
+  /*
+   * `app/risk_trace.py` — each ruleset's `rules`, the sentence the API sends as `rule_summary`,
+   * keyed by its exact English. A summary a later API writes, or one edited by a byte, matches
+   * nothing here and is drawn as it arrived. Every figure, rule, ruleset, verdict and study id in
+   * the English is written into the Turkish unchanged.
+   */
+  ruleSummary: {
+    en: {},
+    tr: {
+      // p7-v1.0.0
+      "No calibrated evidence was available: the synthetic-video signal was absent, the detector did not report, or the deployment was not the calibrated one.":
+        "Kalibre edilmiş kanıt mevcut değildi: sentetik video sinyali yoktu, dedektör yanıt vermedi ya da dağıtım kalibre edilmiş dağıtım değildi.",
+      "The calibrated synthetic-video detector reported, but with figures that could not be read as a calibrated probability over a non-empty aggregate.":
+        "Kalibre edilmiş sentetik video dedektörü yanıt verdi, ancak değerleri boş olmayan bir toplam üzerinden kalibre edilmiş bir olasılık olarak okunamadı.",
+      "The calibrated synthetic-video score reached its measured threshold.":
+        "Kalibre edilmiş sentetik video skoru, ölçülmüş eşiğine ulaştı.",
+      "The calibrated synthetic-video score was readable and did not reach its threshold; the single available signal did not support a classification.":
+        "Kalibre edilmiş sentetik video skoru okunabildi ve eşiğine ulaşmadı; mevcut tek sinyal bir sınıflandırmayı desteklemedi.",
+      // r4-v2.0.0
+      "No calibrated evidence was available from either detector: both signals were absent, did not report, or came from uncalibrated deployments.":
+        "İki dedektörün hiçbirinden kalibre edilmiş kanıt mevcut değildi: her iki sinyal de yoktu, yanıt vermedi ya da kalibre edilmemiş dağıtımlardan geldi.",
+      "At least one calibrated detector reported with figures that could not be read.":
+        "En az bir kalibre edilmiş dedektör, okunamayan değerlerle yanıt verdi.",
+      "The calibrated face-manipulation score reached its measured threshold.":
+        "Kalibre edilmiş yüz manipülasyonu skoru, ölçülmüş eşiğine ulaştı.",
+      "Both calibrated detectors independently reached their measured thresholds.":
+        "Kalibre edilmiş iki dedektör de birbirinden bağımsız olarak ölçülmüş eşiklerine ulaştı.",
+      "Both calibrated detectors were readable and neither reached its threshold; the evidence did not support a classification.":
+        "Kalibre edilmiş iki dedektör de okunabildi ve hiçbiri eşiğine ulaşmadı; kanıt bir sınıflandırmayı desteklemedi.",
+      "Exactly one calibrated detector was readable and it did not reach its threshold; the other contributed no reading.":
+        "Kalibre edilmiş dedektörlerden yalnızca biri okunabildi ve eşiğine ulaşmadı; diğeri hiçbir okumayla katkıda bulunmadı.",
+      // r5-v3.0.0
+      "No calibrated evidence was available from any of the three detectors: every signal was absent, did not report, or came from an uncalibrated deployment.":
+        "Üç dedektörün hiçbirinden kalibre edilmiş kanıt mevcut değildi: her sinyal ya yoktu, ya yanıt vermedi ya da kalibre edilmemiş bir dağıtımdan geldi.",
+      "Two or more calibrated detectors independently reached their measured thresholds. The level is not raised by the agreement; there is no band above HIGH and no measurement that says two flags mean more than one.":
+        "İki ya da daha fazla kalibre edilmiş dedektör, birbirinden bağımsız olarak ölçülmüş eşiklerine ulaştı. Bu uyum düzeyi yükseltmez; HIGH üzerinde bir bant yoktur ve iki işaretin birden fazla anlam taşıdığını söyleyen bir ölçüm de yoktur.",
+      "The calibrated mouth-dynamics score reached its measured threshold.":
+        "Kalibre edilmiş ağız dinamiği skoru, ölçülmüş eşiğine ulaştı.",
+      "All three calibrated detectors were readable and none reached its threshold; the evidence did not support a classification.":
+        "Kalibre edilmiş üç dedektörün üçü de okunabildi ve hiçbiri eşiğine ulaşmadı; kanıt bir sınıflandırmayı desteklemedi.",
+      "At least one calibrated detector was readable and did not reach its threshold, while the remaining detectors contributed no reading.":
+        "En az bir kalibre edilmiş dedektör okunabildi ve eşiğine ulaşmadı; geri kalan dedektörler ise hiçbir okumayla katkıda bulunmadı.",
+      // r7-v4.0.0
+      "Both detectors this ruleset takes a decision from — synthetic-video and face-manipulation — independently reached their measured thresholds. The level is not raised by the agreement; there is no band above HIGH and no measurement that says two flags mean more than one.":
+        "Bu kural setinin karar aldığı iki dedektör — sentetik video ve yüz manipülasyonu — birbirinden bağımsız olarak ölçülmüş eşiklerine ulaştı. Bu uyum düzeyi yükseltmez; HIGH üzerinde bir bant yoktur ve iki işaretin birden fazla anlam taşıdığını söyleyen bir ölçüm de yoktur.",
+      "All three calibrated detectors were readable and neither detector this ruleset takes a decision from reached its threshold; the evidence did not support a classification. The mouth-dynamics score is reported beside its measured threshold as independent evidence and does not decide this level, whether or not it reached it (R7-T5).":
+        "Kalibre edilmiş üç dedektörün üçü de okunabildi ve bu kural setinin karar aldığı dedektörlerin hiçbiri eşiğine ulaşmadı; kanıt bir sınıflandırmayı desteklemedi. Ağız dinamiği skoru, ölçülmüş eşiğinin yanında bağımsız kanıt olarak raporlanır ve ona ulaşmış olsun ya da olmasın bu düzeye karar vermez (R7-T5).",
+      "At least one calibrated detector was readable and neither detector this ruleset takes a decision from reached its threshold, while the remaining detectors contributed no reading. The mouth-dynamics score is reported beside its measured threshold as independent evidence and does not decide this level, whether or not it reached it (R7-T5).":
+        "En az bir kalibre edilmiş dedektör okunabildi ve bu kural setinin karar aldığı dedektörlerin hiçbiri eşiğine ulaşmadı; geri kalan dedektörler ise hiçbir okumayla katkıda bulunmadı. Ağız dinamiği skoru, ölçülmüş eşiğinin yanında bağımsız kanıt olarak raporlanır ve ona ulaşmış olsun ya da olmasın bu düzeye karar vermez (R7-T5).",
+      // r9-v5.0.0
+      "Both detectors this ruleset takes a decision from — synthetic-video and face-manipulation — produced usable readings and independently reached their measured thresholds. The verdict is not strengthened by the agreement; there is no verdict above MANIPULATION_DETECTED and no measurement that says two detectors reaching their own thresholds mean more than one.":
+        "Bu kural setinin karar aldığı iki dedektör — sentetik video ve yüz manipülasyonu — kullanılabilir okumalar üretti ve birbirinden bağımsız olarak ölçülmüş eşiklerine ulaştı. Bu uyum kararı güçlendirmez; MANIPULATION_DETECTED üzerinde bir karar yoktur ve kendi eşiklerine ulaşan iki dedektörün birden fazla anlam taşıdığını söyleyen bir ölçüm de yoktur.",
+      "The calibrated synthetic-video detector produced a usable reading and reached its measured threshold. The verdict stands whatever the other decision-eligible detector did: a detector that failed, abstained or read below its own threshold carries no information about the manipulation family this one is calibrated for, and any coverage it left incomplete is reported beside the verdict rather than folded into it.":
+        "Kalibre edilmiş sentetik video dedektörü kullanılabilir bir okuma üretti ve ölçülmüş eşiğine ulaştı. Karar, karar vermeye uygun diğer dedektör ne yapmış olursa olsun geçerlidir: başarısız olan, çekimser kalan ya da kendi eşiğinin altında okunan bir dedektör, bu dedektörün kalibre edildiği manipülasyon ailesi hakkında hiçbir bilgi taşımaz ve eksik bıraktığı kapsam karara katılmaz, kararın yanında raporlanır.",
+      "The calibrated face-manipulation detector produced a usable reading and reached its measured threshold. The verdict stands whatever the other decision-eligible detector did, on the same terms and for the same measured reason.":
+        "Kalibre edilmiş yüz manipülasyonu dedektörü kullanılabilir bir okuma üretti ve ölçülmüş eşiğine ulaştı. Karar, karar vermeye uygun diğer dedektör ne yapmış olursa olsun, aynı koşullarla ve aynı ölçülmüş gerekçeyle geçerlidir.",
+      "Both detectors this ruleset takes a decision from produced usable readings and neither reached its measured threshold. This is not a finding that the media is authentic: a detector reports a score below its threshold for a manipulation family it is blind to as readily as for genuine media. The mouth-dynamics score is reported beside its measured threshold as independent evidence; it decides nothing here and is counted in no coverage, whether or not it reached it.":
+        "Bu kural setinin karar aldığı iki dedektör de kullanılabilir okumalar üretti ve hiçbiri ölçülmüş eşiğine ulaşmadı. Bu, medyanın özgün olduğuna dair bir bulgu değildir: bir dedektör, göremediği bir manipülasyon ailesi için de gerçek medya için olduğu kadar kolayca eşiğinin altında bir skor bildirir. Ağız dinamiği skoru, ölçülmüş eşiğinin yanında bağımsız kanıt olarak raporlanır; ona ulaşmış olsun ya da olmasın burada hiçbir şeye karar vermez ve hiçbir kapsama dahil edilmez.",
+      "Some but not all of the expected decision coverage was obtained, and no detector that did produce a usable reading reached its measured threshold. The assessment could not be completed; nothing about the media follows from that.":
+        "Beklenen karar kapsamının tamamı değil, yalnızca bir kısmı elde edildi ve kullanılabilir bir okuma üreten hiçbir dedektör ölçülmüş eşiğine ulaşmadı. Değerlendirme tamamlanamadı; bundan medya hakkında hiçbir sonuç çıkmaz.",
+      "None of the expected decision coverage was obtained: neither detector this ruleset takes a decision from produced a usable reading. The assessment could not be completed; nothing about the media follows from that.":
+        "Beklenen karar kapsamının hiçbiri elde edilemedi: bu kural setinin karar aldığı dedektörlerin hiçbiri kullanılabilir bir okuma üretmedi. Değerlendirme tamamlanamadı; bundan medya hakkında hiçbir sonuç çıkmaz.",
+    },
+  },
   // `app/user-feedback.ts` — the values a feedback form posts. The form keeps posting these;
   // only the words beside the controls change.
   feedbackAssessment: {
@@ -571,7 +688,7 @@ export const REPORT_COPY = {
     "Validation state":
       "Doğrulama durumu",
     "Claim generator":
-      "Talep (claim) oluşturucu",
+      "İddia oluşturucu",
     "Signature issuer":
       "İmzayı veren",
     "Remote manifest URL":
@@ -611,7 +728,7 @@ export const REPORT_COPY = {
     "Raw model output per preprocessing window. No threshold, no calibration, no classes.":
       "Ön işleme penceresi başına ham model çıktısı. Eşik yok, kalibrasyon yok, sınıf yok.",
     "Checkpoint":
-      "Checkpoint",
+      "Model kontrol noktası",
     "Windows produced":
       "Üretilen pencereler",
     "Windows stored":
@@ -629,7 +746,7 @@ export const REPORT_COPY = {
     "Bona fide logit":
       "Bona fide logit",
     "These figures are raw model output. They are {probabilities}, {confidence}, and {decisions}. The checkpoint publishes no threshold, no calibration and no classes, so no classification is derived from them and none should be read into them.":
-      "Bu değerler ham model çıktısıdır. Bunlar {probabilities}, {confidence} ve {decisions}. Checkpoint hiçbir eşik, kalibrasyon ya da sınıf yayımlamaz; bu nedenle bunlardan hiçbir sınıflandırma türetilmez ve bunlara hiçbir sınıflandırma yüklenmemelidir.",
+      "Bu değerler ham model çıktısıdır. Bunlar {probabilities}, {confidence} ve {decisions}. Model kontrol noktası hiçbir eşik, kalibrasyon ya da sınıf yayımlamaz; bu nedenle bunlardan hiçbir sınıflandırma türetilmez ve bunlara hiçbir sınıflandırma yüklenmemelidir.",
     "not probabilities":
       "olasılık değildir",
     "not confidence values":
@@ -1153,7 +1270,7 @@ export const REPORT_COPY = {
     "Active speaker is when NVIDIA saw a tracked face speaking, in seconds from the start of the analysed video, with the face it tracked and the diarized voice matched to it. It is a record of what was observed, not a finding: {none} means the detector ran and saw nobody speaking, which is the ordinary case for most footage, and {unavailable} means it did not get to look at all. Neither says the video is fake.":
       "Aktif konuşmacı, NVIDIA'nın izlenen bir yüzü konuşurken gördüğü zamandır; analiz edilen videonun başından itibaren saniye cinsinden, izlediği yüz ve ona eşleştirilen ayrıştırılmış (diarize edilmiş) sesle birlikte verilir. Bu bir bulgu değil, gözlemlenenin kaydıdır: {none}, dedektörün çalıştığı ve kimseyi konuşurken görmediği anlamına gelir; bu, görüntülerin çoğu için olağan durumdur. {unavailable} ise hiç bakma fırsatı bulmadığı anlamına gelir. Hiçbiri videonun sahte olduğunu söylemez.",
     "Audio is the two raw logits a local anti-spoofing checkpoint emitted for each window of audio it was given, shown as emitted. The times are the bounds of those windows — InspectRoot cut the audio into fixed 4.04s pieces because that is all the model accepts — and not stretches the model found anything in. The model publishes no threshold and no calibration, so neither figure is a probability, a confidence or a verdict, and consecutive windows of genuine speech routinely disagree. {none} means the reading ran and stored none, which is not proof the file carries no audio, and {unavailable} means it did not get to run.":
-      "Ses, yerel bir sahtecilik karşıtı (anti-spoofing) checkpoint'in kendisine verilen her ses penceresi için ürettiği iki ham logit değeridir ve üretildiği haliyle gösterilir. Süreler bu pencerelerin sınırlarıdır — InspectRoot sesi sabit 4.04s'lik parçalara böldü, çünkü model yalnızca bunu kabul eder — ve modelin bir şey bulduğu kesitler değildir. Model hiçbir eşik ve kalibrasyon yayımlamaz; bu nedenle iki değerden hiçbiri bir olasılık, güven değeri ya da karar değildir ve gerçek konuşmanın ardışık pencereleri sık sık birbiriyle uyuşmaz. {none}, okumanın çalıştığı ve hiç pencere kaydetmediği anlamına gelir; bu, dosyanın ses taşımadığının kanıtı değildir. {unavailable} ise okumanın hiç çalışma fırsatı bulmadığı anlamına gelir.",
+      "Ses, yerel bir sahtecilik karşıtı (anti-spoofing) model kontrol noktasının kendisine verilen her ses penceresi için ürettiği iki ham logit değeridir ve üretildiği haliyle gösterilir. Süreler bu pencerelerin sınırlarıdır — InspectRoot sesi sabit 4.04s'lik parçalara böldü, çünkü model yalnızca bunu kabul eder — ve modelin bir şey bulduğu kesitler değildir. Model hiçbir eşik ve kalibrasyon yayımlamaz; bu nedenle iki değerden hiçbiri bir olasılık, güven değeri ya da karar değildir ve gerçek konuşmanın ardışık pencereleri sık sık birbiriyle uyuşmaz. {none}, okumanın çalıştığı ve hiç pencere kaydetmediği anlamına gelir; bu, dosyanın ses taşımadığının kanıtı değildir. {unavailable} ise okumanın hiç çalışma fırsatı bulmadığı anlamına gelir.",
     "Face manipulation is the score a local EfficientNet-B7 gave the face it found in evenly sampled frames of the video, averaged over those frames and shown as the model produced it. It is not a probability that this media is manipulated. It is calibrated: under {rulesetTwo}, {rulesetThree}, {rulesetFour} and {rulesetFive} it is one of the deciding detectors, compared only against its own threshold measured in R4-T1, and reaching that threshold on its own is enough to set the risk classification — the trace names the rule when it does. Its score is never averaged or combined with another detector's, and a score below its threshold is not a finding that the media is genuine. Only analyses decided under {rulesetOne} read it as evidence alone. {unavailable} means the reading did not produce a score — most often because no face was found, in which case the model was never asked and nothing was established either way.":
       "Yüz manipülasyonu, yerel bir EfficientNet-B7'nin videonun eşit aralıklarla örneklenen karelerinde bulduğu yüze verdiği skordur; bu kareler üzerinden ortalaması alınır ve modelin ürettiği haliyle gösterilir. Bu medyanın manipüle edilmiş olma olasılığı değildir. Kalibre edilmiştir: {rulesetTwo}, {rulesetThree}, {rulesetFour} ve {rulesetFive} kural setlerinde karar veren dedektörlerden biridir; yalnızca R4-T1'de kendisi için ölçülmüş eşikle karşılaştırılır ve bu eşiğe tek başına ulaşması risk sınıflandırmasını belirlemeye yeter — böyle olduğunda iz, kuralı belirtir. Skoru hiçbir zaman başka bir dedektörün skoruyla ortalanmaz ya da birleştirilmez ve eşiğinin altındaki bir skor, medyanın gerçek olduğuna dair bir bulgu değildir. Yalnızca {rulesetOne} altında karar verilmiş analizler onu tek başına kanıt olarak okur. {unavailable}, okumanın bir skor üretmediği anlamına gelir — çoğunlukla hiç yüz bulunamadığı için; bu durumda modele hiç sorulmadı ve iki yönde de hiçbir şey belirlenmedi.",
     "Mouth dynamics is the score a local LipForensics model gave the movement of the mouth across evenly spaced runs of 25 consecutive frames, shown as the model produced it. It is a forgery reading taken from how a mouth moves, and it is emphatically {notLipSync} — the model is never given the audio at all. It is a different question from the face-manipulation score above — movement over time, not the appearance of a face crop — on a different scale, and the two are never compared or combined. It is not a probability that this media is manipulated. An operating point was measured for it in R5-T3, and under {rulesetThree} it was one of the deciding detectors. R7-T6 withdrew it from the rules after R7-T5 measured what that operating point did to genuine media, so under {rulesetFour} and {rulesetFive} it is evidence only: no threshold is applied to it, and it cannot change the risk classification, including when its score stands above that operating point. {unavailable} means the reading did not produce a score — most often because no run held a trackable face throughout, in which case the model was never asked and nothing was established either way.":

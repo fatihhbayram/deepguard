@@ -162,6 +162,10 @@ function decided(level, rulesVersion, ruleId, contributions, coverage = null) {
   };
 }
 
+// `app/risk_trace.py`, RULESET_V5.rules["R9-200"], exactly as the API sends it.
+export const R9_200_SUMMARY =
+  "Both detectors this ruleset takes a decision from produced usable readings and neither reached its measured threshold. This is not a finding that the media is authentic: a detector reports a score below its threshold for a manipulation family it is blind to as readily as for genuine media. The mouth-dynamics score is reported beside its measured threshold as independent evidence; it decides nothing here and is counted in no coverage, whether or not it reached it.";
+
 export const FIXTURES = {
   // A v5 decision whose supplementary evidence is still running, on a normalized URL acquisition.
   v5Processing: base({
@@ -250,6 +254,33 @@ export const FIXTURES = {
     was_assembled: true,
   }),
   noDecision: base({ aggregate_enrichment_state: "ENRICHMENT_NOT_APPLICABLE", decision_state: "DECISION_PENDING" }),
+  // R16-T8 remediation: the shape of the pilot report handed to Turkish reviewers as Rapor-A
+  // (R16P-008) — a v5 decision with nothing reaching a threshold, complete coverage, the
+  // mouth-dynamics evidence over its own point, no Content Credentials on a readable file, and
+  // every supplementary detector finished. Its rule summary is the API's own R9-200 sentence,
+  // byte for byte, because the English paragraph a reviewer met was that sentence.
+  raporA: base({
+    ...decided(
+      "NO_CALIBRATED_MANIPULATION_SIGNAL",
+      "r9-v5.0.0",
+      "R9-200",
+      [
+        contribution("synthetic_video", "nvidia", SVD_VERSION, 0.04942479357123375, 0.9550971388816833, "threshold_not_reached", "considered", true),
+        FACE_NOT_REACHED,
+        contribution("lip_forensics", "lipforensics", LIP_VERSION, 0.44153934717178345, 0.22962537594139576, "threshold_reached", "considered", false),
+      ],
+      { usable: 2, total: 2, is_complete: true, status: "complete" },
+    ),
+    provenance: {
+      ...base({}).provenance,
+      manifest_exists: false,
+      validation_state: null,
+      claim_generator: null,
+      signature_issuer: null,
+      provenance_status: "UNVERIFIED",
+      provenance_availability: "AVAILABLE",
+    },
+  }),
   // Every value here is one this build has no name for, and each must be drawn exactly as sent.
   unknownValues: base({
     risk_level: "MYSTERY_LEVEL",
@@ -273,6 +304,8 @@ export const FIXTURES = {
     provenance: { ...base({}).provenance, provenance_status: "MYSTERY_PROVENANCE" },
   }),
 };
+
+FIXTURES.raporA.risk_trace.rule_summary = R9_200_SUMMARY;
 
 // The values the report prints from the record, per fixture: what must be byte-for-byte the same
 // in every language. Gathered from the payload rather than listed by hand, so a fixture edit

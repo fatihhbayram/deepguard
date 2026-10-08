@@ -221,9 +221,10 @@ test("every interface string has a Turkish entry, and Turkish has no key English
 
 test("every canonical domain names the same values in both languages", () => {
   for (const [domain, tables] of Object.entries(CANONICAL)) {
-    // `webMessage` is the exception by design: English is the source spelling, so its
-    // English table is empty and every sentence reaches the page as it was written.
-    if (domain === "webMessage") {
+    // `webMessage` and `ruleSummary` (R16-T8) are the exceptions by design: English is the
+    // source spelling, so their English table is empty and every sentence reaches the page as it
+    // was written.
+    if (domain === "webMessage" || domain === "ruleSummary") {
       assert.deepEqual(tables.en, {});
       continue;
     }

@@ -141,21 +141,30 @@ export function Copy({
 export function CopyTitle({
   text,
   values,
+  domains,
   as: Tag = "span",
   className,
   children,
 }: {
   text: string;
   values?: Record<string, string | number>;
+  /** A slot whose value is an API word with a name in the reader's language (R16-T8). */
+  domains?: Record<string, CanonicalDomain>;
   as?: "span" | "div";
   className?: string;
   children: ReactNode;
 }) {
   const [locale] = useLocale();
   const title = copySegments(translateCopy(locale, text).text)
-    .map((segment) =>
-      typeof segment === "string" ? segment : String(values?.[segment.slot] ?? `{${segment.slot}}`),
-    )
+    .map((segment) => {
+      if (typeof segment === "string") return segment;
+      const value = values?.[segment.slot];
+      if (value === undefined) return `{${segment.slot}}`;
+      const domain = domains?.[segment.slot];
+      return domain === undefined
+        ? String(value)
+        : translateCanonical(locale, domain, String(value));
+    })
     .join("");
   return (
     <Tag className={className} title={title}>
@@ -168,15 +177,51 @@ export function CopyTitle({
  * A value the API produced, named in the reader's language — or, when this application has no
  * name for it, shown exactly as the API spelled it. See `translateCanonical`.
  *
- * `title` carries the canonical spelling whenever the painted word differs from it, so a reader
- * looking at `başarısız` can still find out the record says `failed`.
+ * `data-canonical` carries the canonical spelling whenever the painted word differs from it, so
+ * the record's own word stays on the element for a test or an inspector. It is not a `title`
+ * (R16-T8): a hover tooltip is presentation, and an English enum there is English shown to a
+ * Turkish reader.
  */
 export function CanonicalLabel({ domain, value }: { domain: CanonicalDomain; value: string }) {
   const [locale] = useLocale();
   const label = translateCanonical(locale, domain, value);
   // A value shown as the API spelled it is not a word of the reader's language, so it claims
   // none and takes the language of whatever it is drawn inside.
-  return label === value ? <span>{label}</span> : <span lang={locale} title={value}>{label}</span>;
+  return label === value ? <span>{label}</span> : <span lang={locale} data-canonical={value}>{label}</span>;
+}
+
+/**
+ * This build's sentence for a record's word, with the word itself beside it (R16-T8).
+ *
+ * In English the sentence is followed by `children` — the raw word, styled by the caller — as it
+ * always was. In any other language the raw word is an English token in a translated document,
+ * so it is not painted, on screen or as a tooltip: the sentence carries it as `data-canonical`,
+ * which keeps the record's own spelling on the element exactly as `<CanonicalLabel>` does. Only for a word this build
+ * words; the caller draws an unrecognised one raw in every language.
+ */
+export function CopyBesideRecord({
+  text,
+  record,
+  children,
+}: {
+  text: string;
+  record: string;
+  children: ReactNode;
+}) {
+  const [locale] = useLocale();
+  if (locale === DEFAULT_LOCALE) {
+    return (
+      <>
+        <Copy text={text} />
+        {children}
+      </>
+    );
+  }
+  return (
+    <span data-canonical={record}>
+      <Copy text={text} />
+    </span>
+  );
 }
 
 /**

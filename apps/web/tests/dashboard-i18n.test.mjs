@@ -115,9 +115,8 @@ test("every record value inside a sentence is printed identically, in the same o
 
 test("every record value inside a tooltip is carried into the Turkish tooltip unchanged", () => {
   const titles = (html) => [...html.matchAll(/title="([^"]*)"/g)].map((match) => match[1]);
-  // A translated chip keeps the API's own word on hover; that title exists only where the painted
-  // word differs, which is the Turkish document.
-  const [en, tr] = [titles(EN), titles(TR).filter((title) => !CHIP_WORDS.has(title))];
+  // A translated chip keeps the API's own word as `data-canonical`, never as a tooltip (R16-T8).
+  const [en, tr] = [titles(EN), titles(TR)];
   assert.equal(tr.length, en.length);
   for (const value of VALUES) {
     if (value.length < 3) continue;
@@ -127,7 +126,7 @@ test("every record value inside a tooltip is carried into the Turkish tooltip un
 });
 
 test("a translated chip names the canonical word it stands for, and keeps that word exactly", () => {
-  const chips = [...TR.matchAll(/<span lang="tr" title="([^"]*)">([^<]*)<\/span>/g)];
+  const chips = [...TR.matchAll(/<span lang="tr" data-canonical="([^"]*)">([^<]*)<\/span>/g)];
   assert.ok(chips.length >= LIST.length, "every row's status is a chip");
   for (const [, value, name] of chips) {
     const domain = Object.values(CANONICAL).find((table) => Object.hasOwn(table.tr, value));

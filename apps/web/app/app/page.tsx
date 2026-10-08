@@ -414,7 +414,11 @@ function ActiveSpeaker({ signal }: { signal: ActiveSpeakerSignal | null }) {
 
   if (signal.status !== SIGNAL_STATUS_SUCCESS) {
     return (
-      <CopyTitle text="Active speaker: {status}" values={{ status: signal.status }}>
+      <CopyTitle
+        text="Active speaker: {status}"
+        values={{ status: signal.status }}
+        domains={{ status: "signalStatus" }}
+      >
         <Copy text={SPEAKER_UNAVAILABLE} />
       </CopyTitle>
     );
@@ -487,7 +491,11 @@ function AudioEvidence({ signal }: { signal: AudioAuthenticitySignal | null }) {
 
   if (signal.status !== SIGNAL_STATUS_SUCCESS) {
     return (
-      <CopyTitle text="Audio authenticity: {status}" values={{ status: signal.status }}>
+      <CopyTitle
+        text="Audio authenticity: {status}"
+        values={{ status: signal.status }}
+        domains={{ status: "signalStatus" }}
+      >
         <Copy text={AUDIO_UNAVAILABLE} />
       </CopyTitle>
     );
@@ -565,7 +573,11 @@ function FaceManipulation({ signal }: { signal: FaceManipulationSignal | null })
 
   if (signal.status !== SIGNAL_STATUS_SUCCESS || signal.score === null) {
     return (
-      <CopyTitle text="Face manipulation: {status}" values={{ status: signal.status }}>
+      <CopyTitle
+        text="Face manipulation: {status}"
+        values={{ status: signal.status }}
+        domains={{ status: "signalStatus" }}
+      >
         <Copy text={FACE_SCORE_UNAVAILABLE} />
       </CopyTitle>
     );
@@ -611,7 +623,11 @@ function LipForensics({ signal }: { signal: LipForensicsSignal | null }) {
 
   if (signal.status !== SIGNAL_STATUS_SUCCESS || signal.score === null) {
     return (
-      <CopyTitle text="Mouth dynamics: {status}" values={{ status: signal.status }}>
+      <CopyTitle
+        text="Mouth dynamics: {status}"
+        values={{ status: signal.status }}
+        domains={{ status: "signalStatus" }}
+      >
         <Copy text={LIP_FORENSICS_SCORE_UNAVAILABLE} />
       </CopyTitle>
     );
@@ -817,6 +833,7 @@ function Risk({ analysis }: { analysis: AnalysisSummary }) {
         className="font-mono text-[11px] text-muted"
         text="Analysis {status}: no risk decision has been taken yet."
         values={{ status: analysis.status }}
+        domains={{ status: "analysisStatus" }}
       >
         <Copy text={PENDING} />
       </CopyTitle>
@@ -1128,8 +1145,9 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
               `acquisitionStatement` gives the report (R7-T12) — the dashboard and the report
               read one row and must make one claim about it — and it is said once. */}
 
-          {/* The detector's own state, verbatim: SUCCESS, FAILED or TIMEOUT are three
-              different forensic facts, and an analysis may carry no signal at all. */}
+          {/* The detector's own state: SUCCESS, FAILED or TIMEOUT are three different
+              forensic facts, and an analysis may carry no signal at all. Named in the
+              reader's language; the provider's spelling is `data-canonical` (R16-T8). */}
           <Field term="NVIDIA SVD">
             {analysis.synthetic_video === null ? (
               <Copy>no signal</Copy>
@@ -1138,10 +1156,10 @@ function CaseRecord({ analysis, index }: { analysis: AnalysisSummary; index: num
                 text="Provider version: {version}"
                 values={{ version: analysis.synthetic_video.provider_version }}
               >
-                {analysis.synthetic_video.status}
+                <CanonicalLabel domain="signalStatus" value={analysis.synthetic_video.status} />
               </CopyTitle>
             ) : (
-              <span>{analysis.synthetic_video.status}</span>
+              <CanonicalLabel domain="signalStatus" value={analysis.synthetic_video.status} />
             )}
           </Field>
 

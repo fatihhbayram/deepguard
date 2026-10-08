@@ -6,6 +6,7 @@ import {
   CanonicalLabel,
   CanonicalOption,
   Copy,
+  CopyBesideRecord,
   LanguageSelector,
   MessageOption,
   T,
@@ -35,6 +36,7 @@ import {
   RiskRationale,
   RiskTrace,
   SyntheticVideoSignal,
+  COMPONENT_STATES,
   absentSignalDetail,
   acquisitionSentence,
   componentDetectorName,
@@ -213,10 +215,15 @@ function CopyOrRecord({ text, record }: { text: string; record: string }) {
  *
  * `SUCCESS`, `FAILED` and `TIMEOUT` are three different forensic facts, and an analysis that
  * carries no such signal at all is a fourth. They are never collapsed: "the detector ran and
- * failed" and "this detector never ran" mean different things about what is known.
+ * failed" and "this detector never ran" mean different things about what is known. A Turkish
+ * reader is given each one's own Turkish word, and the provider's spelling stays as `data-canonical`.
  */
 function SignalState({ status }: { status: string }) {
-  return <span className="font-mono text-xs">{status}</span>;
+  return (
+    <span className="font-mono text-xs">
+      <CanonicalLabel domain="signalStatus" value={status} />
+    </span>
+  );
 }
 
 /**
@@ -433,11 +440,12 @@ function storedStatusNote(status: string | null | undefined): React.ReactNode {
   }
 
   if (status !== "SUCCESS") {
-    // The status is the record's own word, drawn into the sentence as stored.
+    // The status is the record's own word, named in the reader's language with the stored
+    // spelling kept as `data-canonical` (R16-T8); a status this build has no name for is drawn as stored.
     return (
       <Copy
         text="This detector returned no reading — its signal is stored as {status}."
-        values={{ status }}
+        values={{ status: <CanonicalLabel domain="signalStatus" value={status} /> }}
       />
     );
   }
@@ -572,7 +580,11 @@ function OperationalSummary({ trace }: { trace: RiskTrace | null }) {
         <p className="mt-3 font-mono text-xs">
           <Copy
             text="Decision coverage: {usable}/{total} {status}"
-            values={{ usable: coverage.usable, total: coverage.total, status: coverage.status }}
+            values={{
+              usable: coverage.usable,
+              total: coverage.total,
+              status: <CanonicalLabel domain="coverageStatus" value={coverage.status} />,
+            }}
           />
         </p>
       )}
@@ -782,8 +794,19 @@ function TraceContribution({ contribution }: { contribution: RiskContribution })
         />
       </p>
       <p className="mt-0.5 text-xs font-medium opacity-90 break-words">
-        <Copy text={known ? RISK_CONDITION_LABELS[condition] : RISK_CONDITION_UNINTERPRETABLE} />{" "}
-        · <span className="font-mono break-all">{condition}</span>
+        {/* The API's condition word beside this build's sentence for it. A condition this
+            build has no sentence for is drawn raw in every language: there it is the record. */}
+        {known ? (
+          <CopyBesideRecord text={RISK_CONDITION_LABELS[condition]} record={condition}>
+            {" "}
+            · <span className="font-mono break-all">{condition}</span>
+          </CopyBesideRecord>
+        ) : (
+          <>
+            <Copy text={RISK_CONDITION_UNINTERPRETABLE} />{" "}
+            · <span className="font-mono break-all">{condition}</span>
+          </>
+        )}
       </p>
       <p className="mt-1 text-xs opacity-70 break-words">
         <CopyOrRecord
@@ -879,11 +902,13 @@ function RiskTraceSection({ trace }: { trace: RiskTrace }) {
           <h3 className="text-xs font-semibold uppercase tracking-wide opacity-70">
             <Copy>What the rule that fired meant</Copy>
           </h3>
-          {/* The API's own sentence, carried in the payload and printed as it arrived. The API
-              writes it in English and knows nothing of the reader's language, so it is not
-              looked up here; a reader of the Turkish report reads the rule in the record's
-              words. */}
-          <p className="mt-1 text-sm break-words">{trace.rule_summary}</p>
+          {/* The API's own sentence, carried in the payload. The API writes it in English and
+              knows nothing of the reader's language, so it is looked up by its exact English
+              (R16-T8): a sentence this build has a Turkish entry for is drawn in Turkish with
+              the API's wording kept as `data-canonical`, and any other is printed as it arrived. */}
+          <p className="mt-1 text-sm break-words">
+            <CanonicalLabel domain="ruleSummary" value={trace.rule_summary} />
+          </p>
         </div>
       )}
 
@@ -1199,13 +1224,21 @@ function DeepEvidenceSection({ analysis }: { analysis: AnalysisSummary }) {
   return (
     <Section title={wording.title} subtitle={wording.detail}>
       <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
-        {/* The API's own word, shown as the machine value it is. A reader comparing two
-            reports, or quoting one to support, is quoting the record rather than this
-            build's paraphrase of it. */}
-        <Field label="Enrichment state" value={state} />
+        {/* The API's own word, named in the reader's language (R16-T8). The machine value is
+            kept on the element as `data-canonical`, and the English report still prints it. */}
+        <Field
+          label="Enrichment state"
+          value={<CanonicalLabel domain="enrichmentState" value={state} />}
+        />
         <Field
           label="Decision state"
-          value={analysis.decision_state ?? ABSENT}
+          value={
+            analysis.decision_state === null ? (
+              ABSENT
+            ) : (
+              <CanonicalLabel domain="decisionState" value={analysis.decision_state} />
+            )
+          }
         />
       </dl>
 
@@ -1216,18 +1249,35 @@ function DeepEvidenceSection({ analysis }: { analysis: AnalysisSummary }) {
               key={`${component.provider}/${component.signal_type}`}
               label={componentDetectorName(component)}
               value={
-                <>
-                  <Copy
+                (COMPONENT_STATES as readonly string[]).includes(component.state) ? (
+                  /* The raw state beside the sentence, for the same reason the aggregate
+                     keeps its own word as `data-canonical` above: the sentence is this build's
+                     wording and the state is the record. In English it is painted; in
+                     Turkish it is kept as `data-canonical`, not painted (R16-T8). */
+                  <CopyBesideRecord
                     text={componentStateText(
                       component.state,
                       componentReadingPresence(analysis, component),
                     )}
-                  />
-                  {/* The raw state beside the sentence, for the same reason the aggregate
-                      is shown raw above: the sentence is this build's wording and the state
-                      is the record. */}
-                  <span className="ml-2 opacity-60">({component.state})</span>
-                </>
+                    record={component.state}
+                  >
+                    <span className="ml-2 opacity-60">
+                      (<span>{component.state}</span>)
+                    </span>
+                  </CopyBesideRecord>
+                ) : (
+                  // A state this build has no sentence for: the raw word is the record, and
+                  // is painted in every language.
+                  <>
+                    <Copy
+                      text={componentStateText(
+                        component.state,
+                        componentReadingPresence(analysis, component),
+                      )}
+                    />
+                    <span className="ml-2 opacity-60">({component.state})</span>
+                  </>
+                )
               }
             />
           ))}
@@ -1371,7 +1421,19 @@ function ProvenanceState({ signal }: { signal: ProvenanceSignal }) {
       {/* Both axes, shown as the pair they are. `UNVERIFIED` alone does not say whether
           anybody looked, so neither is ever printed without the other. */}
       <p className="font-mono text-[11px] tracking-[0.08em] uppercase opacity-70">
-        {signal.provenance_status} · {signal.provenance_availability}
+        {/* Each word is named in the reader's language and carries its own `lang`, so the
+            `uppercase` above follows Turkish casing on a Turkish word and English casing on a
+            raw one (R16-T8). */}
+        {signal.provenance_status !== null && (
+          <CanonicalLabel domain="provenanceStatus" value={signal.provenance_status} />
+        )}{" "}
+        ·{" "}
+        {signal.provenance_availability !== null && (
+          <CanonicalLabel
+            domain="provenanceAvailability"
+            value={signal.provenance_availability}
+          />
+        )}
       </p>
 
       {/* What the state is, in the largest type in the block — the line most likely to be
@@ -2244,7 +2306,10 @@ export default async function Report({
 
         <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
         <Field label="Analysis ID" value={analysis.id} />
-        <Field label="Analysis status" value={analysis.status} />
+        <Field
+          label="Analysis status"
+          value={<CanonicalLabel domain="analysisStatus" value={analysis.status} />}
+        />
         <Field label="Analysis timestamp (UTC)" value={analysis.created_at} />
         <Field
           label="Size on disk"
