@@ -7,7 +7,7 @@
 // canonical fallback, and the one most worth a regression test.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
@@ -232,13 +232,50 @@ test("every canonical domain names the same values in both languages", () => {
   }
 });
 
-test("each canonical table's English is the identity, except for the feedback labels", () => {
+/*
+ * R16 admin localization: the administrative console's own label tables, named the same way the
+ * feedback labels are — English is the wording the console already printed, read from the module
+ * that owns it — and the audit log's target types, which it printed lower-cased.
+ */
+const LABELLED_DOMAINS = {
+  reviewStatus: "../app/admin/reviews.ts",
+  analystAssessment: "../app/admin/reviews.ts",
+  groundTruthLabel: "../app/admin/ground-truth.ts",
+  groundTruthSourceClass: "../app/admin/ground-truth.ts",
+  datasetSplit: "../app/admin/dataset-governance.ts",
+};
+
+test("each canonical table's English is the identity, except for the labelled tables", () => {
   for (const [domain, tables] of Object.entries(CANONICAL)) {
-    if (domain.startsWith("feedback")) {
+    if (domain.startsWith("feedback") && domain !== "feedbackAssessmentCode") {
+      continue;
+    }
+    if (Object.hasOwn(LABELLED_DOMAINS, domain)) {
+      continue;
+    }
+    if (domain === "auditTarget") {
+      for (const [value, label] of Object.entries(tables.en)) {
+        assert.equal(label, value.toLowerCase(), `${domain}: ${value}`);
+      }
       continue;
     }
     for (const [value, label] of Object.entries(tables.en)) {
       assert.equal(label, value, `${domain}: ${value}`);
+    }
+  }
+});
+
+test("the admin label tables' English is the wording their own modules already use", () => {
+  for (const [domain, path] of Object.entries(LABELLED_DOMAINS)) {
+    const source = code(path);
+    // A table keyed by the value itself, or by the constant that holds it.
+    const constants = new Map(
+      [...source.matchAll(/export const ([A-Z_]+) = "([^"]*)";/g)].map(([, name, value]) => [value, name]),
+    );
+    for (const [value, label] of Object.entries(CANONICAL[domain].en)) {
+      const keyed = source.includes(`${value}: "${label}"`);
+      const viaConstant = constants.has(value) && source.includes(`[${constants.get(value)}]: "${label}"`);
+      assert.ok(keyed || viaConstant, `${domain}: ${JSON.stringify(value)} is not "${label}" in ${path}`);
     }
   }
 });
@@ -262,6 +299,15 @@ test("every translated web sentence is still written, word for word, by the code
     "../app/submit/route.ts",
     "../app/submit-feedback/route.ts",
     "../app/analysis.ts",
+    // R16 admin localization: the console's fetchers, route handlers, key form and case review.
+    ...readdirSync(new URL("../app/admin/", import.meta.url))
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => `../app/admin/${name}`),
+    ...readdirSync(new URL("../app/admin/", import.meta.url), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && existsSync(new URL(`../app/admin/${entry.name}/route.ts`, import.meta.url)))
+      .map((entry) => `../app/admin/${entry.name}/route.ts`),
+    "../app/admin/api-keys/create-key.tsx",
+    "../app/admin/analyses/[id]/page.tsx",
   ]
     .map(code)
     .join("\n");

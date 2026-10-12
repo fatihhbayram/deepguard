@@ -75,6 +75,7 @@ import {
   isV5Verdict,
   provenanceWording,
 } from "../../../analysis";
+import { CanonicalLabel, CanonicalOption, Copy, MessageOption, T } from "../../../i18n/client";
 import { LOGIN_PATH, adminAnalysisPath } from "../../../session";
 import { AdminAlert } from "../../components/AdminAlert";
 import { AdminPageHeader } from "../../components/AdminPageHeader";
@@ -84,12 +85,10 @@ import { AdminValue } from "../../components/AdminValue";
 import {
   ANALYST_ASSESSMENT_AGREES,
   ANALYST_ASSESSMENT_DISAGREES,
-  ANALYST_ASSESSMENT_LABELS,
   ANALYST_ASSESSMENT_NONE,
   ANALYST_ASSESSMENT_UNDETERMINED,
   AnalysisReview,
   MAX_REVIEW_NOTE_LENGTH,
-  REVIEW_STATUS_LABELS,
   REVIEW_STATUS_NEEDS_FOLLOW_UP,
   REVIEW_STATUS_REVIEWED,
   REVIEW_STATUS_UNREVIEWED,
@@ -123,21 +122,18 @@ import {
   promotionCandidates,
   selectedPromotionMedia,
 } from "../../promotion";
-import {
-  FEEDBACK_ASSESSMENT_LABELS,
-  FEEDBACK_CLAIMED_LABEL_LABELS,
-} from "../../../user-feedback";
-
 // The sentence the Ground Truth card shows in place of its form when the analysis carries no
-// hash of its original. Ground Truth is keyed by those bytes; without them there is nothing to
-// attach it to, and the card says so rather than disappearing.
-const NO_SHA256_FOR_GROUND_TRUTH =
-  "Ground Truth cannot be recorded because this analysis has no original media SHA-256 identity.";
-
-// What the risk column says when no decision was ever taken. Distinct from `UNKNOWN`, which is
-// a decision, and phrased as a statement about the record rather than about the media — the
-// same wording the report uses for the same reason.
-const NO_DECISION = "No decision recorded";
+// hash of its original (`admin.case.gt.noSha`): Ground Truth is keyed by those bytes; without
+// them there is nothing to attach it to, and the card says so rather than disappearing.
+//
+// What the risk column says when no decision was ever taken (`admin.case.noDecision`) is distinct
+// from `UNKNOWN`, which is a decision, and phrased as a statement about the record rather than
+// about the media — the same wording the report uses for the same reason.
+//
+// Every label table this page draws from (`REVIEW_STATUS_LABELS`, `GROUND_TRUTH_*_LABELS`, the
+// feedback words) is named in the reader's language by a `CANONICAL` domain in `../../../i18n/core`;
+// the tables here still say which values a select offers, and the API's own spelling is what
+// every option posts (R16 admin localization).
 
 /* ------------------------------------------------------------------ *
  * Primitives
@@ -158,7 +154,7 @@ const NO_DECISION = "No decision recorded";
  */
 
 /** One labelled fact, as a definition-list pair. */
-function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+function Fact({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div>
       <dt className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
@@ -230,8 +226,8 @@ function ForensicResult({
 
   return (
     <AdminSection
-      title="Automated assessment"
-      description="Committed by the detection pipeline under the ruleset named below, and immutable. There is no control on this card and no route in this application that can alter any value on it — the review beneath is a separate record and does not change what the detectors concluded."
+      title={<T k="admin.case.automated.title" />}
+      description={<T k="admin.case.automated.description" />}
     >
       {/* The assessment first and the coverage beside it, in the order the report states them
           (R9-T8). The record fields follow, under their own rule: an operator opening this case
@@ -242,18 +238,23 @@ function ForensicResult({
             holds a verdict and is the decision; any earlier ruleset wrote a level, which is
             labelled as the recorded risk level it is rather than as a verdict. Chosen by the
             ruleset and never by the string, like the label itself. */}
-        <Fact label={legacyLevel ? "Recorded risk level" : "Decision"}>
-          {level === null
-            ? NO_DECISION
-            : classificationLabel(level, analysis.risk_rules_version)}
+        <Fact label={<T k={legacyLevel ? "admin.queue.recordedRiskLevel" : "admin.queue.decision"} />}>
+          {/* The verdict's own title, in the words the report prints it in and through the same
+              translation table (`REPORT_COPY`), so the two screens cannot drift apart. */}
+          {level === null ? (
+            <T k="admin.case.noDecision" />
+          ) : (
+            <Copy text={classificationLabel(level, analysis.risk_rules_version)} />
+          )}
         </Fact>
         {coverage !== null && (
-          <Fact label="Decision coverage">
+          <Fact label={<T k="admin.case.coverage" />}>
             {/* Three API fields interpolated, including the word. `complete` is never reached
                 here by comparing `usable` against `total`: that comparison is the coverage model
                 and it lives in one place, on the other side of the API (R9-T4). */}
             <AdminValue>
-              {`${coverage.usable}/${coverage.total} ${coverage.status}`}
+              {`${coverage.usable}/${coverage.total} `}
+              <CanonicalLabel domain="coverageStatus" value={coverage.status} />
             </AdminValue>
           </Fact>
         )}
@@ -265,22 +266,24 @@ function ForensicResult({
           more certain. */}
       {wording !== null && (
         <p className="mt-4 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-          {wording.clarification}
+          <Copy text={wording.clarification} />
         </p>
       )}
 
       <dl className="mt-5 grid grid-cols-1 gap-5 border-t border-hair pt-5 sm:grid-cols-2">
-        <Fact label="Analysis status">{analysis.status}</Fact>
-        <Fact label="Ruleset">
+        <Fact label={<T k="admin.case.analysisStatus" />}>
+          <CanonicalLabel domain="analysisStatus" value={analysis.status} />
+        </Fact>
+        <Fact label={<T k="admin.case.ruleset" />}>
           <AdminValue className="break-all">{analysis.risk_rules_version}</AdminValue>
         </Fact>
-        <Fact label="Rule fired">
+        <Fact label={<T k="admin.case.ruleFired" />}>
           <AdminValue className="break-all">{analysis.risk_rule_id}</AdminValue>
         </Fact>
-        <Fact label="Calibration">
+        <Fact label={<T k="admin.case.calibration" />}>
           <AdminValue className="break-all">{analysis.risk_calibration_id}</AdminValue>
         </Fact>
-        <Fact label="Submitted">
+        <Fact label={<T k="admin.case.submitted" />}>
           {/* The API's own timestamp, shown as stored rather than reformatted into a local
               rendering the record does not hold — the convention every screen in this surface
               follows. */}
@@ -322,28 +325,40 @@ function ProvenanceRecord({ signal }: { signal: ProvenanceSignal | null }) {
 
   return (
     <AdminSection
-      title="Authenticity and provenance"
-      description="A separate question from the assessment above, answered from separate evidence and recorded separately. Nothing here reports the media as authentic or manipulated: the absence of credentials is not evidence of manipulation, and their presence is not proof of authenticity."
+      title={<T k="admin.case.provenance.title" />}
+      description={<T k="admin.case.provenance.description" />}
     >
       {signal === null ? (
         <p className="mt-4 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-          No provenance reading is stored for this analysis. That is not a failed reading —
-          nothing recorded one, so there is no evidence from this source either way.
+          <T k="admin.case.provenance.none" />
         </p>
       ) : (
         <>
           {wording !== null && (
             <div className="mt-4">
               {/* The pair, as the pair it is. Neither axis is ever printed without the other. */}
-              <p className="font-mono text-[11px] tracking-[0.08em] text-muted uppercase">
-                {signal.provenance_status} · {signal.provenance_availability}
+              {/* The two axes as the report names them; `lang="en"` for a raw one this build
+                  does not know, which is drawn as the API spelled it under `uppercase`. */}
+              <p lang="en" className="font-mono text-[11px] tracking-[0.08em] text-muted uppercase">
+                {signal.provenance_status === null ? null : (
+                  <CanonicalLabel domain="provenanceStatus" value={signal.provenance_status} />
+                )}{" "}
+                ·{" "}
+                {signal.provenance_availability === null ? null : (
+                  <CanonicalLabel
+                    domain="provenanceAvailability"
+                    value={signal.provenance_availability}
+                  />
+                )}
               </p>
-              <p className="mt-1.5 text-[15px] font-semibold text-bone">{wording.title}</p>
+              <p className="mt-1.5 text-[15px] font-semibold text-bone">
+                <Copy text={wording.title} />
+              </p>
               <p className="mt-1.5 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-                {wording.meaning}
+                <Copy text={wording.meaning} />
               </p>
               <p className="mt-2 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-                {wording.clarification}
+                <Copy text={wording.clarification} />
               </p>
             </div>
           )}
@@ -353,26 +368,32 @@ function ProvenanceRecord({ signal }: { signal: ProvenanceSignal | null }) {
               wording === null ? "mt-4" : "mt-5 border-t border-hair pt-5"
             }`}
           >
-            <Fact label="Reading status">
-              <AdminValue className="break-all">{signal.status}</AdminValue>
+            <Fact label={<T k="admin.case.provenance.readingStatus" />}>
+              <AdminValue className="break-all">
+                <CanonicalLabel domain="signalStatus" value={signal.status} />
+              </AdminValue>
             </Fact>
-            <Fact label="Manifest present in the file">
-              {signal.manifest_exists === null
-                ? "unknown — the reading failed"
-                : signal.manifest_exists
-                  ? "yes"
-                  : "no"}
+            <Fact label={<T k="admin.case.provenance.manifestPresent" />}>
+              <T
+                k={
+                  signal.manifest_exists === null
+                    ? "admin.case.provenance.manifestUnknown"
+                    : signal.manifest_exists
+                      ? "admin.common.yes"
+                      : "admin.common.no"
+                }
+              />
             </Fact>
-            <Fact label="Validation state">
+            <Fact label={<T k="admin.case.provenance.validationState" />}>
               <AdminValue className="break-all">{signal.validation_state}</AdminValue>
             </Fact>
-            <Fact label="Claim generator">
+            <Fact label={<T k="admin.case.provenance.claimGenerator" />}>
               <AdminValue className="break-all">{signal.claim_generator}</AdminValue>
             </Fact>
-            <Fact label="Signature issuer">
+            <Fact label={<T k="admin.case.provenance.signatureIssuer" />}>
               <AdminValue className="break-all">{signal.signature_issuer}</AdminValue>
             </Fact>
-            <Fact label="Remote manifest URL">
+            <Fact label={<T k="admin.case.provenance.remoteManifest" />}>
               {/* Recorded and never fetched — the same limit the report states. */}
               <AdminValue className="break-all">{signal.remote_manifest_url}</AdminValue>
             </Fact>
@@ -400,7 +421,7 @@ function StatusBadge({ status }: { status: string }) {
     <AdminStatusBadge tone={tone} mono>
       {/* Unknown statuses print as the API spelled them rather than as a blank chip: the day
           the taxonomy grows, this is what says so. */}
-      {REVIEW_STATUS_LABELS[status] ?? status}
+      <CanonicalLabel domain="reviewStatus" value={status} />
     </AdminStatusBadge>
   );
 }
@@ -419,7 +440,7 @@ function AssessmentBadge({ assessment }: { assessment: string | null }) {
     <AdminStatusBadge tone="muted" mono>
       {/* Unknown assessments print as the API spelled them rather than as a blank chip, the
           same way the status badge above handles a taxonomy that has grown. */}
-      {ANALYST_ASSESSMENT_LABELS[assessment ?? ANALYST_ASSESSMENT_NONE] ?? assessment}
+      <CanonicalLabel domain="analystAssessment" value={assessment ?? ANALYST_ASSESSMENT_NONE} />
     </AdminStatusBadge>
   );
 }
@@ -436,7 +457,9 @@ function AssessmentBadge({ assessment }: { assessment: string | null }) {
 function Note({ note }: { note: string }) {
   if (note === "") {
     return (
-      <p className="text-[13px] text-muted">No note was written with this review.</p>
+      <p className="text-[13px] text-muted">
+        <T k="admin.case.review.noNote" />
+      </p>
     );
   }
 
@@ -454,9 +477,7 @@ function ReviewRecord({ review }: { review: AnalysisReview }) {
       <div className="mt-4">
         <StatusBadge status={review.status} />
         <p className="mt-3 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-          Nobody has reviewed this analysis. That is the state every analysis is in until
-          somebody writes a review here — it is not a record that something is missing, and it
-          says nothing about the forensic result above.
+          <T k="admin.case.review.nobody" />
         </p>
       </div>
     );
@@ -470,49 +491,51 @@ function ReviewRecord({ review }: { review: AnalysisReview }) {
           labelled rather than left to be inferred from the colour. */}
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
         <span className="flex flex-wrap items-center gap-2">
-          <span className="text-[13px] text-muted">Human review</span>
+          <span className="text-[13px] text-muted">
+            <T k="admin.case.review.title" />
+          </span>
           <StatusBadge status={review.status} />
         </span>
         <span className="flex flex-wrap items-center gap-2">
-          <span className="text-[13px] text-muted">Analyst assessment</span>
+          <span className="text-[13px] text-muted">
+            <T k="admin.case.review.assessment" />
+          </span>
           <AssessmentBadge assessment={review.analyst_assessment} />
         </span>
       </div>
 
       {review.analyst_assessment === ANALYST_ASSESSMENT_DISAGREES && (
         <p className="mt-3 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-          This reviewer did not agree with the automated assessment. That is recorded here as
-          their opinion and nothing else: the forensic result above is unchanged, no second
-          classification has been stored, and nothing in this record says which of the two was
-          correct.
+          <T k="admin.case.review.disagrees" />
         </p>
       )}
 
       {review.analyst_assessment === null && (
         <p className="mt-3 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-          No assessment was recorded with this review. Reviews written before this field existed
-          carry none, and none has been assumed for them — that is not the same as{" "}
-          {ANALYST_ASSESSMENT_LABELS[ANALYST_ASSESSMENT_UNDETERMINED].toLowerCase()}, which is a
-          position somebody took.
+          <T k="admin.case.review.noAssessment" />
         </p>
       )}
 
       <dl className="mt-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
-        <Fact label="Reviewer">
+        <Fact label={<T k="admin.case.review.reviewer" />}>
           {/* The address as it read when the review was last written, never looked up now. A
               rename does not change who signed a past review — see `admin/reviews.ts`. */}
           {review.reviewer_email_snapshot ?? (
-            <span className="text-muted">not recorded</span>
+            <span className="text-muted">
+              <T k="admin.common.notRecorded" />
+            </span>
           )}
           <div className="mt-1">
             <AdminValue className="break-all">{review.reviewer_id}</AdminValue>
           </div>
         </Fact>
-        <Fact label="Last changed">
+        <Fact label={<T k="admin.case.lastChanged" />}>
           <AdminValue className="break-all">{review.updated_at}</AdminValue>
           <div className="mt-1">
             <AdminValue className="break-all">
-              {review.created_at === null ? null : `first written ${review.created_at}`}
+              {review.created_at === null ? null : (
+                <T k="admin.case.firstWritten" values={{ at: review.created_at }} />
+              )}
             </AdminValue>
           </div>
         </Fact>
@@ -520,7 +543,7 @@ function ReviewRecord({ review }: { review: AnalysisReview }) {
 
       <div className="mt-5">
         <dt className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
-          Note
+          <T k="admin.case.review.note" />
         </dt>
         <div className="mt-2">
           <Note note={review.note} />
@@ -594,7 +617,7 @@ function ReviewForm({ review }: { review: AnalysisReview }) {
 
       <div className="flex flex-wrap items-center gap-2">
         <label className="text-[13px] text-muted" htmlFor="review-status">
-          Status
+          <T k="admin.case.review.status" />
         </label>
         <select
           id="review-status"
@@ -602,18 +625,14 @@ function ReviewForm({ review }: { review: AnalysisReview }) {
           defaultValue={selected}
           className="rounded-md border border-line bg-ink px-2.5 py-1.5 text-[12px] text-bone transition-colors duration-150 hover:border-rule"
         >
-          <option value={REVIEW_STATUS_REVIEWED}>
-            {REVIEW_STATUS_LABELS[REVIEW_STATUS_REVIEWED]}
-          </option>
-          <option value={REVIEW_STATUS_NEEDS_FOLLOW_UP}>
-            {REVIEW_STATUS_LABELS[REVIEW_STATUS_NEEDS_FOLLOW_UP]}
-          </option>
+          <CanonicalOption domain="reviewStatus" value={REVIEW_STATUS_REVIEWED} />
+          <CanonicalOption domain="reviewStatus" value={REVIEW_STATUS_NEEDS_FOLLOW_UP} />
         </select>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <label className="text-[13px] text-muted" htmlFor="review-analyst-assessment">
-          Analyst assessment
+          <T k="admin.case.review.assessment" />
         </label>
         <select
           id="review-analyst-assessment"
@@ -623,30 +642,20 @@ function ReviewForm({ review }: { review: AnalysisReview }) {
         >
           {/* First, so that "no opinion" is what the control reads as before anybody touches
               it, and so a legacy review round-trips unchanged. */}
-          <option value={ANALYST_ASSESSMENT_NONE}>
-            {ANALYST_ASSESSMENT_LABELS[ANALYST_ASSESSMENT_NONE]}
-          </option>
-          <option value={ANALYST_ASSESSMENT_AGREES}>
-            {ANALYST_ASSESSMENT_LABELS[ANALYST_ASSESSMENT_AGREES]}
-          </option>
-          <option value={ANALYST_ASSESSMENT_DISAGREES}>
-            {ANALYST_ASSESSMENT_LABELS[ANALYST_ASSESSMENT_DISAGREES]}
-          </option>
-          <option value={ANALYST_ASSESSMENT_UNDETERMINED}>
-            {ANALYST_ASSESSMENT_LABELS[ANALYST_ASSESSMENT_UNDETERMINED]}
-          </option>
+          <CanonicalOption domain="analystAssessment" value={ANALYST_ASSESSMENT_NONE} />
+          <CanonicalOption domain="analystAssessment" value={ANALYST_ASSESSMENT_AGREES} />
+          <CanonicalOption domain="analystAssessment" value={ANALYST_ASSESSMENT_DISAGREES} />
+          <CanonicalOption domain="analystAssessment" value={ANALYST_ASSESSMENT_UNDETERMINED} />
         </select>
       </div>
 
       <p className="mt-2 max-w-[74ch] text-[12px] leading-relaxed text-muted">
-        An opinion about the automated assessment, recorded alongside it and never in place of
-        it. Disagreeing does not change the forensic result above, does not store a second
-        classification, and is not a record of whether the detector was right.
+        <T k="admin.case.review.opinion" />
       </p>
 
       <div className="mt-4">
         <label className="text-[13px] text-muted" htmlFor="review-note">
-          Note
+          <T k="admin.case.review.note" />
         </label>
         <textarea
           id="review-note"
@@ -657,8 +666,7 @@ function ReviewForm({ review }: { review: AnalysisReview }) {
           className="mt-2 block w-full rounded-md border border-line bg-ink px-3 py-2 text-[13px] leading-relaxed text-bone transition-colors duration-150 hover:border-rule focus:border-rule focus:outline-none"
         />
         <p className="mt-2 text-[12px] text-muted">
-          Plain text, at most {MAX_REVIEW_NOTE_LENGTH} characters. It is stored exactly as
-          typed and shown as text — nothing here is interpreted as formatting or as a link.
+          <T k="admin.case.review.noteHelp" values={{ count: MAX_REVIEW_NOTE_LENGTH }} />
         </p>
       </div>
 
@@ -666,7 +674,7 @@ function ReviewForm({ review }: { review: AnalysisReview }) {
         type="submit"
         className="mt-4 rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
       >
-        Save review
+        <T k="admin.case.review.save" />
       </button>
     </form>
   );
@@ -680,8 +688,8 @@ function HumanReview({ review }: { review: AnalysisReview }) {
     // person said. The tint is a hairline and a wash, not a highlight.
     <AdminSection
       tone="accent"
-      title="Human review"
-      description="An operational record of whether somebody has looked at this case, and of what they made of the automated assessment — not a second answer about the media. Saving a review leaves the forensic result above exactly as it was, and every change is recorded in the audit log with who made it and when."
+      title={<T k="admin.case.review.title" />}
+      description={<T k="admin.case.review.description" />}
     >
       <ReviewRecord review={review} />
       <ReviewForm review={review} />
@@ -698,8 +706,7 @@ function GroundTruthRecord({ groundTruth }: { groundTruth: GroundTruth | null })
   if (groundTruth === null) {
     return (
       <p className="mt-4 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-        No Ground Truth has been recorded for this file. That is not a statement that its origin
-        is unknown — nobody has made a statement about it at all.
+        <T k="admin.case.gt.none" />
       </p>
     );
   }
@@ -707,33 +714,42 @@ function GroundTruthRecord({ groundTruth }: { groundTruth: GroundTruth | null })
   return (
     <div className="mt-4">
       <dl className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-        <Fact label="Label">
+        <Fact label={<T k="admin.case.gt.label" />}>
           {/* Unknown values print as the API spelled them, as the review badges do. */}
-          {GROUND_TRUTH_LABEL_LABELS[groundTruth.label] ?? groundTruth.label}
+          <CanonicalLabel domain="groundTruthLabel" value={groundTruth.label} />
         </Fact>
-        <Fact label="How it is known">
-          {GROUND_TRUTH_SOURCE_CLASS_LABELS[groundTruth.source_class] ??
-            groundTruth.source_class}
+        <Fact label={<T k="admin.case.gt.sourceClass" />}>
+          <CanonicalLabel domain="groundTruthSourceClass" value={groundTruth.source_class} />
         </Fact>
-        <Fact label="Recorded by">
-          {groundTruth.actor_email_snapshot ?? <span className="text-muted">not recorded</span>}
+        <Fact label={<T k="admin.case.gt.recordedBy" />}>
+          {groundTruth.actor_email_snapshot ?? (
+            <span className="text-muted">
+              <T k="admin.common.notRecorded" />
+            </span>
+          )}
           <div className="mt-1">
             <AdminValue className="break-all">{groundTruth.actor_id}</AdminValue>
           </div>
         </Fact>
-        <Fact label="Last changed">
+        <Fact label={<T k="admin.case.lastChanged" />}>
           <AdminValue className="break-all">{groundTruth.updated_at}</AdminValue>
           <div className="mt-1">
-            <AdminValue className="break-all">{`first written ${groundTruth.created_at}`}</AdminValue>
+            <AdminValue className="break-all">
+              <T k="admin.case.firstWritten" values={{ at: groundTruth.created_at }} />
+            </AdminValue>
           </div>
         </Fact>
       </dl>
 
       <div className="mt-5">
-        <dt className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase">Notes</dt>
+        <dt className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
+          <T k="admin.case.gt.notes" />
+        </dt>
         <div className="mt-2">
           {groundTruth.notes === null || groundTruth.notes === "" ? (
-            <p className="text-[13px] text-muted">No notes were recorded.</p>
+            <p className="text-[13px] text-muted">
+              <T k="admin.case.gt.noNotes" />
+            </p>
           ) : (
             <p className="max-w-[74ch] text-[13px] leading-relaxed whitespace-pre-wrap text-bone">
               {groundTruth.notes}
@@ -782,7 +798,7 @@ function GroundTruthForm({
 
       <div className="flex flex-wrap items-center gap-2">
         <label className="text-[13px] text-muted" htmlFor="ground-truth-label">
-          Label
+          <T k="admin.case.gt.label" />
         </label>
         <select
           id="ground-truth-label"
@@ -791,20 +807,16 @@ function GroundTruthForm({
           defaultValue={groundTruth?.label ?? ""}
           className={selectClass}
         >
-          <option value="" disabled>
-            Choose…
-          </option>
-          {Object.entries(GROUND_TRUTH_LABEL_LABELS).map(([value, text]) => (
-            <option key={value} value={value}>
-              {text}
-            </option>
+          <MessageOption value="" k="admin.common.choose" disabled />
+          {Object.keys(GROUND_TRUTH_LABEL_LABELS).map((value) => (
+            <CanonicalOption key={value} domain="groundTruthLabel" value={value} />
           ))}
         </select>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <label className="text-[13px] text-muted" htmlFor="ground-truth-source-class">
-          How it is known
+          <T k="admin.case.gt.sourceClass" />
         </label>
         <select
           id="ground-truth-source-class"
@@ -813,20 +825,19 @@ function GroundTruthForm({
           defaultValue={groundTruth?.source_class ?? ""}
           className={selectClass}
         >
-          <option value="" disabled>
-            Choose…
-          </option>
-          {Object.entries(GROUND_TRUTH_SOURCE_CLASS_LABELS).map(([value, text]) => (
-            <option key={value} value={value}>
-              {text}
-            </option>
+          <MessageOption value="" k="admin.common.choose" disabled />
+          {Object.keys(GROUND_TRUTH_SOURCE_CLASS_LABELS).map((value) => (
+            <CanonicalOption key={value} domain="groundTruthSourceClass" value={value} />
           ))}
         </select>
       </div>
 
       <div className="mt-4">
         <label className="text-[13px] text-muted" htmlFor="ground-truth-notes">
-          Notes <span className="text-muted">(optional)</span>
+          <T k="admin.case.gt.notes" />{" "}
+          <span className="text-muted">
+            <T k="admin.common.optional" />
+          </span>
         </label>
         <textarea
           id="ground-truth-notes"
@@ -836,7 +847,7 @@ function GroundTruthForm({
           className="mt-2 block w-full rounded-md border border-line bg-ink px-3 py-2 text-[13px] leading-relaxed text-bone transition-colors duration-150 hover:border-rule focus:border-rule focus:outline-none"
         />
         <p className="mt-2 text-[12px] text-muted">
-          Plain text, stored exactly as typed and shown as text. Leave empty for no notes.
+          <T k="admin.case.gt.notesHelp" />
         </p>
       </div>
 
@@ -844,7 +855,7 @@ function GroundTruthForm({
         type="submit"
         className="mt-4 rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
       >
-        Save Ground Truth
+        <T k="admin.case.gt.save" />
       </button>
     </form>
   );
@@ -871,30 +882,35 @@ function GroundTruthSection({
 }) {
   return (
     <AdminSection
-      title="Ground Truth"
-      description="What this media actually is, stated by somebody in a position to know it and recorded against the original file's SHA-256 — so it applies to every analysis of the same bytes. It is independent of the automated assessment, the provenance reading and the human review above: it is not filled in from them and saving it changes none of them."
+      title={<T k="admin.case.gt.title" />}
+      description={<T k="admin.case.gt.description" />}
     >
       {error && (
         <div className="mt-4">
-          <AdminAlert tone="error">{error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={error} />
+          </AdminAlert>
         </div>
       )}
       {saved && !error && (
         <div className="mt-4">
           <AdminAlert tone="success">
-            Ground Truth saved. The automated assessment and the human review were not changed.
+            <T k="admin.case.gt.saved" />
           </AdminAlert>
         </div>
       )}
 
       {sha256 === null ? (
         <p className="mt-4 max-w-[74ch] text-[13px] leading-relaxed text-muted">
-          {NO_SHA256_FOR_GROUND_TRUTH}
+          <T k="admin.case.gt.noSha" />
         </p>
       ) : result === null || !result.ok ? (
         <div className="mt-4">
           <AdminAlert tone="error">
-            {result === null ? "Ground Truth could not be read." : result.error}
+            <CanonicalLabel
+              domain="webMessage"
+              value={result === null ? "Ground Truth could not be read." : result.error}
+            />
           </AdminAlert>
         </div>
       ) : (
@@ -926,32 +942,43 @@ function UserFeedbackItem({
   return (
     <li className="border-t border-hair pt-4 first:border-t-0 first:pt-0">
       <dl className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-        <Fact label="Assessment of the result">
-          {FEEDBACK_ASSESSMENT_LABELS[entry.assessment] ?? entry.assessment}
+        <Fact label={<T k="admin.case.feedback.assessment" />}>
+          <CanonicalLabel domain="feedbackAssessment" value={entry.assessment} />
         </Fact>
-        <Fact label="User's claim (unverified)">
+        <Fact label={<T k="admin.case.feedback.claim" />}>
           {entry.claimed_label === null ? (
-            <span className="text-muted">no claim</span>
+            <span className="text-muted">
+              <T k="admin.case.feedback.noClaim" />
+            </span>
           ) : (
-            `Claims: ${FEEDBACK_CLAIMED_LABEL_LABELS[entry.claimed_label] ?? entry.claimed_label}`
+            <T
+              k="admin.case.feedback.claims"
+              values={{
+                label: <CanonicalLabel domain="feedbackClaimedLabel" value={entry.claimed_label} />,
+              }}
+            />
           )}
         </Fact>
-        <Fact label="Submitted by">
+        <Fact label={<T k="admin.case.feedback.submittedBy" />}>
           {entry.user_email}
           <div className="mt-1">
             <AdminValue className="break-all">{entry.user_id}</AdminValue>
           </div>
         </Fact>
-        <Fact label="Last changed">
+        <Fact label={<T k="admin.case.lastChanged" />}>
           <AdminValue className="break-all">{entry.updated_at}</AdminValue>
           <div className="mt-1">
-            <AdminValue className="break-all">{`first written ${entry.created_at}`}</AdminValue>
+            <AdminValue className="break-all">
+              <T k="admin.case.firstWritten" values={{ at: entry.created_at }} />
+            </AdminValue>
           </div>
         </Fact>
       </dl>
       <div className="mt-4">
         {entry.notes === null ? (
-          <p className="text-[13px] text-muted">No notes.</p>
+          <p className="text-[13px] text-muted">
+            <T k="admin.case.feedback.noNotes" />
+          </p>
         ) : (
           <p className="max-w-[74ch] text-[13px] leading-relaxed whitespace-pre-wrap text-bone">
             {entry.notes}
@@ -965,7 +992,7 @@ function UserFeedbackItem({
           href={promotionHref}
           className="mt-4 inline-block rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
         >
-          Use this feedback as context for promotion
+          <T k="admin.case.feedback.useAsContext" />
         </Link>
       )}
     </li>
@@ -985,15 +1012,19 @@ function UserFeedbackSection({
 }) {
   return (
     <AdminSection
-      title="User feedback"
-      description="What the owner of this analysis said about its result. It is an unverified claim by the submitter — not Ground Truth, not a human review, and never used to score the detectors. Giving feedback changes nothing above, and administrators cannot write or edit it."
+      title={<T k="admin.case.feedback.title" />}
+      description={<T k="admin.case.feedback.description" />}
     >
       {!result.ok ? (
         <div className="mt-4">
-          <AdminAlert tone="error">{result.error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={result.error} />
+          </AdminAlert>
         </div>
       ) : result.entries.length === 0 ? (
-        <p className="mt-4 text-[13px] text-muted">No user feedback has been given.</p>
+        <p className="mt-4 text-[13px] text-muted">
+          <T k="admin.case.feedback.empty" />
+        </p>
       ) : (
         <ul className="mt-4 space-y-4">
           {result.entries.map((entry) => (
@@ -1020,14 +1051,39 @@ function promotionPath(analysisId: string, params: Record<string, string>): stri
   return `${adminAnalysisPath(analysisId)}?${new URLSearchParams(params)}#promotion`;
 }
 
-const PROMOTION_STEP_LABELS: Record<PromotionStep, string> = {
-  governance: "dataset governance",
-  ground_truth: "Ground Truth",
-  review: "review status",
-};
+const PROMOTION_STEP_LABELS = {
+  governance: "admin.case.promotion.step.governance",
+  ground_truth: "admin.case.promotion.step.groundTruth",
+  review: "admin.case.promotion.step.review",
+} as const satisfies Record<PromotionStep, string>;
 
-function stepList(steps: PromotionStep[]): string {
-  return steps.length === 0 ? "nothing" : steps.map((step) => PROMOTION_STEP_LABELS[step]).join(", ");
+function StepList({ steps }: { steps: PromotionStep[] }) {
+  if (steps.length === 0) {
+    return <T k="admin.case.promotion.nothing" />;
+  }
+  return steps.map((step, index) => (
+    <span key={step}>
+      {index > 0 && ", "}
+      <T k={PROMOTION_STEP_LABELS[step]} />
+    </span>
+  ));
+}
+
+/**
+ * Why a step failed: the route handler's sentence, named in the reader's language when it is one
+ * of this application's own and drawn as it arrived when it is the API's. It is closed with a full
+ * stop when it does not carry one, as the English outcome always was.
+ */
+function FailureReason({ error }: { error: string | null }) {
+  if (error === null) {
+    return <T k="admin.case.promotion.noReason" />;
+  }
+  return (
+    <>
+      <CanonicalLabel domain="webMessage" value={error} />
+      {error.endsWith(".") ? "" : "."}
+    </>
+  );
 }
 
 /**
@@ -1038,13 +1094,18 @@ function PromotionOutcome({ outcome }: { outcome: ParsedOutcome }) {
   if (outcome.failed === null && outcome.error === null) {
     return (
       <AdminAlert tone="success">
-        {`Saved: ${stepList(outcome.saved)}. The automated assessment and the user's feedback were not changed.`}
+        <T k="admin.case.promotion.saved" values={{ steps: <StepList steps={outcome.saved} /> }} />
       </AdminAlert>
     );
   }
 
   if (outcome.failed === null) {
-    return <AdminAlert tone="error">{`Nothing was saved. ${outcome.error ?? ""}`}</AdminAlert>;
+    return (
+      <AdminAlert tone="error">
+        <T k="admin.case.promotion.nothingSaved" />{" "}
+        {outcome.error === null ? null : <CanonicalLabel domain="webMessage" value={outcome.error} />}
+      </AdminAlert>
+    );
   }
 
   // Every step after the one that failed: the sequence stops there.
@@ -1052,12 +1113,22 @@ function PromotionOutcome({ outcome }: { outcome: ParsedOutcome }) {
 
   return (
     <AdminAlert tone="error">
-      {outcome.saved.length > 0 ? "Partial success. " : "Nothing was saved. "}
-      {`Saved: ${stepList(outcome.saved)}. Failed: ${PROMOTION_STEP_LABELS[outcome.failed]} — ${(outcome.error ?? "no reason given").replace(/\.$/, "")}.`}
-      {notAttempted.length > 0 && ` Not attempted: ${stepList(notAttempted)}.`}
-      {outcome.failed === "review"
-        ? " Retry the review status below."
-        : " Correct the form and submit it again; a step already saved is not written twice."}
+      <T k={outcome.saved.length > 0 ? "admin.case.promotion.partial" : "admin.case.promotion.nothingSaved"} />{" "}
+      <T
+        k="admin.case.promotion.failed"
+        values={{
+          steps: <StepList steps={outcome.saved} />,
+          step: <T k={PROMOTION_STEP_LABELS[outcome.failed]} />,
+          reason: <FailureReason error={outcome.error} />,
+        }}
+      />
+      {notAttempted.length > 0 && (
+        <>
+          {" "}
+          <T k="admin.case.promotion.notAttempted" values={{ steps: <StepList steps={notAttempted} /> }} />
+        </>
+      )}{" "}
+      <T k={outcome.failed === "review" ? "admin.case.promotion.retryBelow" : "admin.case.promotion.correctForm"} />
     </AdminAlert>
   );
 }
@@ -1074,16 +1145,21 @@ function TextField({
   hint,
 }: {
   name: string;
-  label: string;
+  label: React.ReactNode;
   defaultValue: string;
   required?: boolean;
   readOnly?: boolean;
-  hint?: string;
+  hint?: React.ReactNode;
 }) {
   return (
     <label className="block text-[12px] text-muted">
       {label}
-      {!required && <span> (optional)</span>}
+      {!required && (
+        <span>
+          {" "}
+          <T k="admin.common.optional" />
+        </span>
+      )}
       <input
         name={name}
         type="text"
@@ -1103,7 +1179,7 @@ function BooleanField({
   value,
 }: {
   name: string;
-  label: string;
+  label: React.ReactNode;
   value: boolean | null;
 }) {
   return (
@@ -1115,9 +1191,9 @@ function BooleanField({
         className={inputClass}
       >
         {/* Unknown is not false: an unstated boolean stays unrecorded. */}
-        <option value={BOOLEAN_NOT_RECORDED}>Not recorded</option>
-        <option value="true">Yes</option>
-        <option value="false">No</option>
+        <MessageOption value={BOOLEAN_NOT_RECORDED} k="admin.common.notRecordedOption" />
+        <MessageOption value="true" k="admin.common.yesOption" />
+        <MessageOption value="false" k="admin.common.noOption" />
       </select>
     </label>
   );
@@ -1129,20 +1205,19 @@ function ReviewTargetField({ review }: { review: AnalysisReview }) {
     <>
       <input type="hidden" name="expected_review_status" value={review.status} />
       <label className="block text-[12px] text-muted">
-        {`Leave the review as (currently ${REVIEW_STATUS_LABELS[review.status] ?? review.status})`}
+        <T
+          k="admin.case.promotion.leaveReviewAs"
+          values={{ current: <CanonicalLabel domain="reviewStatus" value={review.status} /> }}
+        />
         <select
           name="review_status"
           required
           defaultValue={defaultReviewTarget(review.status)}
           className={inputClass}
         >
-          <option value="" disabled>
-            Choose…
-          </option>
+          <MessageOption value="" k="admin.common.choose" disabled />
           {REVIEW_TARGETS.map((status) => (
-            <option key={status} value={status}>
-              {REVIEW_STATUS_LABELS[status] ?? status}
-            </option>
+            <CanonicalOption key={status} domain="reviewStatus" value={status} />
           ))}
         </select>
       </label>
@@ -1182,10 +1257,11 @@ function PromotionForm({
       <input type="hidden" name="feedback_user_id" value={feedback?.user_id ?? ""} />
 
       <fieldset className={fieldsetClass}>
-        <legend className={legendClass}>Media</legend>
+        <legend className={legendClass}>
+          <T k="admin.case.promotion.media" />
+        </legend>
         <p className="mt-2 text-[12px] text-muted">
-          Choose the file these records are about. Governance and Ground Truth are keyed by its
-          SHA-256 and apply to every analysis of the same bytes.
+          <T k="admin.case.promotion.mediaHelp" />
         </p>
         {candidates.map((sha256) => (
           <label key={sha256} className="mt-2 flex items-center gap-2 text-[12px] text-bone">
@@ -1197,56 +1273,56 @@ function PromotionForm({
       </fieldset>
 
       <fieldset className={fieldsetClass}>
-        <legend className={legendClass}>1 · Dataset governance</legend>
+        <legend className={legendClass}>
+          1 · <T k="admin.case.promotion.governance" />
+        </legend>
         <p className="mt-2 text-[12px] text-muted">
-          Saved first, so a label never reaches evaluation without the lineage, split and licence
-          it is exported under. The whole record is sent: an emptied field is cleared.
+          <T k="admin.case.promotion.governanceHelp" />
         </p>
         <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
           <TextField
             name="source_lineage_id"
-            label="Source lineage"
+            label={<T k="admin.case.promotion.field.sourceLineage" />}
             required
             readOnly={fixed}
             defaultValue={governance?.source_lineage_id ?? ""}
-            hint={fixed ? "Recorded; a record keeps its lineage." : undefined}
+            hint={fixed ? <T k="admin.case.promotion.lineageKept" /> : undefined}
           />
           <label className="block text-[12px] text-muted">
-            Dataset split
+            <T k="admin.case.promotion.field.datasetSplit" />
             {fixed ? (
               <>
                 <input type="hidden" name="dataset_split" value={governance.dataset_split} />
                 <span className={`${inputClass} text-muted`}>
-                  {DATASET_SPLIT_LABELS[governance.dataset_split] ?? governance.dataset_split}
+                  <CanonicalLabel domain="datasetSplit" value={governance.dataset_split} />
                 </span>
               </>
             ) : (
               <select name="dataset_split" required defaultValue="" className={inputClass}>
-                <option value="" disabled>
-                  Choose…
-                </option>
-                {Object.entries(DATASET_SPLIT_LABELS).map(([value, text]) => (
-                  <option key={value} value={value}>
-                    {text}
-                  </option>
-                ))}
+                <MessageOption value="" k="admin.common.choose" disabled />
+                {Object.keys(DATASET_SPLIT_LABELS).map((value) => (
+            <CanonicalOption key={value} domain="datasetSplit" value={value} />
+          ))}
               </select>
             )}
           </label>
-          <TextField name="recording_identity" label="Recording identity" defaultValue={governance?.recording_identity ?? ""} />
-          <TextField name="derived_from_sha256" label="Derived from (SHA-256)" defaultValue={governance?.derived_from_sha256 ?? ""} />
-          <TextField name="generation_pipeline" label="Generation pipeline" defaultValue={governance?.generation_pipeline ?? ""} />
-          <TextField name="license" label="Licence" defaultValue={governance?.license ?? ""} />
-          <TextField name="permission_status" label="Permission status" defaultValue={governance?.permission_status ?? ""} />
-          <BooleanField name="redistributable" label="Redistributable" value={governance?.redistributable ?? null} />
-          <BooleanField name="private" label="Private" value={governance?.private ?? null} />
-          <TextField name="stratum_primary" label="Primary stratum" defaultValue={governance?.stratum_primary ?? ""} />
-          <TextField name="source" label="Source" defaultValue={governance?.source ?? ""} />
-          <TextField name="acquisition_type" label="Acquisition type" defaultValue={governance?.acquisition_type ?? ""} />
-          <TextField name="benchmark_family" label="Benchmark family" defaultValue={governance?.benchmark_family ?? ""} />
+          <TextField name="recording_identity" label={<T k="admin.case.promotion.field.recordingIdentity" />} defaultValue={governance?.recording_identity ?? ""} />
+          <TextField name="derived_from_sha256" label={<T k="admin.case.promotion.field.derivedFrom" />} defaultValue={governance?.derived_from_sha256 ?? ""} />
+          <TextField name="generation_pipeline" label={<T k="admin.case.promotion.field.generationPipeline" />} defaultValue={governance?.generation_pipeline ?? ""} />
+          <TextField name="license" label={<T k="admin.case.promotion.field.license" />} defaultValue={governance?.license ?? ""} />
+          <TextField name="permission_status" label={<T k="admin.case.promotion.field.permissionStatus" />} defaultValue={governance?.permission_status ?? ""} />
+          <BooleanField name="redistributable" label={<T k="admin.case.promotion.field.redistributable" />} value={governance?.redistributable ?? null} />
+          <BooleanField name="private" label={<T k="admin.case.promotion.field.private" />} value={governance?.private ?? null} />
+          <TextField name="stratum_primary" label={<T k="admin.case.promotion.field.stratumPrimary" />} defaultValue={governance?.stratum_primary ?? ""} />
+          <TextField name="source" label={<T k="admin.case.promotion.field.source" />} defaultValue={governance?.source ?? ""} />
+          <TextField name="acquisition_type" label={<T k="admin.case.promotion.field.acquisitionType" />} defaultValue={governance?.acquisition_type ?? ""} />
+          <TextField name="benchmark_family" label={<T k="admin.case.promotion.field.benchmarkFamily" />} defaultValue={governance?.benchmark_family ?? ""} />
         </div>
         <label className="mt-4 block text-[12px] text-muted">
-          Transformations <span>(optional, one per line, in order)</span>
+          <T k="admin.case.promotion.field.transformations" />{" "}
+          <span>
+            <T k="admin.case.promotion.transformationsHelp" />
+          </span>
           <textarea
             name="transformations"
             rows={2}
@@ -1257,70 +1333,91 @@ function PromotionForm({
       </fieldset>
 
       <fieldset className={fieldsetClass}>
-        <legend className={legendClass}>2 · Ground Truth</legend>
+        <legend className={legendClass}>
+          2 · <T k="admin.case.promotion.step.groundTruth" />
+        </legend>
         {groundTruth !== null && (
           <p className="mt-2 text-[12px] text-muted">
-            {`Currently recorded: ${GROUND_TRUTH_LABEL_LABELS[groundTruth.label] ?? groundTruth.label}, ${GROUND_TRUTH_SOURCE_CLASS_LABELS[groundTruth.source_class] ?? groundTruth.source_class}. Saving replaces it.`}
+            <T
+              k="admin.case.promotion.currentlyRecorded"
+              values={{
+                label: <CanonicalLabel domain="groundTruthLabel" value={groundTruth.label} />,
+                source: (
+                  <CanonicalLabel domain="groundTruthSourceClass" value={groundTruth.source_class} />
+                ),
+              }}
+            />
           </p>
         )}
         <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
           <label className="block text-[12px] text-muted">
-            Label
+            <T k="admin.case.gt.label" />
             <select
               name="label"
               required
               defaultValue={feedback === null ? "" : prefilledGroundTruthLabel(feedback.claimed_label)}
               className={inputClass}
             >
-              <option value="" disabled>
-                Choose…
-              </option>
-              {Object.entries(GROUND_TRUTH_LABEL_LABELS).map(([value, text]) => (
-                <option key={value} value={value}>
-                  {text}
-                </option>
-              ))}
+              <MessageOption value="" k="admin.common.choose" disabled />
+              {Object.keys(GROUND_TRUTH_LABEL_LABELS).map((value) => (
+            <CanonicalOption key={value} domain="groundTruthLabel" value={value} />
+          ))}
             </select>
           </label>
           <label className="block text-[12px] text-muted">
-            How it is known
+            <T k="admin.case.gt.sourceClass" />
             {/* Never preselected, from feedback or otherwise. */}
             <select name="source_class" required defaultValue="" className={inputClass}>
-              <option value="" disabled>
-                Choose…
-              </option>
-              {Object.entries(GROUND_TRUTH_SOURCE_CLASS_LABELS).map(([value, text]) => (
-                <option key={value} value={value}>
-                  {text}
-                </option>
-              ))}
+              <MessageOption value="" k="admin.common.choose" disabled />
+              {Object.keys(GROUND_TRUTH_SOURCE_CLASS_LABELS).map((value) => (
+            <CanonicalOption key={value} domain="groundTruthSourceClass" value={value} />
+          ))}
             </select>
           </label>
         </div>
         <p className="mt-3 max-w-[74ch] text-[12px] leading-relaxed text-muted">
-          A user&apos;s claim is not provenance. Their feedback — even as the owner of the
-          analysis — does not by itself make this <em>Known to the owner</em> or{" "}
-          <em>Externally verified</em>. Without independent evidence, choose <em>Unknown</em>.
+          <T
+            k="admin.case.promotion.claimNotProvenance"
+            values={{
+              owner: (
+                <em>
+                  <CanonicalLabel domain="groundTruthSourceClass" value="OWNER_KNOWN" />
+                </em>
+              ),
+              external: (
+                <em>
+                  <CanonicalLabel domain="groundTruthSourceClass" value="EXTERNAL_VERIFIED" />
+                </em>
+              ),
+              unknown: (
+                <em>
+                  <CanonicalLabel domain="groundTruthSourceClass" value="UNKNOWN" />
+                </em>
+              ),
+            }}
+          />
         </p>
         <label className="mt-3 flex items-start gap-2 text-[12px] text-bone">
           <input type="checkbox" name="provenance_attested" value="1" className="mt-0.5" />
           <span>
-            The source class above rests on evidence independent of the user&apos;s feedback, the
-            automated assessment and the human review, and that evidence is stated in the notes.
-            (Required for every source class except Unknown.)
+            <T k="admin.case.promotion.attest" />
           </span>
         </label>
         <label className="mt-3 block text-[12px] text-muted">
-          Notes <span>(the evidence, for any source class other than Unknown)</span>
+          <T k="admin.case.gt.notes" />{" "}
+          <span>
+            <T k="admin.case.promotion.notesHelp" />
+          </span>
           <textarea name="notes" rows={3} defaultValue="" className={inputClass} />
         </label>
       </fieldset>
 
       <fieldset className={fieldsetClass}>
-        <legend className={legendClass}>3 · Review</legend>
+        <legend className={legendClass}>
+          3 · <T k="admin.case.promotion.reviewLegend" />
+        </legend>
         <p className="mt-2 text-[12px] text-muted">
-          Set only after both records above are saved. The review&apos;s assessment and note are
-          kept as they are.
+          <T k="admin.case.promotion.reviewHelp" />
         </p>
         <div className="mt-3 max-w-[40ch]">
           <ReviewTargetField review={review} />
@@ -1332,13 +1429,13 @@ function PromotionForm({
           type="submit"
           className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
         >
-          Save governance, Ground Truth and review
+          <T k="admin.case.promotion.submit" />
         </button>
         <Link
           href={adminAnalysisPath(analysisId)}
           className="text-[12px] text-muted underline-offset-2 hover:text-bone hover:underline"
         >
-          Cancel
+          <T k="admin.common.cancel" />
         </Link>
       </div>
     </form>
@@ -1368,7 +1465,7 @@ function ReviewRetryForm({
         type="submit"
         className="mt-3 rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
       >
-        Retry the review status
+        <T k="admin.case.promotion.retry" />
       </button>
     </form>
   );
@@ -1381,16 +1478,20 @@ function FeedbackContext({ entry }: { entry: UserFeedbackEntry }) {
   return (
     <div className="mt-4 rounded-md border border-line px-4 py-3 text-[12px] leading-relaxed text-muted">
       <p className="text-bone">
-        {`Context: feedback from ${entry.user_email} — ${FEEDBACK_ASSESSMENT_LABELS[entry.assessment] ?? entry.assessment}, `}
-        {entry.claimed_label === null
-          ? "no claimed label"
-          : `claims ${FEEDBACK_CLAIMED_LABEL_LABELS[entry.claimed_label] ?? entry.claimed_label}`}
-        .
+        <T
+          k={entry.claimed_label === null ? "admin.case.context.noClaim" : "admin.case.context.claims"}
+          values={{
+            email: entry.user_email,
+            assessment: <CanonicalLabel domain="feedbackAssessment" value={entry.assessment} />,
+            label:
+              entry.claimed_label === null ? null : (
+                <CanonicalLabel domain="feedbackClaimedLabel" value={entry.claimed_label} />
+              ),
+          }}
+        />
       </p>
       <p className="mt-1">
-        {prefilled === ""
-          ? "The claim does not name a Ground Truth label exactly, so the label is left for you to choose."
-          : "The claim prefills the label only. It is unverified; check it before saving."}
+        <T k={prefilled === "" ? "admin.case.context.notPrefilled" : "admin.case.context.prefilled"} />
       </p>
     </div>
   );
@@ -1427,7 +1528,11 @@ function PromotionSection({
 
   let body: React.ReactNode;
   if (candidates.length === 0) {
-    body = <p className="mt-4 text-[13px] text-muted">{NO_SHA256_FOR_GROUND_TRUTH}</p>;
+    body = (
+      <p className="mt-4 text-[13px] text-muted">
+        <T k="admin.case.gt.noSha" />
+      </p>
+    );
   } else if (mode === null || (outcome !== null && isReviewOnlyFailure(outcome))) {
     // Closed — or open on a review-only failure, where the two records are saved and the retry
     // above is the one thing left to do; a second copy of the whole form would invite re-sending it.
@@ -1437,10 +1542,10 @@ function PromotionSection({
           href={promotionPath(analysisId, { promote: "manual" })}
           className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
         >
-          Promote to Ground Truth
+          <T k="admin.case.promotion.promote" />
         </Link>
         <span className="text-[12px] text-muted">
-          or use one specific user feedback record above as context.
+          <T k="admin.case.promotion.orFeedback" />
         </span>
       </div>
     );
@@ -1454,7 +1559,7 @@ function PromotionSection({
     body = (
       <div className="mt-4">
         <p className="text-[12px] text-muted">
-          This analysis has more than one media file. Choose the one these records are about:
+          <T k="admin.case.promotion.chooseMedia" />
         </p>
         <ul className="mt-2 space-y-2">
           {candidates.map((sha256) => (
@@ -1474,7 +1579,10 @@ function PromotionSection({
     body = (
       <div className="mt-4">
         <AdminAlert tone="error">
-          {governanceResult === null ? "Dataset governance could not be read." : governanceResult.error}
+          <CanonicalLabel
+            domain="webMessage"
+            value={governanceResult === null ? "Dataset governance could not be read." : governanceResult.error}
+          />
         </AdminAlert>
       </div>
     );
@@ -1482,21 +1590,26 @@ function PromotionSection({
     body = (
       <div className="mt-4">
         <AdminAlert tone="error">
-          {groundTruthResult === null ? "Ground Truth could not be read." : groundTruthResult.error}
+          <CanonicalLabel
+            domain="webMessage"
+            value={groundTruthResult === null ? "Ground Truth could not be read." : groundTruthResult.error}
+          />
         </AdminAlert>
       </div>
     );
   } else if (!reviewResult.ok) {
     body = (
       <div className="mt-4">
-        <AdminAlert tone="error">{reviewResult.error}</AdminAlert>
+        <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={reviewResult.error} />
+          </AdminAlert>
       </div>
     );
   } else if (mode === "feedback" && feedback === null) {
     body = (
       <div className="mt-4">
         <AdminAlert tone="error">
-          That feedback record is not on this analysis. Choose one from the list below.
+          <T k="admin.case.promotion.feedbackMissing" />
         </AdminAlert>
       </div>
     );
@@ -1519,14 +1632,23 @@ function PromotionSection({
   return (
     <div id="promotion">
       <AdminSection
-        title="Dataset governance & Ground Truth promotion"
-        description="Adds this case's media to the verified dataset in three separate saves, in order: dataset governance, then Ground Truth, then the review status. Each runs only if the one before it succeeded. User feedback may be used as context and never as provenance."
+        title={<T k="admin.case.promotion.title" />}
+        description={<T k="admin.case.promotion.description" />}
       >
         {media !== null && governanceResult !== null && governanceResult.ok && (
           <p className="mt-4 text-[12px] text-muted">
             {governance === null
-              ? `Dataset governance of ${media.slice(0, 12)}…: not recorded.`
-              : `Dataset governance of ${media.slice(0, 12)}…: lineage ${governance.source_lineage_id}, ${DATASET_SPLIT_LABELS[governance.dataset_split] ?? governance.dataset_split} split.`}
+              ? <T k="admin.case.promotion.governanceNone" values={{ media: `${media.slice(0, 12)}…` }} />
+              : (
+                <T
+                  k="admin.case.promotion.governanceRecorded"
+                  values={{
+                    media: `${media.slice(0, 12)}…`,
+                    lineage: governance.source_lineage_id,
+                    split: <CanonicalLabel domain="datasetSplit" value={governance.dataset_split} />,
+                  }}
+                />
+              )}
           </p>
         )}
         {outcome !== null && (
@@ -1663,15 +1785,11 @@ export default async function AdminAnalysisReview({
   return (
     <>
       <AdminPageHeader
-        title="Case review"
+        title={<T k="admin.case.title" />}
         description={
           <>
             <p>
-              One analysis, and what has been said about it. The automated assessment and the
-              provenance reading below it are the forensic record — what the detectors concluded
-              and what the file itself carries — and neither can be edited from anywhere in this
-              application. The human review is a separate record in a separate table: what a
-              reviewer noted, revisable at any time, and never a second answer about the media.
+              <T k="admin.case.description" />
             </p>
             <p>
               <AdminValue className="break-all">{id}</AdminValue>
@@ -1687,7 +1805,7 @@ export default async function AdminAnalysisReview({
             href={adminAnalysisPath(id)}
             className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
           >
-            Refresh
+            <T k="admin.common.refresh" />
           </Link>
         }
       />
@@ -1697,13 +1815,15 @@ export default async function AdminAnalysisReview({
           client-facing sentence, rendered as text. */}
       {error && (
         <div className="mt-5">
-          <AdminAlert tone="error">{error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={error} />
+          </AdminAlert>
         </div>
       )}
       {saved !== null && !error && (
         <div className="mt-5">
           <AdminAlert tone="success">
-            Review saved. The forensic result was not changed.
+            <T k="admin.case.reviewSaved" />
           </AdminAlert>
         </div>
       )}
@@ -1715,7 +1835,9 @@ export default async function AdminAnalysisReview({
           detector, which from the file itself, and which from a colleague. */}
       <div className="mt-5 space-y-5">
         {!analysisResult.ok ? (
-          <AdminAlert tone="error">{analysisResult.error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={analysisResult.error} />
+          </AdminAlert>
         ) : (
           <>
             <ForensicResult analysis={analysisResult.analysis} />
@@ -1724,7 +1846,9 @@ export default async function AdminAnalysisReview({
         )}
 
         {!reviewResult.ok ? (
-          <AdminAlert tone="error">{reviewResult.error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={reviewResult.error} />
+          </AdminAlert>
         ) : (
           <HumanReview review={reviewResult.review} />
         )}

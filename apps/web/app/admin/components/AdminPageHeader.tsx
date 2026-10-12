@@ -35,14 +35,16 @@
  * was before this component existed.
  */
 
+import { T } from "../../i18n/client";
+
 export function AdminPageHeader({
-  legend = "Administration",
+  legend = <T k="admin.common.legend" />,
   title,
   description,
   actions,
 }: {
-  legend?: string;
-  title: string;
+  legend?: React.ReactNode;
+  title: React.ReactNode;
   description?: React.ReactNode;
   actions?: React.ReactNode;
 }) {

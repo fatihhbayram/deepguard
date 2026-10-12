@@ -35,6 +35,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { fetchSession } from "../../analysis";
+import { CanonicalLabel, T } from "../../i18n/client";
 import { ADMIN_API_KEYS_PATH, LOGIN_PATH } from "../../session";
 import { AdminAlert } from "../components/AdminAlert";
 import { AdminPageHeader } from "../components/AdminPageHeader";
@@ -66,7 +67,7 @@ import { CreateKey } from "./create-key";
 function Status({ active }: { active: boolean }) {
   return (
     <AdminStatusBadge tone={active ? "neutral" : "negative"} dot>
-      {active ? "Active" : "Revoked"}
+      <T k={active ? "admin.apiKeys.active" : "admin.apiKeys.revoked"} />
     </AdminStatusBadge>
   );
 }
@@ -88,7 +89,11 @@ function Status({ active }: { active: boolean }) {
  */
 function RevokeControl({ apiKey, confirming }: { apiKey: AdminApiKey; confirming: boolean }) {
   if (!apiKey.is_active) {
-    return <span className="text-[12px] text-muted">Revoked</span>;
+    return (
+      <span className="text-[12px] text-muted">
+        <T k="admin.apiKeys.revoked" />
+      </span>
+    );
   }
 
   if (!confirming) {
@@ -97,7 +102,7 @@ function RevokeControl({ apiKey, confirming }: { apiKey: AdminApiKey; confirming
         href={`${ADMIN_API_KEYS_PATH}?revoking=${encodeURIComponent(apiKey.id)}`}
         className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
       >
-        Revoke
+        <T k="admin.apiKeys.revoke" />
       </Link>
     );
   }
@@ -106,7 +111,10 @@ function RevokeControl({ apiKey, confirming }: { apiKey: AdminApiKey; confirming
     <div className="flex flex-wrap items-center gap-2">
       {/* Named, so the confirmation is about this key rather than about "the selected one". */}
       <span className="text-[12px] text-muted">
-        Revoke <span className="text-bone">{apiKey.name}</span>? This cannot be undone.
+        <T
+          k="admin.apiKeys.confirmQuestion"
+          values={{ name: <span className="text-bone">{apiKey.name}</span> }}
+        />
       </span>
       <form action="/admin/revoke-api-key" method="post">
         <input type="hidden" name="key_id" value={apiKey.id} />
@@ -114,14 +122,14 @@ function RevokeControl({ apiKey, confirming }: { apiKey: AdminApiKey; confirming
           type="submit"
           className="rounded-md border border-rose-500/40 px-3 py-1.5 text-[12px] font-medium text-rose-200 transition-colors duration-150 hover:border-rose-400"
         >
-          Confirm
+          <T k="admin.apiKeys.confirm" />
         </button>
       </form>
       <Link
         href={ADMIN_API_KEYS_PATH}
         className="text-[12px] text-muted underline hover:text-bone"
       >
-        Cancel
+        <T k="admin.common.cancel" />
       </Link>
     </div>
   );
@@ -154,7 +162,7 @@ function KeyRow({ apiKey, confirming }: { apiKey: AdminApiKey; confirming: boole
           {/* Null until the key has authenticated something. Nothing writes this column yet,
               so it reads "never used" on every row today; it is shown because the day it is
               written, this is the field that says whether a key is safe to revoke. */}
-          {apiKey.last_used_at ?? "never used"}
+          {apiKey.last_used_at ?? <T k="admin.apiKeys.neverUsed" />}
         </div>
       </div>
 
@@ -170,10 +178,18 @@ function KeyRow({ apiKey, confirming }: { apiKey: AdminApiKey; confirming: boole
 function KeyHeader() {
   return (
     <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,auto)] gap-6 px-5 py-3 text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
-      <div>Key</div>
-      <div>Status</div>
-      <div>Issued / last used</div>
-      <div className="text-right">Manage</div>
+      <div>
+        <T k="admin.apiKeys.column.key" />
+      </div>
+      <div>
+        <T k="admin.apiKeys.column.status" />
+      </div>
+      <div>
+        <T k="admin.apiKeys.column.issued" />
+      </div>
+      <div className="text-right">
+        <T k="admin.apiKeys.column.manage" />
+      </div>
     </div>
   );
 }
@@ -211,8 +227,8 @@ export default async function ApiKeys({
   return (
     <>
       <AdminPageHeader
-        title="API keys"
-        description="The credentials customers authenticate the public API with. A key is shown in full once, when it is issued, and never again — InspectRoot stores only a hash of it. Revoking a key ends its access immediately and leaves the analyses it submitted on file."
+        title={<T k="admin.apiKeys.title" />}
+        description={<T k="admin.apiKeys.description" />}
         actions={
           // A reload of this page, and deliberately a link rather than a button: the table is a
           // view of state another administrator can change, and the only script on this screen
@@ -221,7 +237,7 @@ export default async function ApiKeys({
             href={ADMIN_API_KEYS_PATH}
             className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
           >
-            Refresh
+            <T k="admin.common.refresh" />
           </Link>
         }
       />
@@ -232,23 +248,25 @@ export default async function ApiKeys({
           component below exists for. */}
       {error && (
         <div className="mt-5">
-          <AdminAlert tone="error">{error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={error} />
+          </AdminAlert>
         </div>
       )}
       {revoked !== null && !error && (
         <div className="mt-5">
           <AdminAlert tone="success">
-            Key revoked
-            {revoked ? <span className="font-mono"> · {revoked.slice(0, 8)}</span> : null}. It no
-            longer authenticates the public API.
+            <T k="admin.apiKeys.revokedNotice" />
+            {revoked ? <span className="font-mono"> · {revoked.slice(0, 8)}</span> : null}.{" "}
+            <T k="admin.apiKeys.revokedNoticeDetail" />
           </AdminAlert>
         </div>
       )}
 
       <div className="mt-5 space-y-5">
         <AdminSection
-          title="Issue a key"
-          description="The name is a label for this table and the audit log. It is not part of the credential and nothing authenticates by it."
+          title={<T k="admin.apiKeys.issueTitle" />}
+          description={<T k="admin.apiKeys.issueDescription" />}
         >
           <div className="mt-4">
             <CreateKey signInPath={LOGIN_PATH} />
@@ -256,11 +274,13 @@ export default async function ApiKeys({
         </AdminSection>
 
         {!result.ok ? (
-          <AdminAlert tone="error">{result.error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={result.error} />
+          </AdminAlert>
         ) : result.keys.length === 0 ? (
           <AdminSection>
             <p className="text-center text-[13px] text-muted">
-              No API keys have been issued. The public API cannot be reached without one.
+              <T k="admin.apiKeys.empty" />
             </p>
           </AdminSection>
         ) : (

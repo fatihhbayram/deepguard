@@ -55,6 +55,8 @@ import { redirect } from "next/navigation";
 
 import { fetchSession } from "../../analysis";
 import { ANALYSIS_STATUS_FAILED } from "../../analysis";
+import { type CanonicalDomain } from "../../i18n/core";
+import { CanonicalLabel, MessageTitle, T } from "../../i18n/client";
 import { ADMIN_ANALYTICS_PATH, LOGIN_PATH } from "../../session";
 import { AdminAlert } from "../components/AdminAlert";
 import { AdminPageHeader } from "../components/AdminPageHeader";
@@ -93,10 +95,13 @@ function Distribution({
   title,
   note,
   counts,
+  domain,
 }: {
-  title: string;
-  note: string;
+  title: React.ReactNode;
+  note: React.ReactNode;
   counts: Record<string, number>;
+  /** The API vocabulary the categories are in, when this build names it; otherwise raw. */
+  domain?: CanonicalDomain;
 }) {
   const entries = Object.entries(counts);
   // The divisor for the bars. Never zero: a week in which every category is zero would make
@@ -129,8 +134,14 @@ function Distribution({
             key={category}
             className="grid grid-cols-[minmax(0,1fr)_72px_2.75rem] items-center gap-3 py-1"
           >
-            <dt className="truncate font-mono text-[11px] tracking-[0.06em] text-muted uppercase">
-              {category}
+            {/* `lang="en"`: a category drawn as the API spelled it — a verdict, a level, a
+                ruleset/value pair — is cased by English rules; a category this build names is a
+                leaf that names its own language. */}
+            <dt
+              lang="en"
+              className="truncate font-mono text-[11px] tracking-[0.06em] text-muted uppercase"
+            >
+              {domain === undefined ? category : <CanonicalLabel domain={domain} value={category} />}
             </dt>
             {/* Decoration over the number beside it, and marked as such: the reading is the
                 figure in the `dd`, and a screen reader that announced the track as well would be
@@ -166,9 +177,9 @@ function Kpi({
   note,
   primary = false,
 }: {
-  label: string;
+  label: React.ReactNode;
   value: number;
-  note: string;
+  note: React.ReactNode;
   primary?: boolean;
 }) {
   return (
@@ -207,19 +218,19 @@ function Headline({ analytics }: { analytics: AdminAnalytics }) {
     <dl className="grid gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-3">
       <Kpi
         primary
-        label="Analyses submitted"
+        label={<T k="admin.analytics.kpi.analysesSubmitted" />}
         value={analytics.analyses_total}
-        note="Across every account, last seven days."
+        note={<T k="admin.analytics.kpi.analysesSubmittedNote" />}
       />
       <Kpi
-        label="Analyses failed"
+        label={<T k="admin.analytics.kpi.analysesFailed" />}
         value={analytics.analyses_by_status[ANALYSIS_STATUS_FAILED]}
-        note="Submissions the pipeline could not complete."
+        note={<T k="admin.analytics.kpi.analysesFailedNote" />}
       />
       <Kpi
-        label="Jobs failed"
+        label={<T k="admin.analytics.kpi.jobsFailed" />}
         value={analytics.jobs_by_status[JOB_STATUS_FAILED]}
-        note="Counted separately from the analyses beside them."
+        note={<T k="admin.analytics.kpi.jobsFailedNote" />}
       />
     </dl>
   );
@@ -254,7 +265,7 @@ function Detectors({ detectors }: { detectors: DetectorHealth[] }) {
   if (detectors.length === 0) {
     return (
       <p className="text-[13px] text-muted">
-        No detector recorded a result in the last seven days.
+        <T k="admin.analytics.detectors.empty" />
       </p>
     );
   }
@@ -265,22 +276,22 @@ function Detectors({ detectors }: { detectors: DetectorHealth[] }) {
         <thead>
           <tr className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
             <th scope="col" className="px-5 py-3 font-medium">
-              Provider
+              <T k="admin.analytics.detectors.provider" />
             </th>
             <th scope="col" className="px-5 py-3 font-medium">
-              Version
+              <T k="admin.analytics.detectors.version" />
             </th>
             {statuses.map((status) => (
-              <th key={status} scope="col" className="px-5 py-3 text-right font-medium">
-                {status}
+              <th key={status} lang="en" scope="col" className="px-5 py-3 text-right font-medium">
+                <CanonicalLabel domain="signalStatus" value={status} />
               </th>
             ))}
-            <th
-              scope="col"
-              className="px-5 py-3 text-right font-medium"
-              title="(FAILED + TIMEOUT) / (SUCCESS + FAILED + TIMEOUT), computed by the API. Operational execution failures and timeouts only — not a model error or false-positive rate."
-            >
-              Failure rate
+            <th scope="col" className="px-5 py-3 text-right font-medium">
+              {/* The formula keeps the API's status names in English, which is what the column
+                  headings beside it say in English; the hover text around it is translated. */}
+              <MessageTitle k="admin.analytics.detectors.failureRateTitle">
+                <T k="admin.analytics.detectors.failureRate" />
+              </MessageTitle>
             </th>
           </tr>
         </thead>
@@ -354,7 +365,7 @@ function FeedbackTable({
   title,
   buckets,
 }: {
-  title: string;
+  title: React.ReactNode;
   buckets: Record<string, FeedbackBucket>;
 }) {
   const verdicts = Object.keys(buckets);
@@ -371,18 +382,18 @@ function FeedbackTable({
         <thead>
           <tr className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
             <th scope="col" className="px-5 py-3 font-medium">
-              Verdict shown
+              <T k="admin.analytics.feedback.verdictShown" />
             </th>
             <th scope="col" className="px-5 py-3 text-right font-medium">
-              Feedback
+              <T k="admin.analytics.feedback.feedback" />
             </th>
             {assessments.map((assessment) => (
-              <th key={assessment} scope="col" className="px-5 py-3 text-right font-medium">
-                {assessment}
+              <th key={assessment} lang="en" scope="col" className="px-5 py-3 text-right font-medium">
+                <CanonicalLabel domain="feedbackAssessmentCode" value={assessment} />
               </th>
             ))}
             <th scope="col" className="px-5 py-3 text-right font-medium">
-              User disagreement rate
+              <T k="admin.analytics.feedback.disagreementRate" />
             </th>
           </tr>
         </thead>
@@ -436,62 +447,65 @@ function FeedbackActivity({ analytics }: { analytics: AdminAnalytics }) {
         id="user-feedback-activity"
         className="text-[11px] font-medium tracking-[0.12em] text-bone uppercase"
       >
-        User feedback activity
+        <T k="admin.analytics.feedback.title" />
       </h3>
       <div className="mt-2 max-w-[74ch] space-y-1.5 text-[12px] leading-relaxed text-muted">
         <p>
-          This reflects the current state of user feedback modified in the last 7 days, not a
-          submission count or event log.
+          <T k="admin.analytics.feedback.state" />
         </p>
         <p>
-          User feedback represents unverified end-user opinions. Disagreement rate is not a False
-          Positive or Error rate.
+          <T k="admin.analytics.feedback.unverified" />
         </p>
       </div>
 
       <dl className="mt-4 grid gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-2">
         <Kpi
-          label="Feedback in window"
+          label={<T k="admin.analytics.kpi.feedbackInWindow" />}
           value={analytics.feedback_total}
-          note="Feedback records created or changed in the last seven days."
+          note={<T k="admin.analytics.kpi.feedbackInWindowNote" />}
         />
         <Kpi
-          label="Without a claimed label"
+          label={<T k="admin.analytics.kpi.withoutClaim" />}
           value={analytics.feedback_without_claimed_label}
-          note="Feedback where the user did not say what they believe the media is."
+          note={<T k="admin.analytics.kpi.withoutClaimNote" />}
         />
       </dl>
 
       <div className="mt-4 grid items-start gap-4 sm:grid-cols-2">
         <Distribution
-          title="Feedback by assessment"
-          note="What users made of the result they were shown."
+          title={<T k="admin.analytics.dist.byAssessment" />}
+          note={<T k="admin.analytics.dist.byAssessmentNote" />}
           counts={analytics.feedback_by_assessment}
+          domain="feedbackAssessmentCode"
         />
         <Distribution
-          title="Claimed label"
-          note="What users say the media is. A claim, not Ground Truth, and never used to score a detector."
+          title={<T k="admin.analytics.dist.claimedLabel" />}
+          note={<T k="admin.analytics.dist.claimedLabelNote" />}
           counts={analytics.feedback_by_claimed_label}
+          domain="claimedLabelCode"
         />
       </div>
 
       <p className="mt-6 max-w-[74ch] text-[12px] leading-relaxed text-muted">
-        By the verdict on the analysis the feedback is about, placed exactly as the counts above
-        place the analyses. The user disagreement rate is DISAGREE over that verdict&rsquo;s
-        feedback, as the API computed it; a dash means nobody gave feedback on it.
+        <T k="admin.analytics.feedback.byVerdict" />
       </p>
       <div className="mt-3 space-y-4">
         <FeedbackTable
-          title="Decisions (r9-v5.0.0)"
+          title={<T k="admin.analytics.feedback.decisions" values={{ ruleset: "r9-v5.0.0" }} />}
           buckets={analytics.feedback_by_decision}
         />
         <FeedbackTable
-          title="Recorded risk levels (p7-v1.0.0 – r7-v4.0.0)"
+          title={
+            <T
+              k="admin.analytics.feedback.levels"
+              values={{ first: "p7-v1.0.0", last: "r7-v4.0.0" }}
+            />
+          }
           buckets={analytics.feedback_by_recorded_risk_level}
         />
         {Object.keys(analytics.feedback_by_unrecognised_risk_state).length > 0 && (
           <FeedbackTable
-            title="Unrecognised risk values"
+            title={<T k="admin.analytics.dist.unrecognised" />}
             buckets={analytics.feedback_by_unrecognised_risk_state}
           />
         )}
@@ -518,41 +532,44 @@ function Summary({ analytics }: { analytics: AdminAnalytics }) {
           failed to load the rest of itself. */}
       <div className="mt-4 grid items-start gap-4 sm:grid-cols-2">
         <Distribution
-          title="Analyses by status"
-          note="Where each submission got to."
+          title={<T k="admin.analytics.dist.analyses" />}
+          note={<T k="admin.analytics.dist.analysesNote" />}
           counts={analytics.analyses_by_status}
+          domain="analysisStatus"
         />
         <Distribution
-          title="Detection jobs by status"
-          note="The queue behind those submissions. Counted separately from the analyses above rather than assumed to match them."
+          title={<T k="admin.analytics.dist.jobs" />}
+          note={<T k="admin.analytics.dist.jobsNote" />}
           counts={analytics.jobs_by_status}
+          domain="jobStatus"
         />
         {/* The risk column holds two vocabularies, drawn as two lists so a legacy level never
             sits in the list of verdicts (R13-T2). The API places every row by the ruleset
             version stored with it (R13-T3); this page draws its three maps as they arrive and
             translates nothing across. */}
         <Distribution
-          title="Decisions recorded"
-          note="r9-v5.0.0 verdicts, as persisted on the analysis. UNDECIDED means no decision of any kind has been written yet. Legacy risk levels are counted in their own list and are never added to these."
+          title={<T k="admin.analytics.dist.decisions" />}
+          note={<T k="admin.analytics.dist.decisionsNote" />}
           counts={analytics.decisions}
         />
         <Distribution
-          title="Recorded risk level"
-          note="Levels written by the rulesets p7-v1.0.0 through r7-v4.0.0, as persisted. Not verdicts and not translated into one: a HIGH is not a detection. UNKNOWN is a decision the risk engine reached, unlike UNDECIDED."
+          title={<T k="admin.analytics.dist.levels" />}
+          note={<T k="admin.analytics.dist.levelsNote" />}
           counts={analytics.recordedRiskLevels}
         />
         <Distribution
-          title="How the media arrived"
-          note="By acquisition method. 'unrecorded' is media stored before this was kept, not a third way in."
+          title={<T k="admin.analytics.dist.acquisition" />}
+          note={<T k="admin.analytics.dist.acquisitionNote" />}
           counts={analytics.acquisition}
+          domain="acquisitionMethod"
         />
         {/* Only when the week holds a stored value that does not belong to the ruleset stamped
             on it. Carried through under its ruleset and value, as the API carries it, rather
             than dropped or filed into a list it does not belong to. */}
         {Object.keys(analytics.unrecognised).length > 0 && (
           <Distribution
-            title="Unrecognised risk values"
-            note="Ruleset / value pairs that fit neither list: a value outside its ruleset's vocabulary, or a ruleset this build did not write. Shown as stored, not as a verdict or a level."
+            title={<T k="admin.analytics.dist.unrecognised" />}
+            note={<T k="admin.analytics.dist.unrecognisedNote" />}
             counts={analytics.unrecognised}
           />
         )}
@@ -560,18 +577,10 @@ function Summary({ analytics }: { analytics: AdminAnalytics }) {
 
       <section className="mt-6">
         <h3 className="text-[11px] font-medium tracking-[0.12em] text-bone uppercase">
-          Detector health
+          <T k="admin.analytics.detectors.title" />
         </h3>
         <p className="mt-1.5 max-w-[74ch] text-[12px] leading-relaxed text-muted">
-          How often each provider&rsquo;s runs ended in each state, by provider and version,
-          over the same seven days. These are operational execution errors, not model evaluation
-          errors: a FAILED or TIMEOUT run means the provider could not answer, never that the
-          media is fake, and the failure rate is not a false-positive or error rate of any
-          detector. MISSING counts analyses completed in these seven days whose ruleset expected
-          this detector but which have no result from it at all; a FAILED or TIMEOUT result is not also counted as
-          missing, and analyses still in progress are not counted. A provider is listed only if
-          it recorded a result or had one go missing — one that appears nowhere below was not
-          asked. No scores are shown, averaged or compared.
+          <T k="admin.analytics.detectors.description" />
         </p>
         <div className="mt-3">
           <Detectors detectors={analytics.detectors_health} />
@@ -597,8 +606,8 @@ export default async function AdminAnalyticsPage() {
   return (
     <>
       <AdminPageHeader
-        title="Operational summary"
-        description="What this deployment has processed over the last seven days. Every figure is a count of stored rows, aggregated by the database at the moment this page was requested; nothing here is averaged, scored or ranked. The window is fixed and there is no date filter."
+        title={<T k="admin.analytics.title" />}
+        description={<T k="admin.analytics.description" />}
         actions={
           // A reload of this page, and deliberately a link rather than a button: the counts move
           // on their own and there is no JavaScript here to notice when they do. The cross-links
@@ -607,14 +616,16 @@ export default async function AdminAnalyticsPage() {
             href={ADMIN_ANALYTICS_PATH}
             className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
           >
-            Refresh
+            <T k="admin.common.refresh" />
           </Link>
         }
       />
 
       <div className="mt-5">
         {!result.ok ? (
-          <AdminAlert tone="error">{result.error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={result.error} />
+          </AdminAlert>
         ) : (
           // No empty branch. A week with nothing in it renders as zeros, which is a reading —
           // "nothing was submitted" — and swapping it for a placeholder sentence would throw

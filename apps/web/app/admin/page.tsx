@@ -56,6 +56,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { fetchSession } from "../analysis";
+import { CanonicalLabel, MessageOption, T } from "../i18n/client";
 import {
   ADMIN_PATH,
   LOGIN_PATH,
@@ -91,7 +92,7 @@ import { MINIMUM_PASSWORD_LENGTH, AdminAccount, fetchAccounts } from "./users";
 function Activity({ active }: { active: boolean }) {
   return (
     <AdminStatusBadge tone={active ? "neutral" : "negative"} dot>
-      {active ? "Active" : "Deactivated"}
+      <T k={active ? "admin.accounts.active" : "admin.accounts.deactivated"} />
     </AdminStatusBadge>
   );
 }
@@ -121,7 +122,7 @@ function RoleControl({ account }: { account: AdminAccount }) {
     <form action="/admin/update-user" method="post" className="flex items-center gap-2">
       <input type="hidden" name="user_id" value={account.id} />
       <label className="sr-only" htmlFor={`role-${account.id}`}>
-        Role for {account.email}
+        <T k="admin.accounts.roleFor" values={{ email: account.email }} />
       </label>
       <select
         id={`role-${account.id}`}
@@ -129,14 +130,14 @@ function RoleControl({ account }: { account: AdminAccount }) {
         defaultValue={account.role}
         className="rounded-md border border-line bg-ink px-2.5 py-1.5 text-[12px] text-bone transition-colors duration-150 hover:border-rule"
       >
-        <option value={USER_ROLE_USER}>User</option>
-        <option value={USER_ROLE_ADMIN}>Admin</option>
+        <MessageOption value={USER_ROLE_USER} k="admin.accounts.role.user" />
+        <MessageOption value={USER_ROLE_ADMIN} k="admin.accounts.role.admin" />
       </select>
       <button
         type="submit"
         className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
       >
-        Apply
+        <T k="admin.accounts.apply" />
       </button>
     </form>
   );
@@ -159,7 +160,7 @@ function ActivityControl({ account }: { account: AdminAccount }) {
         type="submit"
         className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
       >
-        {account.is_active ? "Deactivate" : "Reactivate"}
+        <T k={account.is_active ? "admin.accounts.deactivate" : "admin.accounts.reactivate"} />
       </button>
     </form>
   );
@@ -199,7 +200,7 @@ function CreateAccount() {
     // `rounded-md border border-line bg-ink-2` — which is what the consolidation was about.
     <details className="overflow-hidden rounded-md border border-line bg-ink-2">
       <summary className="cursor-pointer px-5 py-4 text-[13px] font-medium text-bone select-none">
-        Create an account
+        <T k="admin.accounts.createDisclosure" />
       </summary>
 
       <form
@@ -208,9 +209,7 @@ function CreateAccount() {
         className="border-t border-hair px-5 py-5"
       >
         <p className="max-w-[68ch] text-[13px] leading-relaxed text-muted">
-          The password is set here and told to the person by whoever creates the account. This
-          deployment sends no mail, so there is no invitation and no reset link — an account that
-          needs a new password gets one from its own page.
+          <T k="admin.accounts.createIntro" />
         </p>
 
         <div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,1fr)]">
@@ -219,7 +218,7 @@ function CreateAccount() {
               htmlFor="new-account-email"
               className="block text-[11px] font-medium tracking-[0.08em] text-muted uppercase"
             >
-              Email
+              <T k="admin.accounts.email" />
             </label>
             <input
               id="new-account-email"
@@ -236,7 +235,7 @@ function CreateAccount() {
               htmlFor="new-account-password"
               className="block text-[11px] font-medium tracking-[0.08em] text-muted uppercase"
             >
-              Password
+              <T k="admin.accounts.password" />
             </label>
             <input
               id="new-account-password"
@@ -248,7 +247,7 @@ function CreateAccount() {
               className="mt-1.5 w-full rounded-md border border-line bg-ink px-2.5 py-1.5 font-mono text-[12px] text-bone transition-colors duration-150 hover:border-rule"
             />
             <p className="mt-1.5 text-[11px] text-muted">
-              At least {MINIMUM_PASSWORD_LENGTH} characters.
+              <T k="admin.accounts.passwordHelp" values={{ count: MINIMUM_PASSWORD_LENGTH }} />
             </p>
           </div>
 
@@ -257,7 +256,7 @@ function CreateAccount() {
               htmlFor="new-account-role"
               className="block text-[11px] font-medium tracking-[0.08em] text-muted uppercase"
             >
-              Role
+              <T k="admin.accounts.role" />
             </label>
             <select
               id="new-account-role"
@@ -265,8 +264,8 @@ function CreateAccount() {
               defaultValue={USER_ROLE_USER}
               className="mt-1.5 w-full rounded-md border border-line bg-ink px-2.5 py-1.5 text-[12px] text-bone transition-colors duration-150 hover:border-rule"
             >
-              <option value={USER_ROLE_USER}>User</option>
-              <option value={USER_ROLE_ADMIN}>Admin</option>
+              <MessageOption value={USER_ROLE_USER} k="admin.accounts.role.user" />
+              <MessageOption value={USER_ROLE_ADMIN} k="admin.accounts.role.admin" />
             </select>
           </div>
         </div>
@@ -275,7 +274,7 @@ function CreateAccount() {
           type="submit"
           className="mt-4 rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
         >
-          Create account
+          <T k="admin.accounts.createSubmit" />
         </button>
       </form>
     </details>
@@ -311,7 +310,7 @@ function AccountRow({ account, self }: { account: AdminAccount; self: boolean })
       </div>
 
       <div className="text-[13px] text-bone">
-        {account.role === USER_ROLE_ADMIN ? "Admin" : "User"}
+        <T k={account.role === USER_ROLE_ADMIN ? "admin.accounts.role.admin" : "admin.accounts.role.user"} />
       </div>
 
       <div>
@@ -330,13 +329,13 @@ function AccountRow({ account, self }: { account: AdminAccount; self: boolean })
           // a role change that is not a change nobody can undo.
           <>
             <span className="text-[12px] text-muted">
-              Your own account — another administrator must change it.
+              <T k="admin.accounts.ownAccount" />
             </span>
             <Link
               href={adminAccountPath(account.id)}
               className="text-[12px] text-muted underline hover:text-bone"
             >
-              Open
+              <T k="admin.accounts.open" />
             </Link>
           </>
         ) : (
@@ -362,10 +361,18 @@ function AccountRow({ account, self }: { account: AdminAccount; self: boolean })
 function AccountHeader() {
   return (
     <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,auto)] gap-6 px-5 py-3 text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
-      <div>Account</div>
-      <div>Role</div>
-      <div>Status</div>
-      <div className="text-right">Change</div>
+      <div>
+        <T k="admin.accounts.column.account" />
+      </div>
+      <div>
+        <T k="admin.accounts.column.role" />
+      </div>
+      <div>
+        <T k="admin.accounts.column.status" />
+      </div>
+      <div className="text-right">
+        <T k="admin.accounts.column.change" />
+      </div>
     </div>
   );
 }
@@ -404,8 +411,8 @@ export default async function Admin({
   return (
     <>
       <AdminPageHeader
-        title="Accounts"
-        description="Every account in this deployment, including the ones that can no longer sign in. Changing a role grants or withdraws access to this surface; deactivating an account ends its ability to sign in and leaves the analyses it submitted on file."
+        title={<T k="admin.accounts.title" />}
+        description={<T k="admin.accounts.description" />}
         actions={
           // A reload of this page, and deliberately a link rather than a button: the table is a
           // view of state another administrator can change, and there is no JavaScript here to
@@ -414,7 +421,7 @@ export default async function Admin({
             href={ADMIN_PATH}
             className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
           >
-            Refresh
+            <T k="admin.common.refresh" />
           </Link>
         }
       />
@@ -424,13 +431,15 @@ export default async function Admin({
           client-facing sentence — which rule the change broke — rendered as text. */}
       {error && (
         <div className="mt-5">
-          <AdminAlert tone="error">{error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={error} />
+          </AdminAlert>
         </div>
       )}
       {updated !== null && !error && (
         <div className="mt-5">
           <AdminAlert tone="success">
-            Account updated
+            <T k="admin.accounts.updated" />
             {updated ? <span className="font-mono"> · {updated.slice(0, 8)}</span> : null}.
           </AdminAlert>
         </div>
@@ -438,15 +447,19 @@ export default async function Admin({
       {createdAccount !== null && !error && (
         <div className="mt-5">
           <AdminAlert tone="success">
-            Account created. The password is not recoverable from anywhere — tell the person what
-            it is, or set a new one from{" "}
-            <Link
-              href={adminAccountPath(createdAccount)}
-              className="underline hover:text-bone"
-            >
-              their account page
-            </Link>
-            .
+            <T
+              k="admin.accounts.created"
+              values={{
+                link: (
+                  <Link
+                    href={adminAccountPath(createdAccount)}
+                    className="underline hover:text-bone"
+                  >
+                    <T k="admin.accounts.createdLink" />
+                  </Link>
+                ),
+              }}
+            />
           </AdminAlert>
         </div>
       )}
@@ -455,7 +468,9 @@ export default async function Admin({
         <CreateAccount />
 
         {!result.ok ? (
-          <AdminAlert tone="error">{result.error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={result.error} />
+          </AdminAlert>
         ) : (
           <AdminSection bleed scroll>
             {/* Wide enough for the four columns to keep their proportions; below that the

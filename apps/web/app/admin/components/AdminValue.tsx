@@ -24,7 +24,7 @@ export function AdminValue({
   children,
   className = "",
 }: {
-  children: string | null;
+  children: React.ReactNode;
   className?: string;
 }) {
   return children === null ? (

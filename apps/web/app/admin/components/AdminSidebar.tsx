@@ -30,7 +30,7 @@
 
 import Link from "next/link";
 
-import { LanguageSelector, T } from "../../i18n/client";
+import { LanguageSelector, MessageNav, T } from "../../i18n/client";
 import type { MessageKey } from "../../i18n/core";
 import { AdminNavLink } from "./AdminNavLink";
 import {
@@ -79,7 +79,9 @@ const GROUPS: {
 
 export function AdminSidebar() {
   return (
-    <nav aria-label="Administration" className="flex h-full flex-col px-3 py-4">
+    // The rail's accessible name is screen-reader copy, so it is in the reader's language too; the
+    // `<nav>` is a client leaf and everything inside it is still rendered here, on the server.
+    <MessageNav k="nav.label" className="flex h-full flex-col px-3 py-4">
       <div className="flex items-center gap-2.5 px-3 pb-4">
         <span aria-hidden className="size-1.5 rounded-full bg-accent" />
         {/* The product's name in the UI typeface, matching the workspace's own bar: it is a
@@ -133,6 +135,6 @@ export function AdminSidebar() {
       <div className="mt-3 border-t border-hair pt-3">
         <LanguageSelector />
       </div>
-    </nav>
+    </MessageNav>
   );
 }

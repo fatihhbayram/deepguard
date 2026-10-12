@@ -94,10 +94,12 @@ export default async function AdminLayout({
 
         {/* The one `main` on this surface. Every page below returns its content into it, which
             is what makes the page gutter a single decision instead of seven. */}
-        {/* `lang="en"`: the console's pages are English (R16-T2 localizes the rail, not them),
-            and under a Turkish `<html lang>` their `uppercase` labels would otherwise be cased
-            by Turkish rules. The translated words inside name their own language. */}
-        <main lang="en" className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-8 sm:px-6 lg:px-8">
+        {/* No `lang` of its own (R16 admin localization): the pages below are drawn in the
+            reader's language, which `<html lang>` already names. This stays a server component —
+            each translated word is a `<T>` leaf that names its own language — and a raw machine
+            value drawn under `uppercase` is marked `lang="en"` where it is drawn, so Turkish
+            casing never reaches it. */}
+        <main className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-8 sm:px-6 lg:px-8">
           {children}
         </main>
       </div>

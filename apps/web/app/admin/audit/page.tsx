@@ -26,6 +26,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { fetchSession } from "../../analysis";
+import { CanonicalLabel, T } from "../../i18n/client";
 import { ADMIN_AUDIT_PATH, LOGIN_PATH } from "../../session";
 import { AdminAlert } from "../components/AdminAlert";
 import { AdminPageHeader } from "../components/AdminPageHeader";
@@ -82,7 +83,9 @@ function Diff({ changes }: { changes: Record<string, FieldChange> }) {
     <dl className="space-y-1">
       {entries.map(([field, change]) => (
         <div key={field} className="flex flex-wrap items-baseline gap-x-2">
-          <dt className="font-mono text-[11px] tracking-[0.06em] text-muted uppercase">
+          {/* The field's name as the API wrote it — a column name, never translated, and marked
+              English so a Turkish page cannot case `is_active` into `İS_ACTİVE`. */}
+          <dt lang="en" className="font-mono text-[11px] tracking-[0.06em] text-muted uppercase">
             {field}
           </dt>
           <dd className="font-mono text-[12px] text-bone">
@@ -93,7 +96,9 @@ function Diff({ changes }: { changes: Record<string, FieldChange> }) {
             {/* The arrow is decorative; the reading order of the two values already carries
                 "from this, to this", and a screen reader announcing "right arrow" between them
                 adds noise rather than meaning. */}
-            <span className="sr-only">to </span>
+            <span className="sr-only">
+              <T k="admin.audit.diffTo" />{" "}
+            </span>
             {recorded(change.new)}
           </dd>
         </div>
@@ -115,7 +120,11 @@ function EventRow({ event }: { event: AdminAuditEntry }) {
             true: it is what the database can be queried by, and it does not change when
             somebody renames themselves. */}
         <div className="truncate text-[13px] text-bone" title={event.actor_email_snapshot ?? ""}>
-          {event.actor_email_snapshot ?? <span className="text-muted">not recorded</span>}
+          {event.actor_email_snapshot ?? (
+            <span className="text-muted">
+              <T k="admin.common.notRecorded" />
+            </span>
+          )}
         </div>
         <div className="mt-1 truncate" title={event.actor_id}>
           <AdminValue>{event.actor_id}</AdminValue>
@@ -127,19 +136,28 @@ function EventRow({ event }: { event: AdminAuditEntry }) {
           className="truncate text-[13px] text-bone"
           title={event.target_email_snapshot ?? ""}
         >
-          {event.target_email_snapshot ?? <span className="text-muted">not recorded</span>}
+          {event.target_email_snapshot ?? (
+            <span className="text-muted">
+              <T k="admin.common.notRecorded" />
+            </span>
+          )}
         </div>
         <div className="mt-1 truncate" title={event.target_id}>
-          {/* The target's type is carried across as stored. It is `USER` on every row today;
-              it is shown because the day it is not, this column is what says so. */}
-          <AdminValue>{`${event.target_type.toLowerCase()} ${event.target_id}`}</AdminValue>
+          {/* The target's type is carried across as stored, named in the reader's language when
+              this build knows it and drawn exactly as the API spelled it when it does not. It is
+              shown because the day a row names a type nobody expected, this column says so. */}
+          <AdminValue>
+            <CanonicalLabel domain="auditTarget" value={event.target_type} /> {event.target_id}
+          </AdminValue>
         </div>
       </td>
 
       <td className="px-5 py-4">
-        {/* The action as the API recorded it, in the figure typeface and never reworded. */}
+        {/* A known action is named in the reader's language and keeps the API's spelling as
+            `data-canonical`; an action this build does not know is drawn exactly as recorded,
+            in the figure typeface, because that is the row a reader most needs to see as it is. */}
         <AdminStatusBadge tone="neutral" mono>
-          {event.action}
+          <CanonicalLabel domain="auditAction" value={event.action} />
         </AdminStatusBadge>
       </td>
 
@@ -156,7 +174,11 @@ function EventRow({ event }: { event: AdminAuditEntry }) {
           {/* The correlation id of the request that made the change, so one grep covers this
               row and the application's log lines around it. Null on an event written outside a
               request, and shown as absent rather than invented. */}
-          <AdminValue>{event.request_id === null ? null : `request ${event.request_id}`}</AdminValue>
+          <AdminValue>
+            {event.request_id === null ? null : (
+              <T k="admin.common.requestId" values={{ id: event.request_id }} />
+            )}
+          </AdminValue>
         </div>
       </td>
     </tr>
@@ -169,8 +191,7 @@ function AuditTable({ events }: { events: AdminAuditEntry[] }) {
     return (
       <AdminSection>
         <p className="text-[13px] text-muted">
-          No administrative changes have been recorded yet. The log begins where it was
-          introduced; changes made before that were not recorded and are not reconstructed here.
+          <T k="admin.audit.empty" />
         </p>
       </AdminSection>
     );
@@ -182,19 +203,19 @@ function AuditTable({ events }: { events: AdminAuditEntry[] }) {
         <thead>
           <tr className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
             <th scope="col" className="px-5 py-3 font-medium">
-              Administrator
+              <T k="admin.audit.column.administrator" />
             </th>
             <th scope="col" className="px-5 py-3 font-medium">
-              Account changed
+              <T k="admin.audit.column.accountChanged" />
             </th>
             <th scope="col" className="px-5 py-3 font-medium">
-              Action
+              <T k="admin.audit.column.action" />
             </th>
             <th scope="col" className="px-5 py-3 font-medium">
-              What changed
+              <T k="admin.audit.column.whatChanged" />
             </th>
             <th scope="col" className="px-5 py-3 font-medium">
-              When
+              <T k="admin.audit.column.when" />
             </th>
           </tr>
         </thead>
@@ -226,21 +247,14 @@ export default async function AdminAudit() {
   return (
     <>
       <AdminPageHeader
-        title="Audit log"
+        title={<T k="admin.audit.title" />}
         description={
           <>
             <p>
-              Every change an administrator has made to another account, newest first. Each entry
-              is written in the same transaction as the change itself, so a change that was
-              refused or rolled back leaves no entry, and a request that altered nothing leaves
-              none either. The log is append-only: nothing in this application can edit or remove
-              an entry.
+              <T k="admin.audit.intro" />
             </p>
             <p>
-              The addresses below are recorded as they read at the moment of the change, not
-              looked up now — so an entry may name an address an account no longer uses. That is
-              deliberate: an entry is a statement about what happened, and renaming an account
-              does not change what it did.
+              <T k="admin.audit.snapshots" />
             </p>
           </>
         }
@@ -252,14 +266,18 @@ export default async function AdminAudit() {
             href={ADMIN_AUDIT_PATH}
             className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
           >
-            Refresh
+            <T k="admin.common.refresh" />
           </Link>
         }
       />
 
       <div className="mt-5">
         {!result.ok ? (
-          <AdminAlert tone="error">{result.error}</AdminAlert>
+          // The fetcher's sentence, named in the reader's language when it is one of this
+          // application's own; anything else is drawn as it arrived.
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={result.error} />
+          </AdminAlert>
         ) : (
           <AuditTable events={result.events} />
         )}

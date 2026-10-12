@@ -47,8 +47,600 @@ export function isLocale(value: unknown): value is Locale {
  * ingest form and queue furniture, the report's screen-only controls and feedback form, and
  * the error boundaries. The report body's sentences are in `REPORT_COPY` below (R16-T3). The
  * forensic words the dashboard and the admin pages share with the report are translated there
- * only where the report prints them; those two surfaces still print them in English.
+ * only where the report prints them. The R16 admin localization remediation adds the console's own
+ * strings (`ADMIN_MESSAGES` below) and draws the shared forensic sentences on the case review
+ * through `REPORT_COPY`, so the report and the console name a verdict in the same words.
  */
+/*
+ * The administrative console's own interface strings (R16 admin localization). Kept beside the
+ * rest of `MESSAGES` and spread into it, so `<T>` reads them like any other key; split out only
+ * because they are a third of the table. A raw API value — an id, a hash, a timestamp, a ruleset,
+ * a provider, a verdict — is never a key here: it reaches the page through a `{slot}` or a
+ * `CANONICAL` domain, and is drawn as the record holds it.
+ */
+const ADMIN_MESSAGES = {
+  en: {
+    "admin.common.legend": "Administration",
+    "admin.common.refresh": "Refresh",
+    "admin.common.cancel": "Cancel",
+    "admin.common.choose": "Choose…",
+    "admin.common.created": "Created",
+    "admin.common.notRecorded": "not recorded",
+    "admin.common.notRecordedOption": "Not recorded",
+    "admin.common.optional": "(optional)",
+    "admin.common.yes": "yes",
+    "admin.common.no": "no",
+    "admin.common.yesOption": "Yes",
+    "admin.common.noOption": "No",
+    "admin.common.requestId": "request {id}",
+    "admin.accounts.title": "Accounts",
+    "admin.accounts.description": "Every account in this deployment, including the ones that can no longer sign in. Changing a role grants or withdraws access to this surface; deactivating an account ends its ability to sign in and leaves the analyses it submitted on file.",
+    "admin.accounts.createDisclosure": "Create an account",
+    "admin.accounts.createIntro": "The password is set here and told to the person by whoever creates the account. This deployment sends no mail, so there is no invitation and no reset link — an account that needs a new password gets one from its own page.",
+    "admin.accounts.email": "Email",
+    "admin.accounts.password": "Password",
+    "admin.accounts.passwordHelp": "At least {count} characters.",
+    "admin.accounts.role": "Role",
+    "admin.accounts.role.admin": "Admin",
+    "admin.accounts.role.user": "User",
+    "admin.accounts.roleFor": "Role for {email}",
+    "admin.accounts.createSubmit": "Create account",
+    "admin.accounts.active": "Active",
+    "admin.accounts.deactivated": "Deactivated",
+    "admin.accounts.apply": "Apply",
+    "admin.accounts.deactivate": "Deactivate",
+    "admin.accounts.reactivate": "Reactivate",
+    "admin.accounts.ownAccount": "Your own account — another administrator must change it.",
+    "admin.accounts.open": "Open",
+    "admin.accounts.column.account": "Account",
+    "admin.accounts.column.role": "Role",
+    "admin.accounts.column.status": "Status",
+    "admin.accounts.column.change": "Change",
+    "admin.accounts.updated": "Account updated",
+    "admin.accounts.created": "Account created. The password is not recoverable from anywhere — tell the person what it is, or set a new one from {link}.",
+    "admin.accounts.createdLink": "their account page",
+    "admin.account.title": "Account",
+    "admin.account.description": "One account, and everything an administrator can change about it. The list of every account in this deployment is on the accounts page; this screen is about this one.",
+    "admin.account.identifier": "Identifier",
+    "admin.account.changeTitle": "Change this account",
+    "admin.account.changeDescription": "Changing the address renames the account: the old one stops working immediately and the new one starts. It does not sign the person out — a session is bound to the account, not to the address. Changing the role grants or withdraws access to this administrative surface.",
+    "admin.account.ownDescription": "This is your own account. Its address, role and activation must be changed by another administrator — an administrator who demoted or deactivated themselves could no longer reach this page to put it back. You can still reset your own password below.",
+    "admin.account.save": "Save changes",
+    "admin.account.lifecycleTitle": "Ending access",
+    "admin.account.lifecycleDescription": "Deactivating is how an account is removed here, and there is no delete. An account that has uploaded media is referenced by that media, and the audit log and any case reviews keep its identifier so that who did what stays answerable — deleting the row would either fail outright or erase that history. A deactivated account cannot sign in and its existing sessions stop working, while everything it submitted remains attributable. It can be reactivated from this page at any time.",
+    "admin.account.deactivate": "Deactivate account",
+    "admin.account.reactivate": "Reactivate account",
+    "admin.account.resetTitle": "Reset the password",
+    "admin.account.resetDescription": "Setting a password here replaces the old one and immediately ends every session this account has open, so anyone signed in as it is signed out. The password is stored only as a hash and cannot be read back from anywhere — tell the person what it is, because nothing in this deployment sends mail.",
+    "admin.account.resetSelf": "This is your own account: saving will sign you out, and you will need to sign back in with the password you set here.",
+    "admin.account.newPassword": "New password",
+    "admin.account.resetSubmit": "Reset password",
+    "admin.account.passwordReset": "Password reset. Every session this account had open has been ended.",
+    "admin.jobs.title": "Detection jobs",
+    "admin.jobs.description": "The most recent detection work in this deployment, newest first. A job marked stale was claimed by a worker whose lease has since expired; recovery fails those on its next pass and nothing here changes them. Failures carry the message the worker recorded.",
+    "admin.jobs.column.analysis": "Analysis",
+    "admin.jobs.column.state": "State",
+    "admin.jobs.column.timestamps": "Timestamps",
+    "admin.jobs.created": "Created",
+    "admin.jobs.updated": "Updated",
+    "admin.jobs.lease": "Lease",
+    "admin.jobs.jobId": "job {id}",
+    "admin.jobs.stale": "Stale",
+    "admin.jobs.staleTitle": "The worker's claim on this job expired while it was still running. Recovery will fail it on its next pass.",
+    "admin.jobs.empty": "No detection work has been submitted yet.",
+    "admin.queue.title": "Review queue",
+    "admin.queue.description": "Analyses matching the filters below, newest first. Being listed here is not a finding: it means only that the stored facts matched — owner feedback, the recorded decision, a detector that did not answer, or a review not yet closed. Nothing here is ranked or scored, and nothing here changes a result.",
+    "admin.queue.filter.feedback": "Owner feedback",
+    "admin.queue.filter.decision": "Decision ({ruleset})",
+    "admin.queue.filter.signals": "Detector signals",
+    "admin.queue.filter.reviewState": "Review state",
+    "admin.queue.filter.any": "Any",
+    "admin.queue.filter.has": "Has {assessment}",
+    "admin.queue.filter.signalError": "Has FAILED or TIMEOUT",
+    "admin.queue.filter.notClosed": "Not closed (unreviewed or follow-up)",
+    "admin.queue.filter.all": "All, including REVIEWED",
+    "admin.queue.applyFilters": "Apply filters",
+    "admin.queue.reset": "Reset",
+    "admin.queue.decision": "Decision",
+    "admin.queue.recordedRiskLevel": "Recorded risk level",
+    "admin.queue.unrecognised": "Unrecognised",
+    "admin.queue.column.analysis": "Analysis",
+    "admin.queue.column.verdict": "Stored verdict",
+    "admin.queue.column.review": "Review",
+    "admin.queue.column.feedback": "Owner feedback",
+    "admin.queue.column.signalErrors": "Signal errors",
+    "admin.queue.range": "{range} of {total}",
+    "admin.queue.newer": "Newer",
+    "admin.queue.older": "Older",
+    "admin.queue.empty": "No analysis matches these filters.",
+    "admin.case.title": "Case review",
+    "admin.case.description": "One analysis, and what has been said about it. The automated assessment and the provenance reading below it are the forensic record — what the detectors concluded and what the file itself carries — and neither can be edited from anywhere in this application. The human review is a separate record in a separate table: what a reviewer noted, revisable at any time, and never a second answer about the media.",
+    "admin.case.reviewSaved": "Review saved. The forensic result was not changed.",
+    "admin.case.automated.title": "Automated assessment",
+    "admin.case.automated.description": "Committed by the detection pipeline under the ruleset named below, and immutable. There is no control on this card and no route in this application that can alter any value on it — the review beneath is a separate record and does not change what the detectors concluded.",
+    "admin.case.noDecision": "No decision recorded",
+    "admin.case.coverage": "Decision coverage",
+    "admin.case.analysisStatus": "Analysis status",
+    "admin.case.ruleset": "Ruleset",
+    "admin.case.ruleFired": "Rule fired",
+    "admin.case.calibration": "Calibration",
+    "admin.case.submitted": "Submitted",
+    "admin.case.provenance.title": "Authenticity and provenance",
+    "admin.case.provenance.description": "A separate question from the assessment above, answered from separate evidence and recorded separately. Nothing here reports the media as authentic or manipulated: the absence of credentials is not evidence of manipulation, and their presence is not proof of authenticity.",
+    "admin.case.provenance.none": "No provenance reading is stored for this analysis. That is not a failed reading — nothing recorded one, so there is no evidence from this source either way.",
+    "admin.case.provenance.readingStatus": "Reading status",
+    "admin.case.provenance.manifestPresent": "Manifest present in the file",
+    "admin.case.provenance.manifestUnknown": "unknown — the reading failed",
+    "admin.case.provenance.validationState": "Validation state",
+    "admin.case.provenance.claimGenerator": "Claim generator",
+    "admin.case.provenance.signatureIssuer": "Signature issuer",
+    "admin.case.provenance.remoteManifest": "Remote manifest URL",
+    "admin.case.lastChanged": "Last changed",
+    "admin.case.firstWritten": "first written {at}",
+    "admin.case.review.title": "Human review",
+    "admin.case.review.description": "An operational record of whether somebody has looked at this case, and of what they made of the automated assessment — not a second answer about the media. Saving a review leaves the forensic result above exactly as it was, and every change is recorded in the audit log with who made it and when.",
+    "admin.case.review.nobody": "Nobody has reviewed this analysis. That is the state every analysis is in until somebody writes a review here — it is not a record that something is missing, and it says nothing about the forensic result above.",
+    "admin.case.review.assessment": "Analyst assessment",
+    "admin.case.review.disagrees": "This reviewer did not agree with the automated assessment. That is recorded here as their opinion and nothing else: the forensic result above is unchanged, no second classification has been stored, and nothing in this record says which of the two was correct.",
+    "admin.case.review.noAssessment": "No assessment was recorded with this review. Reviews written before this field existed carry none, and none has been assumed for them — that is not the same as undetermined, which is a position somebody took.",
+    "admin.case.review.reviewer": "Reviewer",
+    "admin.case.review.note": "Note",
+    "admin.case.review.noNote": "No note was written with this review.",
+    "admin.case.review.status": "Status",
+    "admin.case.review.opinion": "An opinion about the automated assessment, recorded alongside it and never in place of it. Disagreeing does not change the forensic result above, does not store a second classification, and is not a record of whether the detector was right.",
+    "admin.case.review.noteHelp": "Plain text, at most {count} characters. It is stored exactly as typed and shown as text — nothing here is interpreted as formatting or as a link.",
+    "admin.case.review.save": "Save review",
+    "admin.case.gt.title": "Ground Truth",
+    "admin.case.gt.description": "What this media actually is, stated by somebody in a position to know it and recorded against the original file's SHA-256 — so it applies to every analysis of the same bytes. It is independent of the automated assessment, the provenance reading and the human review above: it is not filled in from them and saving it changes none of them.",
+    "admin.case.gt.none": "No Ground Truth has been recorded for this file. That is not a statement that its origin is unknown — nobody has made a statement about it at all.",
+    "admin.case.gt.label": "Label",
+    "admin.case.gt.sourceClass": "How it is known",
+    "admin.case.gt.recordedBy": "Recorded by",
+    "admin.case.gt.notes": "Notes",
+    "admin.case.gt.noNotes": "No notes were recorded.",
+    "admin.case.gt.notesHelp": "Plain text, stored exactly as typed and shown as text. Leave empty for no notes.",
+    "admin.case.gt.save": "Save Ground Truth",
+    "admin.case.gt.saved": "Ground Truth saved. The automated assessment and the human review were not changed.",
+    "admin.case.gt.noSha": "Ground Truth cannot be recorded because this analysis has no original media SHA-256 identity.",
+    "admin.case.feedback.title": "User feedback",
+    "admin.case.feedback.description": "What the owner of this analysis said about its result. It is an unverified claim by the submitter — not Ground Truth, not a human review, and never used to score the detectors. Giving feedback changes nothing above, and administrators cannot write or edit it.",
+    "admin.case.feedback.assessment": "Assessment of the result",
+    "admin.case.feedback.claim": "User's claim (unverified)",
+    "admin.case.feedback.noClaim": "no claim",
+    "admin.case.feedback.claims": "Claims: {label}",
+    "admin.case.feedback.submittedBy": "Submitted by",
+    "admin.case.feedback.noNotes": "No notes.",
+    "admin.case.feedback.useAsContext": "Use this feedback as context for promotion",
+    "admin.case.feedback.empty": "No user feedback has been given.",
+    "admin.case.context.claims": "Context: feedback from {email} — {assessment}, claims {label}.",
+    "admin.case.context.noClaim": "Context: feedback from {email} — {assessment}, no claimed label.",
+    "admin.case.context.notPrefilled": "The claim does not name a Ground Truth label exactly, so the label is left for you to choose.",
+    "admin.case.context.prefilled": "The claim prefills the label only. It is unverified; check it before saving.",
+    "admin.case.promotion.title": "Dataset governance & Ground Truth promotion",
+    "admin.case.promotion.description": "Adds this case's media to the verified dataset in three separate saves, in order: dataset governance, then Ground Truth, then the review status. Each runs only if the one before it succeeded. User feedback may be used as context and never as provenance.",
+    "admin.case.promotion.step.governance": "dataset governance",
+    "admin.case.promotion.step.groundTruth": "Ground Truth",
+    "admin.case.promotion.step.review": "review status",
+    "admin.case.promotion.nothing": "nothing",
+    "admin.case.promotion.noReason": "no reason given.",
+    "admin.case.promotion.saved": "Saved: {steps}. The automated assessment and the user's feedback were not changed.",
+    "admin.case.promotion.nothingSaved": "Nothing was saved.",
+    "admin.case.promotion.partial": "Partial success.",
+    "admin.case.promotion.failed": "Saved: {steps}. Failed: {step} — {reason}",
+    "admin.case.promotion.notAttempted": "Not attempted: {steps}.",
+    "admin.case.promotion.retryBelow": "Retry the review status below.",
+    "admin.case.promotion.correctForm": "Correct the form and submit it again; a step already saved is not written twice.",
+    "admin.case.promotion.leaveReviewAs": "Leave the review as (currently {current})",
+    "admin.case.promotion.media": "Media",
+    "admin.case.promotion.mediaHelp": "Choose the file these records are about. Governance and Ground Truth are keyed by its SHA-256 and apply to every analysis of the same bytes.",
+    "admin.case.promotion.governance": "Dataset governance",
+    "admin.case.promotion.governanceHelp": "Saved first, so a label never reaches evaluation without the lineage, split and licence it is exported under. The whole record is sent: an emptied field is cleared.",
+    "admin.case.promotion.field.sourceLineage": "Source lineage",
+    "admin.case.promotion.lineageKept": "Recorded; a record keeps its lineage.",
+    "admin.case.promotion.field.datasetSplit": "Dataset split",
+    "admin.case.promotion.field.recordingIdentity": "Recording identity",
+    "admin.case.promotion.field.derivedFrom": "Derived from (SHA-256)",
+    "admin.case.promotion.field.generationPipeline": "Generation pipeline",
+    "admin.case.promotion.field.license": "Licence",
+    "admin.case.promotion.field.permissionStatus": "Permission status",
+    "admin.case.promotion.field.redistributable": "Redistributable",
+    "admin.case.promotion.field.private": "Private",
+    "admin.case.promotion.field.stratumPrimary": "Primary stratum",
+    "admin.case.promotion.field.source": "Source",
+    "admin.case.promotion.field.acquisitionType": "Acquisition type",
+    "admin.case.promotion.field.benchmarkFamily": "Benchmark family",
+    "admin.case.promotion.field.transformations": "Transformations",
+    "admin.case.promotion.transformationsHelp": "(optional, one per line, in order)",
+    "admin.case.promotion.currentlyRecorded": "Currently recorded: {label}, {source}. Saving replaces it.",
+    "admin.case.promotion.claimNotProvenance": "A user's claim is not provenance. Their feedback — even as the owner of the analysis — does not by itself make this {owner} or {external}. Without independent evidence, choose {unknown}.",
+    "admin.case.promotion.attest": "The source class above rests on evidence independent of the user's feedback, the automated assessment and the human review, and that evidence is stated in the notes. (Required for every source class except Unknown.)",
+    "admin.case.promotion.notesHelp": "(the evidence, for any source class other than Unknown)",
+    "admin.case.promotion.reviewLegend": "Review",
+    "admin.case.promotion.reviewHelp": "Set only after both records above are saved. The review's assessment and note are kept as they are.",
+    "admin.case.promotion.submit": "Save governance, Ground Truth and review",
+    "admin.case.promotion.retry": "Retry the review status",
+    "admin.case.promotion.promote": "Promote to Ground Truth",
+    "admin.case.promotion.orFeedback": "or use one specific user feedback record above as context.",
+    "admin.case.promotion.chooseMedia": "This analysis has more than one media file. Choose the one these records are about:",
+    "admin.case.promotion.feedbackMissing": "That feedback record is not on this analysis. Choose one from the list below.",
+    "admin.case.promotion.governanceNone": "Dataset governance of {media}: not recorded.",
+    "admin.case.promotion.governanceRecorded": "Dataset governance of {media}: lineage {lineage}, {split} split.",
+    "admin.analytics.title": "Operational summary",
+    "admin.analytics.description": "What this deployment has processed over the last seven days. Every figure is a count of stored rows, aggregated by the database at the moment this page was requested; nothing here is averaged, scored or ranked. The window is fixed and there is no date filter.",
+    "admin.analytics.kpi.analysesSubmitted": "Analyses submitted",
+    "admin.analytics.kpi.analysesSubmittedNote": "Across every account, last seven days.",
+    "admin.analytics.kpi.analysesFailed": "Analyses failed",
+    "admin.analytics.kpi.analysesFailedNote": "Submissions the pipeline could not complete.",
+    "admin.analytics.kpi.jobsFailed": "Jobs failed",
+    "admin.analytics.kpi.jobsFailedNote": "Counted separately from the analyses beside them.",
+    "admin.analytics.kpi.feedbackInWindow": "Feedback in window",
+    "admin.analytics.kpi.feedbackInWindowNote": "Feedback records created or changed in the last seven days.",
+    "admin.analytics.kpi.withoutClaim": "Without a claimed label",
+    "admin.analytics.kpi.withoutClaimNote": "Feedback where the user did not say what they believe the media is.",
+    "admin.analytics.dist.analyses": "Analyses by status",
+    "admin.analytics.dist.analysesNote": "Where each submission got to.",
+    "admin.analytics.dist.jobs": "Detection jobs by status",
+    "admin.analytics.dist.jobsNote": "The queue behind those submissions. Counted separately from the analyses above rather than assumed to match them.",
+    "admin.analytics.dist.decisions": "Decisions recorded",
+    "admin.analytics.dist.decisionsNote": "r9-v5.0.0 verdicts, as persisted on the analysis. UNDECIDED means no decision of any kind has been written yet. Legacy risk levels are counted in their own list and are never added to these.",
+    "admin.analytics.dist.levels": "Recorded risk level",
+    "admin.analytics.dist.levelsNote": "Levels written by the rulesets p7-v1.0.0 through r7-v4.0.0, as persisted. Not verdicts and not translated into one: a HIGH is not a detection. UNKNOWN is a decision the risk engine reached, unlike UNDECIDED.",
+    "admin.analytics.dist.acquisition": "How the media arrived",
+    "admin.analytics.dist.acquisitionNote": "By acquisition method. 'unrecorded' is media stored before this was kept, not a third way in.",
+    "admin.analytics.dist.unrecognised": "Unrecognised risk values",
+    "admin.analytics.dist.unrecognisedNote": "Ruleset / value pairs that fit neither list: a value outside its ruleset's vocabulary, or a ruleset this build did not write. Shown as stored, not as a verdict or a level.",
+    "admin.analytics.dist.byAssessment": "Feedback by assessment",
+    "admin.analytics.dist.byAssessmentNote": "What users made of the result they were shown.",
+    "admin.analytics.dist.claimedLabel": "Claimed label",
+    "admin.analytics.dist.claimedLabelNote": "What users say the media is. A claim, not Ground Truth, and never used to score a detector.",
+    "admin.analytics.detectors.title": "Detector health",
+    "admin.analytics.detectors.description": "How often each provider’s runs ended in each state, by provider and version, over the same seven days. These are operational execution errors, not model evaluation errors: a FAILED or TIMEOUT run means the provider could not answer, never that the media is fake, and the failure rate is not a false-positive or error rate of any detector. MISSING counts analyses completed in these seven days whose ruleset expected this detector but which have no result from it at all; a FAILED or TIMEOUT result is not also counted as missing, and analyses still in progress are not counted. A provider is listed only if it recorded a result or had one go missing — one that appears nowhere below was not asked. No scores are shown, averaged or compared.",
+    "admin.analytics.detectors.empty": "No detector recorded a result in the last seven days.",
+    "admin.analytics.detectors.provider": "Provider",
+    "admin.analytics.detectors.version": "Version",
+    "admin.analytics.detectors.failureRate": "Failure rate",
+    "admin.analytics.detectors.failureRateTitle": "(FAILED + TIMEOUT) / (SUCCESS + FAILED + TIMEOUT), computed by the API. Operational execution failures and timeouts only — not a model error or false-positive rate.",
+    "admin.analytics.feedback.title": "User feedback activity",
+    "admin.analytics.feedback.state": "This reflects the current state of user feedback modified in the last 7 days, not a submission count or event log.",
+    "admin.analytics.feedback.unverified": "User feedback represents unverified end-user opinions. Disagreement rate is not a False Positive or Error rate.",
+    "admin.analytics.feedback.byVerdict": "By the verdict on the analysis the feedback is about, placed exactly as the counts above place the analyses. The user disagreement rate is DISAGREE over that verdict’s feedback, as the API computed it; a dash means nobody gave feedback on it.",
+    "admin.analytics.feedback.decisions": "Decisions ({ruleset})",
+    "admin.analytics.feedback.levels": "Recorded risk levels ({first} – {last})",
+    "admin.analytics.feedback.verdictShown": "Verdict shown",
+    "admin.analytics.feedback.feedback": "Feedback",
+    "admin.analytics.feedback.disagreementRate": "User disagreement rate",
+    "admin.audit.title": "Audit log",
+    "admin.audit.intro": "Every change an administrator has made to another account, newest first. Each entry is written in the same transaction as the change itself, so a change that was refused or rolled back leaves no entry, and a request that altered nothing leaves none either. The log is append-only: nothing in this application can edit or remove an entry.",
+    "admin.audit.snapshots": "The addresses below are recorded as they read at the moment of the change, not looked up now — so an entry may name an address an account no longer uses. That is deliberate: an entry is a statement about what happened, and renaming an account does not change what it did.",
+    "admin.audit.column.administrator": "Administrator",
+    "admin.audit.column.accountChanged": "Account changed",
+    "admin.audit.column.action": "Action",
+    "admin.audit.column.whatChanged": "What changed",
+    "admin.audit.column.when": "When",
+    "admin.audit.diffTo": "to",
+    "admin.audit.empty": "No administrative changes have been recorded yet. The log begins where it was introduced; changes made before that were not recorded and are not reconstructed here.",
+    "admin.apiKeys.title": "API keys",
+    "admin.apiKeys.description": "The credentials customers authenticate the public API with. A key is shown in full once, when it is issued, and never again — InspectRoot stores only a hash of it. Revoking a key ends its access immediately and leaves the analyses it submitted on file.",
+    "admin.apiKeys.issueTitle": "Issue a key",
+    "admin.apiKeys.issueDescription": "The name is a label for this table and the audit log. It is not part of the credential and nothing authenticates by it.",
+    "admin.apiKeys.name": "Name",
+    "admin.apiKeys.namePlaceholder": "Who is this key for?",
+    "admin.apiKeys.issue": "Issue key",
+    "admin.apiKeys.issuing": "Issuing…",
+    "admin.apiKeys.noscript": "Issuing a key needs JavaScript: the secret is returned in the response and cannot be carried safely in a page reload.",
+    "admin.apiKeys.secret.title": "Copy this key now. It will not be shown again.",
+    "admin.apiKeys.secret.detail": "InspectRoot stores only a hash of it and cannot recover the value. If it is lost, the only remedy is to revoke this key and issue another.",
+    "admin.apiKeys.secret.label": "The issued API key",
+    "admin.apiKeys.secret.copy": "Copy",
+    "admin.apiKeys.secret.copied": "Copied",
+    "admin.apiKeys.secret.dismiss": "I have copied it",
+    "admin.apiKeys.secret.copyFailed": "This browser would not let the page write to the clipboard. Select the key above and copy it yourself.",
+    "admin.apiKeys.column.key": "Key",
+    "admin.apiKeys.column.status": "Status",
+    "admin.apiKeys.column.issued": "Issued / last used",
+    "admin.apiKeys.column.manage": "Manage",
+    "admin.apiKeys.active": "Active",
+    "admin.apiKeys.revoked": "Revoked",
+    "admin.apiKeys.revoke": "Revoke",
+    "admin.apiKeys.confirmQuestion": "Revoke {name}? This cannot be undone.",
+    "admin.apiKeys.confirm": "Confirm",
+    "admin.apiKeys.neverUsed": "never used",
+    "admin.apiKeys.revokedNotice": "Key revoked",
+    "admin.apiKeys.revokedNoticeDetail": "It no longer authenticates the public API.",
+    "admin.apiKeys.empty": "No API keys have been issued. The public API cannot be reached without one.",
+  },
+  tr: {
+    "admin.common.legend": "Yönetim",
+    "admin.common.refresh": "Yenile",
+    "admin.common.cancel": "Vazgeç",
+    "admin.common.choose": "Seçin…",
+    "admin.common.created": "Oluşturulma",
+    "admin.common.notRecorded": "kaydedilmemiş",
+    "admin.common.notRecordedOption": "Kaydedilmemiş",
+    "admin.common.optional": "(isteğe bağlı)",
+    "admin.common.yes": "evet",
+    "admin.common.no": "hayır",
+    "admin.common.yesOption": "Evet",
+    "admin.common.noOption": "Hayır",
+    "admin.common.requestId": "istek {id}",
+    "admin.accounts.title": "Hesaplar",
+    "admin.accounts.description": "Bu dağıtımdaki tüm hesaplar, artık giriş yapamayanlar da dahil. Rolü değiştirmek bu yüzeye erişim verir ya da erişimi geri alır; bir hesabı devre dışı bırakmak onun giriş yapabilmesini sona erdirir ve gönderdiği analizleri kayıtta bırakır.",
+    "admin.accounts.createDisclosure": "Hesap oluştur",
+    "admin.accounts.createIntro": "Parola burada belirlenir ve hesabı oluşturan kişi tarafından hesap sahibine iletilir. Bu dağıtım e-posta göndermez; dolayısıyla davet ya da sıfırlama bağlantısı yoktur — yeni parolaya ihtiyaç duyan bir hesap bunu kendi sayfasından alır.",
+    "admin.accounts.email": "E-posta",
+    "admin.accounts.password": "Parola",
+    "admin.accounts.passwordHelp": "En az {count} karakter.",
+    "admin.accounts.role": "Rol",
+    "admin.accounts.role.admin": "Yönetici",
+    "admin.accounts.role.user": "Kullanıcı",
+    "admin.accounts.roleFor": "{email} için rol",
+    "admin.accounts.createSubmit": "Hesabı oluştur",
+    "admin.accounts.active": "Aktif",
+    "admin.accounts.deactivated": "Devre dışı",
+    "admin.accounts.apply": "Uygula",
+    "admin.accounts.deactivate": "Devre dışı bırak",
+    "admin.accounts.reactivate": "Yeniden etkinleştir",
+    "admin.accounts.ownAccount": "Kendi hesabınız — başka bir yöneticinin değiştirmesi gerekir.",
+    "admin.accounts.open": "Aç",
+    "admin.accounts.column.account": "Hesap",
+    "admin.accounts.column.role": "Rol",
+    "admin.accounts.column.status": "Durum",
+    "admin.accounts.column.change": "İşlem",
+    "admin.accounts.updated": "Hesap güncellendi",
+    "admin.accounts.created": "Hesap oluşturuldu. Parola hiçbir yerden geri alınamaz — kişiye parolayı iletin ya da {link} yeni bir parola belirleyin.",
+    "admin.accounts.createdLink": "hesap sayfasından",
+    "admin.account.title": "Hesap",
+    "admin.account.description": "Tek bir hesap ve bir yöneticinin onunla ilgili değiştirebileceği her şey. Bu dağıtımdaki tüm hesapların listesi hesaplar sayfasındadır; bu ekran yalnızca bu hesapla ilgilidir.",
+    "admin.account.identifier": "Kimlik",
+    "admin.account.changeTitle": "Bu hesabı değiştir",
+    "admin.account.changeDescription": "Adresi değiştirmek hesabı yeniden adlandırır: eski adres hemen çalışmayı bırakır ve yenisi geçerli olur. Kişinin oturumunu kapatmaz — oturum adrese değil hesaba bağlıdır. Rolü değiştirmek bu yönetim yüzeyine erişim verir ya da erişimi geri alır.",
+    "admin.account.ownDescription": "Bu sizin kendi hesabınız. Adresi, rolü ve etkinliği başka bir yönetici tarafından değiştirilmelidir — kendi yetkisini düşüren ya da kendini devre dışı bırakan bir yönetici, bunu geri almak için artık bu sayfaya ulaşamaz. Kendi parolanızı aşağıdan yine de sıfırlayabilirsiniz.",
+    "admin.account.save": "Değişiklikleri kaydet",
+    "admin.account.lifecycleTitle": "Erişimi sonlandırma",
+    "admin.account.lifecycleDescription": "Burada bir hesap devre dışı bırakılarak kaldırılır; silme yoktur. Medya yüklemiş bir hesaba o medya tarafından atıfta bulunulur; denetim kaydı ve vaka incelemeleri, kimin ne yaptığının yanıtlanabilir kalması için kimliğini saklar — satırı silmek ya doğrudan başarısız olur ya da bu geçmişi siler. Devre dışı bırakılan bir hesap giriş yapamaz ve mevcut oturumları çalışmayı bırakır; gönderdiği her şey ise ona atfedilebilir kalır. Bu sayfadan istenildiği zaman yeniden etkinleştirilebilir.",
+    "admin.account.deactivate": "Hesabı devre dışı bırak",
+    "admin.account.reactivate": "Hesabı yeniden etkinleştir",
+    "admin.account.resetTitle": "Parolayı sıfırla",
+    "admin.account.resetDescription": "Burada bir parola belirlemek eskisinin yerine geçer ve bu hesabın açık tüm oturumlarını hemen sonlandırır; bu hesapla giriş yapmış herkesin oturumu kapanır. Parola yalnızca hash olarak saklanır ve hiçbir yerden geri okunamaz — bu dağıtımda hiçbir şey e-posta göndermediği için parolayı kişiye siz iletin.",
+    "admin.account.resetSelf": "Bu sizin kendi hesabınız: kaydetmek oturumunuzu kapatır ve burada belirlediğiniz parolayla yeniden giriş yapmanız gerekir.",
+    "admin.account.newPassword": "Yeni parola",
+    "admin.account.resetSubmit": "Parolayı sıfırla",
+    "admin.account.passwordReset": "Parola sıfırlandı. Bu hesabın açık olan tüm oturumları sonlandırıldı.",
+    "admin.jobs.title": "Tespit işleri",
+    "admin.jobs.description": "Bu dağıtımdaki en son tespit işleri, en yenisi önce. Gecikmiş olarak işaretlenen bir iş, kira süresi o zamandan beri dolmuş bir worker tarafından üstlenilmiştir; kurtarma bunları bir sonraki geçişinde başarısız sayar ve buradaki hiçbir şey onları değiştirmez. Başarısız işler, worker'ın kaydettiği mesajı taşır.",
+    "admin.jobs.column.analysis": "Analiz",
+    "admin.jobs.column.state": "Durum",
+    "admin.jobs.column.timestamps": "Zaman damgaları",
+    "admin.jobs.created": "Oluşturulma",
+    "admin.jobs.updated": "Güncellenme",
+    "admin.jobs.lease": "Kira bitişi",
+    "admin.jobs.jobId": "iş {id}",
+    "admin.jobs.stale": "Gecikmiş",
+    "admin.jobs.staleTitle": "Worker'ın bu iş üzerindeki hakkı, iş hâlâ çalışırken sona erdi. Kurtarma, bir sonraki geçişinde bu işi başarısız sayacak.",
+    "admin.jobs.empty": "Henüz hiçbir tespit işi gönderilmedi.",
+    "admin.queue.title": "İnceleme kuyruğu",
+    "admin.queue.description": "Aşağıdaki filtrelerle eşleşen analizler, en yenisi önce. Burada listelenmek bir bulgu değildir: yalnızca kayıtlı olguların eşleştiği anlamına gelir — sahip geri bildirimi, kaydedilen karar, yanıt vermeyen bir dedektör ya da henüz kapatılmamış bir inceleme. Burada hiçbir şey sıralanmaz ya da puanlanmaz ve hiçbir şey bir sonucu değiştirmez.",
+    "admin.queue.filter.feedback": "Sahip geri bildirimi",
+    "admin.queue.filter.decision": "Karar ({ruleset})",
+    "admin.queue.filter.signals": "Dedektör sinyalleri",
+    "admin.queue.filter.reviewState": "İnceleme durumu",
+    "admin.queue.filter.any": "Tümü",
+    "admin.queue.filter.has": "{assessment} içeren",
+    "admin.queue.filter.signalError": "Başarısız ya da zaman aşımı içeren",
+    "admin.queue.filter.notClosed": "Kapatılmamış (incelenmemiş ya da takip gerekiyor)",
+    "admin.queue.filter.all": "Tümü, incelenenler dahil",
+    "admin.queue.applyFilters": "Filtreleri uygula",
+    "admin.queue.reset": "Sıfırla",
+    "admin.queue.decision": "Karar",
+    "admin.queue.recordedRiskLevel": "Kaydedilen risk düzeyi",
+    "admin.queue.unrecognised": "Tanınmayan",
+    "admin.queue.column.analysis": "Analiz",
+    "admin.queue.column.verdict": "Kayıtlı karar",
+    "admin.queue.column.review": "İnceleme",
+    "admin.queue.column.feedback": "Sahip geri bildirimi",
+    "admin.queue.column.signalErrors": "Sinyal hataları",
+    "admin.queue.range": "{range} / {total}",
+    "admin.queue.newer": "Daha yeni",
+    "admin.queue.older": "Daha eski",
+    "admin.queue.empty": "Bu filtrelerle eşleşen analiz yok.",
+    "admin.case.title": "Vaka inceleme",
+    "admin.case.description": "Tek bir analiz ve onun hakkında söylenenler. Otomatik değerlendirme ve altındaki köken bilgisi okuması adli kayıttır — dedektörlerin vardığı sonuç ve dosyanın kendisinin taşıdığı bilgi — ve ikisi de bu uygulamanın hiçbir yerinden düzenlenemez. İnsan incelemesi ayrı bir tabloda ayrı bir kayıttır: bir inceleyicinin not ettiği, her zaman değiştirilebilen ve hiçbir zaman medya hakkında ikinci bir yanıt olmayan bir kayıt.",
+    "admin.case.reviewSaved": "İnceleme kaydedildi. Adli sonuç değiştirilmedi.",
+    "admin.case.automated.title": "Otomatik değerlendirme",
+    "admin.case.automated.description": "Tespit işlem hattı tarafından aşağıda adı geçen kural setiyle kaydedilmiştir ve değiştirilemez. Bu kartta hiçbir denetim öğesi yoktur ve bu uygulamada üzerindeki herhangi bir değeri değiştirebilecek bir yol yoktur — alttaki inceleme ayrı bir kayıttır ve dedektörlerin vardığı sonucu değiştirmez.",
+    "admin.case.noDecision": "Kaydedilmiş karar yok",
+    "admin.case.coverage": "Karar kapsamı",
+    "admin.case.analysisStatus": "Analiz durumu",
+    "admin.case.ruleset": "Kural seti",
+    "admin.case.ruleFired": "Tetiklenen kural",
+    "admin.case.calibration": "Kalibrasyon",
+    "admin.case.submitted": "Gönderilme",
+    "admin.case.provenance.title": "Özgünlük ve köken bilgisi",
+    "admin.case.provenance.description": "Yukarıdaki değerlendirmeden ayrı bir soru; ayrı kanıtlarla yanıtlanır ve ayrı kaydedilir. Buradaki hiçbir şey medyayı özgün ya da manipüle edilmiş olarak bildirmez: kimlik bilgilerinin yokluğu manipülasyonun kanıtı değildir, varlıkları da özgünlüğün kanıtı değildir.",
+    "admin.case.provenance.none": "Bu analiz için kayıtlı bir köken bilgisi okuması yok. Bu başarısız bir okuma değildir — hiçbir şey bir okuma kaydetmedi; dolayısıyla bu kaynaktan iki yönde de kanıt yoktur.",
+    "admin.case.provenance.readingStatus": "Okuma durumu",
+    "admin.case.provenance.manifestPresent": "Dosyada manifest var mı",
+    "admin.case.provenance.manifestUnknown": "bilinmiyor — okuma başarısız oldu",
+    "admin.case.provenance.validationState": "Doğrulama durumu",
+    "admin.case.provenance.claimGenerator": "İddia oluşturucu",
+    "admin.case.provenance.signatureIssuer": "İmza veren",
+    "admin.case.provenance.remoteManifest": "Uzak manifest URL'si",
+    "admin.case.lastChanged": "Son değişiklik",
+    "admin.case.firstWritten": "ilk yazılma {at}",
+    "admin.case.review.title": "İnsan incelemesi",
+    "admin.case.review.description": "Birinin bu vakaya bakıp bakmadığının ve otomatik değerlendirme hakkında ne düşündüğünün operasyonel kaydı — medya hakkında ikinci bir yanıt değil. Bir incelemeyi kaydetmek yukarıdaki adli sonucu olduğu gibi bırakır ve her değişiklik, kimin ne zaman yaptığıyla birlikte denetim kaydına yazılır.",
+    "admin.case.review.nobody": "Bu analizi henüz kimse incelemedi. Biri burada bir inceleme yazana kadar her analiz bu durumdadır — bir şeyin eksik olduğuna dair bir kayıt değildir ve yukarıdaki adli sonuç hakkında hiçbir şey söylemez.",
+    "admin.case.review.assessment": "Analist değerlendirmesi",
+    "admin.case.review.disagrees": "Bu inceleyici otomatik değerlendirmeye katılmadı. Bu, burada yalnızca onun görüşü olarak kaydedilir: yukarıdaki adli sonuç değişmedi, ikinci bir sınıflandırma kaydedilmedi ve bu kayıttaki hiçbir şey ikisinden hangisinin doğru olduğunu söylemez.",
+    "admin.case.review.noAssessment": "Bu incelemeyle birlikte bir değerlendirme kaydedilmedi. Bu alan var olmadan önce yazılan incelemeler değerlendirme taşımaz ve onlar için hiçbir değerlendirme varsayılmadı — bu, birinin aldığı bir tutum olan belirsiz ile aynı şey değildir.",
+    "admin.case.review.reviewer": "İnceleyici",
+    "admin.case.review.note": "Not",
+    "admin.case.review.noNote": "Bu incelemeyle birlikte not yazılmadı.",
+    "admin.case.review.status": "Durum",
+    "admin.case.review.opinion": "Otomatik değerlendirme hakkında, onun yerine değil yanında kaydedilen bir görüş. Katılmamak yukarıdaki adli sonucu değiştirmez, ikinci bir sınıflandırma kaydetmez ve dedektörün haklı olup olmadığının kaydı değildir.",
+    "admin.case.review.noteHelp": "Düz metin, en fazla {count} karakter. Yazıldığı gibi saklanır ve metin olarak gösterilir — buradaki hiçbir şey biçimlendirme ya da bağlantı olarak yorumlanmaz.",
+    "admin.case.review.save": "İncelemeyi kaydet",
+    "admin.case.gt.title": "Ground Truth",
+    "admin.case.gt.description": "Bu medyanın gerçekte ne olduğu; bunu bilebilecek konumdaki biri tarafından beyan edilir ve orijinal dosyanın SHA-256 değerine karşı kaydedilir — dolayısıyla aynı baytların her analizine uygulanır. Yukarıdaki otomatik değerlendirmeden, köken bilgisi okumasından ve insan incelemesinden bağımsızdır: onlardan doldurulmaz ve kaydedilmesi hiçbirini değiştirmez.",
+    "admin.case.gt.none": "Bu dosya için Ground Truth kaydedilmedi. Bu, kökeninin bilinmediğine dair bir beyan değildir — hakkında hiç kimse bir beyanda bulunmadı.",
+    "admin.case.gt.label": "Etiket",
+    "admin.case.gt.sourceClass": "Nasıl bilindiği",
+    "admin.case.gt.recordedBy": "Kaydeden",
+    "admin.case.gt.notes": "Notlar",
+    "admin.case.gt.noNotes": "Not kaydedilmedi.",
+    "admin.case.gt.notesHelp": "Düz metin; yazıldığı gibi saklanır ve metin olarak gösterilir. Not eklemeyecekseniz boş bırakın.",
+    "admin.case.gt.save": "Ground Truth kaydet",
+    "admin.case.gt.saved": "Ground Truth kaydedildi. Otomatik değerlendirme ve insan incelemesi değiştirilmedi.",
+    "admin.case.gt.noSha": "Bu analizin orijinal medyaya ait bir SHA-256 kimliği olmadığı için Ground Truth kaydedilemez.",
+    "admin.case.feedback.title": "Kullanıcı geri bildirimi",
+    "admin.case.feedback.description": "Bu analizin sahibinin sonucu hakkında söyledikleri. Gönderenin doğrulanmamış bir iddiasıdır — Ground Truth değildir, insan incelemesi değildir ve dedektörleri puanlamak için asla kullanılmaz. Geri bildirim vermek yukarıdaki hiçbir şeyi değiştirmez ve yöneticiler onu yazamaz ya da düzenleyemez.",
+    "admin.case.feedback.assessment": "Sonuca ilişkin değerlendirme",
+    "admin.case.feedback.claim": "Kullanıcının iddiası (doğrulanmamış)",
+    "admin.case.feedback.noClaim": "iddia yok",
+    "admin.case.feedback.claims": "İddia: {label}",
+    "admin.case.feedback.submittedBy": "Gönderen",
+    "admin.case.feedback.noNotes": "Not yok.",
+    "admin.case.feedback.useAsContext": "Bu geri bildirimi yükseltme için bağlam olarak kullan",
+    "admin.case.feedback.empty": "Hiç kullanıcı geri bildirimi verilmedi.",
+    "admin.case.context.claims": "Bağlam: {email} tarafından verilen geri bildirim — {assessment}, iddia: {label}.",
+    "admin.case.context.noClaim": "Bağlam: {email} tarafından verilen geri bildirim — {assessment}, iddia edilen etiket yok.",
+    "admin.case.context.notPrefilled": "İddia bir Ground Truth etiketini birebir adlandırmıyor; bu nedenle etiketin seçimi size bırakıldı.",
+    "admin.case.context.prefilled": "İddia yalnızca etiketi önceden doldurur. Doğrulanmamıştır; kaydetmeden önce kontrol edin.",
+    "admin.case.promotion.title": "Veri kümesi yönetişimi ve Ground Truth yükseltmesi",
+    "admin.case.promotion.description": "Bu vakanın medyasını doğrulanmış veri kümesine sırayla üç ayrı kayıtla ekler: önce veri kümesi yönetişimi, ardından Ground Truth, ardından inceleme durumu. Her biri yalnızca bir öncekinin başarılı olması halinde çalışır. Kullanıcı geri bildirimi bağlam olarak kullanılabilir, hiçbir zaman köken bilgisi olarak kullanılamaz.",
+    "admin.case.promotion.step.governance": "veri kümesi yönetişimi",
+    "admin.case.promotion.step.groundTruth": "Ground Truth",
+    "admin.case.promotion.step.review": "inceleme durumu",
+    "admin.case.promotion.nothing": "hiçbir şey",
+    "admin.case.promotion.noReason": "gerekçe belirtilmedi.",
+    "admin.case.promotion.saved": "Kaydedilenler: {steps}. Otomatik değerlendirme ve kullanıcının geri bildirimi değiştirilmedi.",
+    "admin.case.promotion.nothingSaved": "Hiçbir şey kaydedilmedi.",
+    "admin.case.promotion.partial": "Kısmi başarı.",
+    "admin.case.promotion.failed": "Kaydedilenler: {steps}. Başarısız olan: {step} — {reason}",
+    "admin.case.promotion.notAttempted": "Denenmeyenler: {steps}.",
+    "admin.case.promotion.retryBelow": "İnceleme durumunu aşağıdan yeniden deneyin.",
+    "admin.case.promotion.correctForm": "Formu düzeltip yeniden gönderin; zaten kaydedilmiş bir adım iki kez yazılmaz.",
+    "admin.case.promotion.leaveReviewAs": "İncelemeyi şu durumda bırak (şu anda {current})",
+    "admin.case.promotion.media": "Medya",
+    "admin.case.promotion.mediaHelp": "Bu kayıtların ilgili olduğu dosyayı seçin. Yönetişim ve Ground Truth, dosyanın SHA-256 değerine göre tutulur ve aynı baytların her analizine uygulanır.",
+    "admin.case.promotion.governance": "Veri kümesi yönetişimi",
+    "admin.case.promotion.governanceHelp": "İlk olarak kaydedilir; böylece bir etiket, dışa aktarıldığı soy, bölüm ve lisans olmadan asla değerlendirmeye ulaşmaz. Kaydın tamamı gönderilir: boşaltılan bir alan temizlenir.",
+    "admin.case.promotion.field.sourceLineage": "Kaynak soyu",
+    "admin.case.promotion.lineageKept": "Kaydedildi; bir kayıt soyunu korur.",
+    "admin.case.promotion.field.datasetSplit": "Veri kümesi bölümü",
+    "admin.case.promotion.field.recordingIdentity": "Kayıt kimliği",
+    "admin.case.promotion.field.derivedFrom": "Türetildiği kaynak (SHA-256)",
+    "admin.case.promotion.field.generationPipeline": "Üretim işlem hattı",
+    "admin.case.promotion.field.license": "Lisans",
+    "admin.case.promotion.field.permissionStatus": "İzin durumu",
+    "admin.case.promotion.field.redistributable": "Yeniden dağıtılabilir",
+    "admin.case.promotion.field.private": "Özel",
+    "admin.case.promotion.field.stratumPrimary": "Birincil katman",
+    "admin.case.promotion.field.source": "Kaynak",
+    "admin.case.promotion.field.acquisitionType": "Edinim türü",
+    "admin.case.promotion.field.benchmarkFamily": "Kıyaslama ailesi",
+    "admin.case.promotion.field.transformations": "Dönüşümler",
+    "admin.case.promotion.transformationsHelp": "(isteğe bağlı, her satıra bir tane, sırayla)",
+    "admin.case.promotion.currentlyRecorded": "Şu anda kayıtlı: {label}, {source}. Kaydetmek bunun yerine geçer.",
+    "admin.case.promotion.claimNotProvenance": "Bir kullanıcının iddiası köken bilgisi değildir. Geri bildirimi — analizin sahibi olarak bile — bunu tek başına {owner} ya da {external} yapmaz. Bağımsız kanıt yoksa {unknown} seçin.",
+    "admin.case.promotion.attest": "Yukarıdaki kaynak sınıfı; kullanıcının geri bildiriminden, otomatik değerlendirmeden ve insan incelemesinden bağımsız kanıta dayanır ve bu kanıt notlarda belirtilmiştir. (Bilinmiyor dışındaki her kaynak sınıfı için zorunludur.)",
+    "admin.case.promotion.notesHelp": "(Bilinmiyor dışındaki her kaynak sınıfı için kanıt)",
+    "admin.case.promotion.reviewLegend": "İnceleme",
+    "admin.case.promotion.reviewHelp": "Yalnızca yukarıdaki iki kayıt da kaydedildikten sonra belirlenir. İncelemenin değerlendirmesi ve notu olduğu gibi korunur.",
+    "admin.case.promotion.submit": "Yönetişimi, Ground Truth'u ve incelemeyi kaydet",
+    "admin.case.promotion.retry": "İnceleme durumunu yeniden dene",
+    "admin.case.promotion.promote": "Ground Truth'a yükselt",
+    "admin.case.promotion.orFeedback": "ya da yukarıdaki belirli bir kullanıcı geri bildirimi kaydını bağlam olarak kullanın.",
+    "admin.case.promotion.chooseMedia": "Bu analizin birden fazla medya dosyası var. Bu kayıtların ilgili olduğu dosyayı seçin:",
+    "admin.case.promotion.feedbackMissing": "Bu geri bildirim kaydı bu analize ait değil. Aşağıdaki listeden birini seçin.",
+    "admin.case.promotion.governanceNone": "{media} için veri kümesi yönetişimi: kaydedilmemiş.",
+    "admin.case.promotion.governanceRecorded": "{media} için veri kümesi yönetişimi: soy {lineage}, {split} bölümü.",
+    "admin.analytics.title": "Operasyon özeti",
+    "admin.analytics.description": "Bu dağıtımın son yedi günde işledikleri. Her rakam, bu sayfanın istendiği anda veritabanı tarafından toplanan kayıtlı satırların sayısıdır; burada hiçbir şeyin ortalaması alınmaz, puanlanmaz ya da sıralanmaz. Zaman aralığı sabittir ve tarih filtresi yoktur.",
+    "admin.analytics.kpi.analysesSubmitted": "Gönderilen analizler",
+    "admin.analytics.kpi.analysesSubmittedNote": "Tüm hesaplarda, son yedi gün.",
+    "admin.analytics.kpi.analysesFailed": "Başarısız analizler",
+    "admin.analytics.kpi.analysesFailedNote": "İşlem hattının tamamlayamadığı gönderimler.",
+    "admin.analytics.kpi.jobsFailed": "Başarısız işler",
+    "admin.analytics.kpi.jobsFailedNote": "Yanlarındaki analizlerden ayrı sayılır.",
+    "admin.analytics.kpi.feedbackInWindow": "Aralıktaki geri bildirimler",
+    "admin.analytics.kpi.feedbackInWindowNote": "Son yedi günde oluşturulan ya da değiştirilen geri bildirim kayıtları.",
+    "admin.analytics.kpi.withoutClaim": "İddia edilen etiketi olmayan",
+    "admin.analytics.kpi.withoutClaimNote": "Kullanıcının medyanın ne olduğunu düşündüğünü belirtmediği geri bildirimler.",
+    "admin.analytics.dist.analyses": "Duruma göre analizler",
+    "admin.analytics.dist.analysesNote": "Her gönderimin ulaştığı aşama.",
+    "admin.analytics.dist.jobs": "Duruma göre tespit işleri",
+    "admin.analytics.dist.jobsNote": "Bu gönderimlerin arkasındaki kuyruk. Yukarıdaki analizlerle eşleştiği varsayılmaz, onlardan ayrı sayılır.",
+    "admin.analytics.dist.decisions": "Kaydedilen kararlar",
+    "admin.analytics.dist.decisionsNote": "Analiz üzerinde kalıcı olarak kaydedildiği haliyle r9-v5.0.0 kararları. UNDECIDED, henüz hiçbir türde karar yazılmadığı anlamına gelir. Eski risk düzeyleri kendi listelerinde sayılır ve bunlara asla eklenmez.",
+    "admin.analytics.dist.levels": "Kaydedilen risk düzeyi",
+    "admin.analytics.dist.levelsNote": "p7-v1.0.0 ile r7-v4.0.0 arasındaki kural setlerinin yazdığı, kalıcı olarak kaydedildiği haliyle düzeyler. Karar değildir ve karara çevrilmez: bir HIGH bir tespit değildir. UNKNOWN, UNDECIDED'dan farklı olarak risk motorunun vardığı bir karardır.",
+    "admin.analytics.dist.acquisition": "Medyanın nasıl geldiği",
+    "admin.analytics.dist.acquisitionNote": "Edinim yöntemine göre. 'kaydedilmemiş', bu bilgi tutulmaya başlanmadan önce saklanan medyadır; üçüncü bir giriş yolu değildir.",
+    "admin.analytics.dist.unrecognised": "Tanınmayan risk değerleri",
+    "admin.analytics.dist.unrecognisedNote": "İki listeye de uymayan kural seti / değer çiftleri: kural setinin sözcük dağarcığı dışında kalan bir değer ya da bu sürümün yazmadığı bir kural seti. Bir karar ya da düzey olarak değil, kaydedildiği haliyle gösterilir.",
+    "admin.analytics.dist.byAssessment": "Değerlendirmeye göre geri bildirim",
+    "admin.analytics.dist.byAssessmentNote": "Kullanıcıların kendilerine gösterilen sonuç hakkında ne düşündüğü.",
+    "admin.analytics.dist.claimedLabel": "İddia edilen etiket",
+    "admin.analytics.dist.claimedLabelNote": "Kullanıcıların medyanın ne olduğunu söylediği. Bir iddiadır, Ground Truth değildir ve bir dedektörü puanlamak için asla kullanılmaz.",
+    "admin.analytics.detectors.title": "Dedektör sağlığı",
+    "admin.analytics.detectors.description": "Aynı yedi gün içinde, sağlayıcı ve sürüme göre, her sağlayıcının çalıştırmalarının hangi sıklıkla hangi durumda sona erdiği. Bunlar model değerlendirme hataları değil, operasyonel yürütme hatalarıdır: başarısız ya da zaman aşımına uğramış bir çalıştırma, sağlayıcının yanıt veremediği anlamına gelir; asla medyanın sahte olduğu anlamına gelmez ve hata oranı herhangi bir dedektörün yanlış pozitif ya da hata oranı değildir. Eksik sütunu, bu yedi günde tamamlanan ve kural seti bu dedektörü beklediği halde ondan hiç sonuç almamış analizleri sayar; başarısız ya da zaman aşımına uğramış bir sonuç ayrıca eksik olarak sayılmaz ve hâlâ devam eden analizler sayılmaz. Bir sağlayıcı yalnızca bir sonuç kaydettiyse ya da bir sonucu eksik kaldıysa listelenir — aşağıda hiç görünmeyen bir sağlayıcıya hiç sorulmamıştır. Hiçbir skor gösterilmez, ortalaması alınmaz ya da karşılaştırılmaz.",
+    "admin.analytics.detectors.empty": "Son yedi günde hiçbir dedektör bir sonuç kaydetmedi.",
+    "admin.analytics.detectors.provider": "Sağlayıcı",
+    "admin.analytics.detectors.version": "Sürüm",
+    "admin.analytics.detectors.failureRate": "Hata oranı",
+    "admin.analytics.detectors.failureRateTitle": "(başarısız + zaman aşımı) / (başarılı + başarısız + zaman aşımı), API tarafından hesaplanır. Yalnızca operasyonel yürütme hataları ve zaman aşımları — bir model hatası ya da yanlış pozitif oranı değildir.",
+    "admin.analytics.feedback.title": "Kullanıcı geri bildirimi etkinliği",
+    "admin.analytics.feedback.state": "Bu, son 7 günde değiştirilen kullanıcı geri bildirimlerinin güncel durumunu yansıtır; bir gönderim sayısı ya da olay kaydı değildir.",
+    "admin.analytics.feedback.unverified": "Kullanıcı geri bildirimi, son kullanıcıların doğrulanmamış görüşlerini temsil eder. Katılmama oranı bir yanlış pozitif ya da hata oranı değildir.",
+    "admin.analytics.feedback.byVerdict": "Geri bildirimin ilgili olduğu analizdeki karara göre; yukarıdaki sayımların analizleri yerleştirdiği şekilde yerleştirilir. Kullanıcı katılmama oranı, API'nin hesapladığı haliyle Katılmıyorum yanıtlarının o kararın geri bildirimlerine oranıdır; tire, kimsenin o karar için geri bildirim vermediği anlamına gelir.",
+    "admin.analytics.feedback.decisions": "Kararlar ({ruleset})",
+    "admin.analytics.feedback.levels": "Kaydedilen risk düzeyleri ({first} – {last})",
+    "admin.analytics.feedback.verdictShown": "Gösterilen karar",
+    "admin.analytics.feedback.feedback": "Geri bildirim",
+    "admin.analytics.feedback.disagreementRate": "Kullanıcı katılmama oranı",
+    "admin.audit.title": "Denetim kaydı",
+    "admin.audit.intro": "Bir yöneticinin başka bir hesapta yaptığı her değişiklik, en yenisi önce. Her kayıt değişikliğin kendisiyle aynı işlemde (transaction) yazılır; bu nedenle reddedilen ya da geri alınan bir değişiklik kayıt bırakmaz, hiçbir şeyi değiştirmeyen bir istek de bırakmaz. Kayıt yalnızca eklemeye açıktır: bu uygulamadaki hiçbir şey bir kaydı düzenleyemez ya da kaldıramaz.",
+    "admin.audit.snapshots": "Aşağıdaki adresler şimdi sorgulanmaz, değişiklik anında oldukları gibi kaydedilir — dolayısıyla bir kayıt, bir hesabın artık kullanmadığı bir adresi gösterebilir. Bu bilinçlidir: bir kayıt olanlar hakkında bir beyandır ve bir hesabı yeniden adlandırmak onun yaptıklarını değiştirmez.",
+    "admin.audit.column.administrator": "Yönetici",
+    "admin.audit.column.accountChanged": "Değiştirilen hesap",
+    "admin.audit.column.action": "Eylem",
+    "admin.audit.column.whatChanged": "Ne değişti",
+    "admin.audit.column.when": "Zaman",
+    "admin.audit.diffTo": "yeni değer",
+    "admin.audit.empty": "Henüz hiçbir yönetim değişikliği kaydedilmedi. Kayıt, kullanıma alındığı andan itibaren başlar; ondan önce yapılan değişiklikler kaydedilmedi ve burada yeniden oluşturulmaz.",
+    "admin.apiKeys.title": "API anahtarları",
+    "admin.apiKeys.description": "Müşterilerin herkese açık API'de kimlik doğrulamak için kullandığı kimlik bilgileri. Bir anahtar yalnızca oluşturulduğunda bir kez tam olarak gösterilir, bir daha asla — InspectRoot yalnızca onun hash değerini saklar. Bir anahtarı iptal etmek erişimini hemen sona erdirir ve gönderdiği analizleri kayıtta bırakır.",
+    "admin.apiKeys.issueTitle": "Anahtar oluştur",
+    "admin.apiKeys.issueDescription": "Ad, bu tablo ve denetim kaydı için bir etikettir. Kimlik bilgisinin parçası değildir ve hiçbir şey onunla kimlik doğrulamaz.",
+    "admin.apiKeys.name": "Ad",
+    "admin.apiKeys.namePlaceholder": "Bu anahtar kimin için?",
+    "admin.apiKeys.issue": "Anahtarı oluştur",
+    "admin.apiKeys.issuing": "Oluşturuluyor…",
+    "admin.apiKeys.noscript": "Anahtar oluşturmak için JavaScript gerekir: gizli değer yanıtta döndürülür ve bir sayfa yenilemesinde güvenle taşınamaz.",
+    "admin.apiKeys.secret.title": "Bu anahtarı şimdi kopyalayın. Bir daha gösterilmeyecek.",
+    "admin.apiKeys.secret.detail": "InspectRoot yalnızca onun hash değerini saklar ve değeri geri getiremez. Kaybolursa tek çözüm bu anahtarı iptal edip yenisini oluşturmaktır.",
+    "admin.apiKeys.secret.label": "Oluşturulan API anahtarı",
+    "admin.apiKeys.secret.copy": "Kopyala",
+    "admin.apiKeys.secret.copied": "Kopyalandı",
+    "admin.apiKeys.secret.dismiss": "Kopyaladım",
+    "admin.apiKeys.secret.copyFailed": "Bu tarayıcı sayfanın panoya yazmasına izin vermedi. Yukarıdaki anahtarı seçip kendiniz kopyalayın.",
+    "admin.apiKeys.column.key": "Anahtar",
+    "admin.apiKeys.column.status": "Durum",
+    "admin.apiKeys.column.issued": "Oluşturulma / son kullanım",
+    "admin.apiKeys.column.manage": "Yönet",
+    "admin.apiKeys.active": "Aktif",
+    "admin.apiKeys.revoked": "İptal edildi",
+    "admin.apiKeys.revoke": "İptal et",
+    "admin.apiKeys.confirmQuestion": "{name} iptal edilsin mi? Bu geri alınamaz.",
+    "admin.apiKeys.confirm": "İptali onayla",
+    "admin.apiKeys.neverUsed": "hiç kullanılmadı",
+    "admin.apiKeys.revokedNotice": "Anahtar iptal edildi",
+    "admin.apiKeys.revokedNoticeDetail": "Artık herkese açık API'de kimlik doğrulamıyor.",
+    "admin.apiKeys.empty": "Hiç API anahtarı oluşturulmadı. Herkese açık API'ye anahtar olmadan ulaşılamaz.",
+  },
+} as const;
+
 export const MESSAGES = {
   en: {
     "nav.label": "Administration",
@@ -139,6 +731,7 @@ export const MESSAGES = {
       "The application could not be rendered. Nothing about any analysis has been changed.",
     "error.reference": "Reference:",
     "error.retry": "Try again",
+    ...ADMIN_MESSAGES.en,
   },
   tr: {
     "nav.label": "Yönetim",
@@ -228,6 +821,7 @@ export const MESSAGES = {
     "error.application": "Uygulama görüntülenemedi. Hiçbir analizde değişiklik yapılmadı.",
     "error.reference": "Referans:",
     "error.retry": "Tekrar dene",
+    ...ADMIN_MESSAGES.tr,
   },
 } as const satisfies Record<Locale, Record<string, string>>;
 
@@ -282,9 +876,11 @@ export const CANONICAL = {
    * value with no entry here is still drawn exactly as it arrived.
    */
   // `app/db/models.py` — `SIGNAL_STATUS_*`, one detector's answer.
+  // `MISSING` is the operational summary's own column (R16 admin localization): an analysis whose
+  // ruleset expected the detector and holds no result from it. It is never a stored status.
   signalStatus: {
-    en: { SUCCESS: "SUCCESS", FAILED: "FAILED", TIMEOUT: "TIMEOUT" },
-    tr: { SUCCESS: "başarılı", FAILED: "başarısız", TIMEOUT: "zaman aşımı" },
+    en: { SUCCESS: "SUCCESS", FAILED: "FAILED", TIMEOUT: "TIMEOUT", MISSING: "MISSING" },
+    tr: { SUCCESS: "başarılı", FAILED: "başarısız", TIMEOUT: "zaman aşımı", MISSING: "eksik" },
   },
   // `app/risk_trace.py` — `COVERAGE_COMPLETE` and `COVERAGE_PARTIAL`.
   coverageStatus: {
@@ -403,6 +999,156 @@ export const CANONICAL = {
     tr: { GENUINE: "Gerçek", AI_GENERATED: "Yapay zekâ üretimi", FACE_SWAP: "Yüz değiştirme", OTHER: "Diğer" },
   },
   /*
+   * R16 admin localization: the administrative console's machine words. Two shapes, chosen by
+   * what the English console already printed. Where it printed a label table of its own
+   * (`REVIEW_STATUS_LABELS`, `GROUND_TRUTH_*_LABELS`, `DATASET_SPLIT_LABELS` and the analyst
+   * assessment's), English holds that same label, so the English page is unchanged. Where it
+   * printed the API's spelling raw — the review queue's chips, the analytics' categories, the
+   * audit log's actions — English is the identity and the domain is named `…Code` where a
+   * labelled twin exists. Every value a form posts is still the key, untouched.
+   */
+  // `app/db/models.py` — `AUDIT_ACTION_*`, every action the API writes to `admin_audit_events`.
+  auditAction: {
+    en: {
+      USER_CREATED: "USER_CREATED",
+      USER_UPDATED: "USER_UPDATED",
+      USER_PASSWORD_RESET: "USER_PASSWORD_RESET",
+      API_KEY_CREATED: "API_KEY_CREATED",
+      API_KEY_REVOKED: "API_KEY_REVOKED",
+      REVIEW_CREATED: "REVIEW_CREATED",
+      REVIEW_UPDATED: "REVIEW_UPDATED",
+      GROUND_TRUTH_CREATED: "GROUND_TRUTH_CREATED",
+      GROUND_TRUTH_UPDATED: "GROUND_TRUTH_UPDATED",
+      DATASET_GOVERNANCE_CREATED: "DATASET_GOVERNANCE_CREATED",
+      DATASET_GOVERNANCE_UPDATED: "DATASET_GOVERNANCE_UPDATED",
+    },
+    tr: {
+      USER_CREATED: "Kullanıcı oluşturuldu",
+      USER_UPDATED: "Kullanıcı güncellendi",
+      USER_PASSWORD_RESET: "Parola sıfırlandı",
+      API_KEY_CREATED: "API anahtarı oluşturuldu",
+      API_KEY_REVOKED: "API anahtarı iptal edildi",
+      REVIEW_CREATED: "İnceleme oluşturuldu",
+      REVIEW_UPDATED: "İnceleme güncellendi",
+      GROUND_TRUTH_CREATED: "Ground Truth oluşturuldu",
+      GROUND_TRUTH_UPDATED: "Ground Truth güncellendi",
+      DATASET_GOVERNANCE_CREATED: "Veri kümesi yönetişimi oluşturuldu",
+      DATASET_GOVERNANCE_UPDATED: "Veri kümesi yönetişimi güncellendi",
+    },
+  },
+  // `app/db/models.py` — `AUDIT_TARGET_*`. English is the lower-cased spelling the log printed.
+  auditTarget: {
+    en: {
+      USER: "user",
+      API_KEY: "api_key",
+      ANALYSIS: "analysis",
+      GROUND_TRUTH: "ground_truth",
+      DATASET_GOVERNANCE: "dataset_governance",
+    },
+    tr: {
+      USER: "kullanıcı",
+      API_KEY: "API anahtarı",
+      ANALYSIS: "analiz",
+      GROUND_TRUTH: "Ground Truth",
+      DATASET_GOVERNANCE: "veri kümesi yönetişimi",
+    },
+  },
+  // `../admin/reviews` — `REVIEW_STATUS_LABELS`, as the case review prints them.
+  reviewStatus: {
+    en: { UNREVIEWED: "Not reviewed", REVIEWED: "Reviewed", NEEDS_FOLLOW_UP: "Needs follow-up" },
+    tr: { UNREVIEWED: "İncelenmedi", REVIEWED: "İncelendi", NEEDS_FOLLOW_UP: "Takip gerekiyor" },
+  },
+  // The same three, as the review queue prints them: the API's spelling.
+  reviewStatusCode: {
+    en: { UNREVIEWED: "UNREVIEWED", REVIEWED: "REVIEWED", NEEDS_FOLLOW_UP: "NEEDS_FOLLOW_UP" },
+    tr: { UNREVIEWED: "incelenmemiş", REVIEWED: "incelendi", NEEDS_FOLLOW_UP: "takip gerekiyor" },
+  },
+  // `../admin/reviews` — `ANALYST_ASSESSMENT_LABELS`; `""` is the form's "no assessment".
+  analystAssessment: {
+    en: {
+      "": "Not recorded",
+      AGREES_WITH_AUTOMATED_ASSESSMENT: "Agrees with automated assessment",
+      DISAGREES_WITH_AUTOMATED_ASSESSMENT: "Disagrees with automated assessment",
+      UNDETERMINED: "Undetermined",
+    },
+    tr: {
+      "": "Kaydedilmemiş",
+      AGREES_WITH_AUTOMATED_ASSESSMENT: "Otomatik değerlendirmeye katılıyor",
+      DISAGREES_WITH_AUTOMATED_ASSESSMENT: "Otomatik değerlendirmeye katılmıyor",
+      UNDETERMINED: "Belirsiz",
+    },
+  },
+  analystAssessmentCode: {
+    en: {
+      AGREES_WITH_AUTOMATED_ASSESSMENT: "AGREES_WITH_AUTOMATED_ASSESSMENT",
+      DISAGREES_WITH_AUTOMATED_ASSESSMENT: "DISAGREES_WITH_AUTOMATED_ASSESSMENT",
+      UNDETERMINED: "UNDETERMINED",
+    },
+    tr: {
+      AGREES_WITH_AUTOMATED_ASSESSMENT: "katılıyor",
+      DISAGREES_WITH_AUTOMATED_ASSESSMENT: "katılmıyor",
+      UNDETERMINED: "belirsiz",
+    },
+  },
+  // `feedbackAssessment` and `feedbackClaimedLabel` above, as the queue and analytics print them.
+  feedbackAssessmentCode: {
+    en: { AGREE: "AGREE", DISAGREE: "DISAGREE", UNSURE: "UNSURE" },
+    tr: { AGREE: "katılıyor", DISAGREE: "katılmıyor", UNSURE: "emin değil" },
+  },
+  claimedLabelCode: {
+    en: { GENUINE: "GENUINE", AI_GENERATED: "AI_GENERATED", FACE_SWAP: "FACE_SWAP", OTHER: "OTHER" },
+    tr: { GENUINE: "gerçek", AI_GENERATED: "yapay zekâ üretimi", FACE_SWAP: "yüz değiştirme", OTHER: "diğer" },
+  },
+  // `../admin/ground-truth` — `GROUND_TRUTH_LABEL_LABELS` and `GROUND_TRUTH_SOURCE_CLASS_LABELS`.
+  groundTruthLabel: {
+    en: {
+      GENUINE: "Genuine",
+      AI_GENERATED: "AI-generated",
+      FACE_SWAP: "Face swap",
+      AUDIO_MANIPULATION: "Audio manipulation",
+      OTHER_MANIPULATION: "Other manipulation",
+      UNKNOWN: "Unknown",
+    },
+    tr: {
+      GENUINE: "Gerçek",
+      AI_GENERATED: "Yapay zekâ üretimi",
+      FACE_SWAP: "Yüz değiştirme",
+      AUDIO_MANIPULATION: "Ses manipülasyonu",
+      OTHER_MANIPULATION: "Diğer manipülasyon",
+      UNKNOWN: "Bilinmiyor",
+    },
+  },
+  groundTruthSourceClass: {
+    en: {
+      OWNER_KNOWN: "Known to the owner",
+      CONTROLLED_TEST: "Controlled test",
+      EXTERNAL_VERIFIED: "Externally verified",
+      UNKNOWN: "Unknown",
+    },
+    tr: {
+      OWNER_KNOWN: "Sahibi tarafından biliniyor",
+      CONTROLLED_TEST: "Kontrollü test",
+      EXTERNAL_VERIFIED: "Harici olarak doğrulandı",
+      UNKNOWN: "Bilinmiyor",
+    },
+  },
+  // `../admin/dataset-governance` — `DATASET_SPLIT_LABELS`.
+  datasetSplit: {
+    en: { CALIBRATION: "Calibration", VALIDATION: "Validation", TEST: "Test", HOLDOUT: "Holdout" },
+    tr: { CALIBRATION: "Kalibrasyon", VALIDATION: "Doğrulama", TEST: "Test", HOLDOUT: "Ayrılmış (holdout)" },
+  },
+  // `../admin/promote-ground-truth/route.ts` — the step names it writes in front of a refusal
+  // ("Review: …", "Dataset governance was refused (HTTP 409)."); see `WEB_MESSAGE_PATTERNS`.
+  promotionStep: {
+    en: { Review: "Review", "Dataset governance": "Dataset governance", "Ground Truth": "Ground Truth" },
+    tr: { Review: "İnceleme", "Dataset governance": "Veri kümesi yönetişimi", "Ground Truth": "Ground Truth" },
+  },
+  // `app/db/models.py` — `ACQUISITION_METHOD_*`, and the analytics' own `unrecorded`.
+  acquisitionMethod: {
+    en: { upload: "upload", url: "url", unrecorded: "unrecorded" },
+    tr: { upload: "yükleme", url: "URL", unrecorded: "kaydedilmemiş" },
+  },
+  /*
    * The sentences this application's own route handlers and fetchers write, matched exactly.
    * They travel to the page as a query parameter or a fetch result, in English, and the page is
    * where they are named in the reader's language. The same slot also carries the API's own
@@ -425,6 +1171,155 @@ export const CANONICAL = {
       "No analysis was found with this id.": "Bu kimlikle bir analiz bulunamadı.",
       "This analysis is temporarily unavailable.": "Bu analiz geçici olarak kullanılamıyor.",
       "This analysis could not be read.": "Bu analiz okunamadı.",
+      // R16 admin localization — the administrative fetchers', route handlers' and key form's
+      // own sentences. The API's refusal text and the sentences that carry a status code or a
+      // stored value in them are not here, and are shown as they arrived.
+      "Choose how the label is known.":
+        "Etiketin nasıl bilindiğini seçin.",
+      "Choose how the label is known and what the media is before saving.":
+        "Kaydetmeden önce etiketin nasıl bilindiğini ve medyanın ne olduğunu seçin.",
+      "Choose the review status to leave this case in.":
+        "Bu vakanın bırakılacağı inceleme durumunu seçin.",
+      "Choose what the media is.":
+        "Medyanın ne olduğunu seçin.",
+      "Choose which media file this record is about.":
+        "Bu kaydın hangi medya dosyasıyla ilgili olduğunu seçin.",
+      "Dataset governance is temporarily unavailable.":
+        "Veri kümesi yönetişimi geçici olarak kullanılamıyor.",
+      "Dataset governance could not be read.":
+        "Veri kümesi yönetişimi okunamadı.",
+      "Give the account an email address.":
+        "Hesaba bir e-posta adresi verin.",
+      "Give the account a new password.":
+        "Hesaba yeni bir parola verin.",
+      "Give the account a password.":
+        "Hesaba bir parola verin.",
+      "Give the key a name.":
+        "Anahtara bir ad verin.",
+      "Ground Truth cannot be recorded because this analysis has no original media SHA-256 identity.":
+        "Bu analizin orijinal medyaya ait bir SHA-256 kimliği olmadığı için Ground Truth kaydedilemez.",
+      "Ground Truth could not be read.":
+        "Ground Truth okunamadı.",
+      "Ground Truth is temporarily unavailable.":
+        "Ground Truth geçici olarak kullanılamıyor.",
+      "No account has that id.":
+        "Bu kimliğe sahip bir hesap yok.",
+      "Sign in to create an account.":
+        "Hesap oluşturmak için giriş yapın.",
+      "Sign in to inspect detection jobs.":
+        "Tespit işlerini incelemek için giriş yapın.",
+      "Sign in to issue an API key.":
+        "API anahtarı oluşturmak için giriş yapın.",
+      "Sign in to manage accounts.":
+        "Hesapları yönetmek için giriş yapın.",
+      "Sign in to manage API keys.":
+        "API anahtarlarını yönetmek için giriş yapın.",
+      "Sign in to read dataset governance.":
+        "Veri kümesi yönetişimini okumak için giriş yapın.",
+      "Sign in to read Ground Truth.":
+        "Ground Truth'u okumak için giriş yapın.",
+      "Sign in to read the audit log.":
+        "Denetim kaydını okumak için giriş yapın.",
+      "Sign in to read the operational summary.":
+        "Operasyon özetini okumak için giriş yapın.",
+      "Sign in to read the review queue.":
+        "İnceleme kuyruğunu okumak için giriş yapın.",
+      "Sign in to read this review.":
+        "Bu incelemeyi okumak için giriş yapın.",
+      "Sign in to read user feedback.":
+        "Kullanıcı geri bildirimini okumak için giriş yapın.",
+      "Sign in to revoke an API key.":
+        "API anahtarını iptal etmek için giriş yapın.",
+      "State the source lineage and the dataset split before promoting.":
+        "Yükseltmeden önce kaynak soyunu ve veri kümesi bölümünü belirtin.",
+      "The account could not be created.":
+        "Hesap oluşturulamadı.",
+      "The account could not be read.":
+        "Hesap okunamadı.",
+      "The account is temporarily unavailable.":
+        "Hesap geçici olarak kullanılamıyor.",
+      "The account list could not be read.":
+        "Hesap listesi okunamadı.",
+      "The account list is temporarily unavailable.":
+        "Hesap listesi geçici olarak kullanılamıyor.",
+      "The account was created but could not be read back. Check the list.":
+        "Hesap oluşturuldu ancak geri okunamadı. Listeyi kontrol edin.",
+      "The API could not be reached during a promotion.":
+        "Yükseltme sırasında API'ye ulaşılamadı.",
+      "The API could not be reached for a review.":
+        "İnceleme için API'ye ulaşılamadı.",
+      "The API could not be reached for Ground Truth.":
+        "Ground Truth için API'ye ulaşılamadı.",
+      "The API has no media with this analysis's SHA-256.":
+        "API'de bu analizin SHA-256 değerine sahip bir medya yok.",
+      "The API key list could not be read.":
+        "API anahtarı listesi okunamadı.",
+      "The API key list is temporarily unavailable.":
+        "API anahtarı listesi geçici olarak kullanılamıyor.",
+      "The audit log could not be read.":
+        "Denetim kaydı okunamadı.",
+      "The audit log is temporarily unavailable.":
+        "Denetim kaydı geçici olarak kullanılamıyor.",
+      "The change could not be read.":
+        "Değişiklik okunamadı.",
+      "The change named no account.":
+        "Değişiklik herhangi bir hesabı belirtmedi.",
+      "The change was refused.":
+        "Değişiklik reddedildi.",
+      "The chosen SHA-256 is not a media file of this analysis.":
+        "Seçilen SHA-256 bu analizin bir medya dosyası değil.",
+      "The dashboard could not be reached. The key was not issued.":
+        "Panele ulaşılamadı. Anahtar oluşturulmadı.",
+      "The dataset governance record could not be read.":
+        "Veri kümesi yönetişimi kaydı okunamadı.",
+      "The Ground Truth record could not be read.":
+        "Ground Truth kaydı okunamadı.",
+      "The job list could not be read.":
+        "İş listesi okunamadı.",
+      "The job list is temporarily unavailable.":
+        "İş listesi geçici olarak kullanılamıyor.",
+      "The key could not be issued.":
+        "Anahtar oluşturulamadı.",
+      "The key could not be revoked.":
+        "Anahtar iptal edilemedi.",
+      "The key was issued but could not be read back. Check the list below.":
+        "Anahtar oluşturuldu ancak geri okunamadı. Aşağıdaki listeyi kontrol edin.",
+      "The key was revoked but could not be read back. Check the list below.":
+        "Anahtar iptal edildi ancak geri okunamadı. Aşağıdaki listeyi kontrol edin.",
+      "The operational summary could not be read.":
+        "Operasyon özeti okunamadı.",
+      "The operational summary is temporarily unavailable.":
+        "Operasyon özeti geçici olarak kullanılamıyor.",
+      "The password could not be reset.":
+        "Parola sıfırlanamadı.",
+      "The request could not be read.":
+        "İstek okunamadı.",
+      "The reset could not be read.":
+        "Sıfırlama okunamadı.",
+      "The reset named no account.":
+        "Sıfırlama herhangi bir hesabı belirtmedi.",
+      "The review could not be read.":
+        "İnceleme okunamadı.",
+      "The review is temporarily unavailable.":
+        "İnceleme geçici olarak kullanılamıyor.",
+      "The review queue could not be read.":
+        "İnceleme kuyruğu okunamadı.",
+      "The review queue is temporarily unavailable.":
+        "İnceleme kuyruğu geçici olarak kullanılamıyor.",
+      "The revocation could not be read.":
+        "İptal isteği okunamadı.",
+      "The revocation named no key.":
+        "İptal isteği herhangi bir anahtarı belirtmedi.",
+      "This account is not an administrator.":
+        "Bu hesap bir yönetici değil.",
+      "This request did not come from the dashboard.":
+        "Bu istek panelden gelmedi.",
+      "This step was not requested.":
+        "Bu adım istenmedi.",
+      "User feedback could not be read.":
+        "Kullanıcı geri bildirimi okunamadı.",
+      "User feedback is temporarily unavailable.":
+        "Kullanıcı geri bildirimi geçici olarak kullanılamıyor.",
     },
   },
 } as const satisfies Record<string, Record<Locale, Record<string, string>>>;
@@ -1307,7 +2202,95 @@ export function translateCanonical(
   if (table !== undefined && Object.hasOwn(table, value)) {
     return table[value];
   }
+  if (domain === "webMessage" && locale !== DEFAULT_LOCALE) {
+    return translateWebMessagePattern(locale, value) ?? value;
+  }
   return value;
+}
+
+/*
+ * The sentences this application writes with a runtime value inside them (R16 admin localization,
+ * Architect fix): a status code, a length, a field, a step, or another sentence. The words around
+ * the value are presentation and are translated; the value itself is filled back in as it
+ * arrived, except where its slot names a domain or a nested sentence, which are looked up the way
+ * they would be on their own. Matched against the whole sentence, first entry first; a sentence
+ * that matches nothing — the API's own refusal text among them — is still shown as it arrived.
+ *
+ * Slot kinds: `digits` (a status code or a count, raw), `field` (a form field's own name, raw),
+ * a `CanonicalDomain` (a known value, named in the reader's language), and `message` (the rest of
+ * the sentence, itself translated as a web message — or kept, if it is the API's text).
+ */
+type WebMessageSlot = "digits" | "field" | "message" | CanonicalDomain;
+
+export const WEB_MESSAGE_PATTERNS: ReadonlyArray<{
+  en: string;
+  tr: string;
+  slots: Record<string, WebMessageSlot>;
+}> = [
+  // `../admin/update-review/route.ts`, `../admin/update-ground-truth/route.ts`
+  { en: "The review was refused (HTTP {status}).", tr: "İnceleme reddedildi (HTTP {status}).", slots: { status: "digits" } },
+  { en: "The Ground Truth was refused (HTTP {status}).", tr: "Ground Truth reddedildi (HTTP {status}).", slots: { status: "digits" } },
+  // `../admin/create-api-key/route.ts`
+  { en: "A name may be at most {count} characters.", tr: "Ad en fazla {count} karakter olabilir.", slots: { count: "digits" } },
+  // `../admin/promotion.ts`
+  {
+    en: "{field} must be yes, no or not recorded.",
+    tr: "{field} alanı evet, hayır ya da kaydedilmemiş olmalıdır.",
+    slots: { field: "field" },
+  },
+  {
+    en: "The review changed to {status} after this form was opened; it was not updated. Check it and choose again.",
+    tr: "İnceleme, bu form açıldıktan sonra {status} durumuna geçti; güncellenmedi. Kontrol edip yeniden seçin.",
+    slots: { status: "reviewStatusCode" },
+  },
+  // `../admin/promote-ground-truth/route.ts`
+  { en: "{step} was refused (HTTP {status}).", tr: "{step} reddedildi (HTTP {status}).", slots: { step: "promotionStep", status: "digits" } },
+  { en: "{step}: the API could not be reached.", tr: "{step}: API'ye ulaşılamadı.", slots: { step: "promotionStep" } },
+  { en: "{step}: {detail}", tr: "{step}: {detail}", slots: { step: "promotionStep", detail: "message" } },
+];
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function slotPattern(kind: WebMessageSlot): string {
+  if (kind === "digits") return "(\\d+)";
+  if (kind === "field") return "([a-z][a-z0-9_]*)";
+  if (kind === "message") return "(.+)";
+  // A domain slot matches only a value the domain lists, so a pattern never claims a sentence
+  // whose value it could not name.
+  return `(${Object.keys(CANONICAL[kind].en).map(escapeRegExp).join("|")})`;
+}
+
+/** A runtime-valued web message in the reader's language, or null when no pattern matches it. */
+function translateWebMessagePattern(locale: Locale, text: string): string | null {
+  for (const pattern of WEB_MESSAGE_PATTERNS) {
+    const target = (pattern as Record<string, unknown>)[locale];
+    if (typeof target !== "string") continue;
+    const names: string[] = [];
+    const source = copySegments(pattern.en)
+      .map((segment) => {
+        if (typeof segment === "string") return escapeRegExp(segment);
+        names.push(segment.slot);
+        return slotPattern(pattern.slots[segment.slot]);
+      })
+      .join("");
+    const match = new RegExp(`^${source}$`, "s").exec(text);
+    if (match === null) continue;
+    const values: Record<string, string> = {};
+    names.forEach((name, index) => {
+      const raw = match[index + 1];
+      const kind = pattern.slots[name];
+      values[name] =
+        kind === "digits" || kind === "field"
+          ? raw
+          : kind === "message"
+            ? translateCanonical(locale, "webMessage", raw)
+            : translateCanonical(locale, kind, raw);
+    });
+    return copySegments(target)
+      .map((segment) => (typeof segment === "string" ? segment : values[segment.slot]))
+      .join("");
+  }
+  return null;
 }
 
 /**

@@ -49,7 +49,7 @@ export function AdminSection({
   tone = "default",
   children,
 }: {
-  title?: string;
+  title?: React.ReactNode;
   description?: React.ReactNode;
   actions?: React.ReactNode;
   bleed?: boolean;

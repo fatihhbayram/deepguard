@@ -18,6 +18,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { fetchSession } from "../../analysis";
+import { CanonicalLabel, MessageOption, T } from "../../i18n/client";
 import { ADMIN_REVIEW_QUEUE_PATH, adminAnalysisPath, LOGIN_PATH } from "../../session";
 import { AdminAlert } from "../components/AdminAlert";
 import { AdminPageHeader } from "../components/AdminPageHeader";
@@ -49,22 +50,20 @@ function Select({
   name,
   label,
   value,
-  options,
+  children,
 }: {
   name: string;
-  label: string;
+  label: React.ReactNode;
   value: string;
-  options: { value: string; label: string }[];
+  children: React.ReactNode;
 }) {
+  // The options are leaves that name themselves in the reader's language (`<MessageOption>`,
+  // `<CanonicalOption>`); every `value` they post is the API's own spelling, untouched.
   return (
     <label className="block min-w-0">
       <span className={LABEL}>{label}</span>
       <select name={name} defaultValue={value} className={CONTROL}>
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
+        {children}
       </select>
     </label>
   );
@@ -78,56 +77,63 @@ function Filters({ filters }: { filters: ReviewQueueFilters }) {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Select
           name="feedback_assessment"
-          label="Owner feedback"
+          label={<T k="admin.queue.filter.feedback" />}
           value={filters.feedback_assessment ?? ""}
-          options={[
-            { value: "", label: "Any" },
-            ...QUEUE_FEEDBACK_ASSESSMENTS.map((assessment) => ({
-              value: assessment,
-              label: `Has ${assessment}`,
-            })),
-          ]}
-        />
+        >
+          <MessageOption value="" k="admin.queue.filter.any" />
+          {QUEUE_FEEDBACK_ASSESSMENTS.map((assessment) => (
+            <MessageOption
+              key={assessment}
+              value={assessment}
+              k="admin.queue.filter.has"
+              values={{ assessment }}
+              domains={{ assessment: "feedbackAssessmentCode" }}
+            />
+          ))}
+        </Select>
         <Select
           name="decision"
-          label="Decision (r9-v5.0.0)"
+          label={<T k="admin.queue.filter.decision" values={{ ruleset: "r9-v5.0.0" }} />}
           value={filters.decision ?? ""}
-          options={[
-            { value: "", label: "Any" },
-            ...QUEUE_DECISIONS.map((decision) => ({ value: decision, label: decision })),
-          ]}
-        />
+        >
+          <MessageOption value="" k="admin.queue.filter.any" />
+          {/* A verdict is the ruleset's own word and is drawn raw in both languages, as the
+              report draws it. */}
+          {QUEUE_DECISIONS.map((decision) => (
+            <option key={decision} value={decision}>
+              {decision}
+            </option>
+          ))}
+        </Select>
         <Select
           name="signal_error"
-          label="Detector signals"
+          label={<T k="admin.queue.filter.signals" />}
           value={filters.signal_error ? "true" : ""}
-          options={[
-            { value: "", label: "Any" },
-            { value: "true", label: "Has FAILED or TIMEOUT" },
-          ]}
-        />
+        >
+          <MessageOption value="" k="admin.queue.filter.any" />
+          <MessageOption value="true" k="admin.queue.filter.signalError" />
+        </Select>
         <Select
           name="unreviewed_only"
-          label="Review state"
+          label={<T k="admin.queue.filter.reviewState" />}
           value={filters.unreviewed_only ? "" : "false"}
-          options={[
-            { value: "", label: "Not closed (unreviewed or follow-up)" },
-            { value: "false", label: "All, including REVIEWED" },
-          ]}
-        />
+        >
+          <MessageOption value="" k="admin.queue.filter.notClosed" />
+          <MessageOption value="false" k="admin.queue.filter.all" />
+        </Select>
       </div>
       <div className="mt-4 flex items-center gap-3">
         <button
           type="submit"
           className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-bone transition-colors duration-150 hover:border-rule"
         >
-          Apply filters
+          <T k="admin.queue.applyFilters" />
         </button>
         <Link
           href={ADMIN_REVIEW_QUEUE_PATH}
           className="text-[12px] text-muted underline decoration-hair underline-offset-2 hover:text-bone"
         >
-          Reset
+          <T k="admin.queue.reset" />
         </Link>
       </div>
     </form>
@@ -142,26 +148,36 @@ function Filters({ filters }: { filters: ReviewQueueFilters }) {
 function Verdict({ item }: { item: ReviewQueueItem }) {
   const [kind, value] =
     item.decision !== null
-      ? ["Decision", item.decision]
+      ? (["admin.queue.decision", item.decision] as const)
       : item.recorded_risk_level !== null
-        ? ["Recorded risk level", item.recorded_risk_level]
-        : ["Unrecognised", item.unrecognised_risk_state];
+        ? (["admin.queue.recordedRiskLevel", item.recorded_risk_level] as const)
+        : (["admin.queue.unrecognised", item.unrecognised_risk_state] as const);
 
   return (
     <div className="space-y-1">
-      <div className={LABEL}>{kind}</div>
+      <div className={LABEL}>
+        <T k={kind} />
+      </div>
       <div className="font-mono text-[13px] break-all text-bone">{value}</div>
       <AdminValue>{item.risk_rules_version}</AdminValue>
     </div>
   );
 }
 
-function Counts({ counts }: { counts: Record<string, number> }) {
+function Counts({
+  counts,
+  domain,
+}: {
+  counts: Record<string, number>;
+  domain: "feedbackAssessmentCode" | "signalStatus";
+}) {
+  // Each key named in the reader's language when this build knows it, and drawn exactly as the
+  // API spelled it when it does not; the count beside it is the API's own figure.
   return (
     <div className="space-y-0.5 font-mono text-[12px] text-muted">
       {Object.entries(counts).map(([key, count]) => (
         <div key={key} className={count > 0 ? "text-bone" : undefined}>
-          {key} {count}
+          <CanonicalLabel domain={domain} value={key} /> {count}
         </div>
       ))}
     </div>
@@ -181,7 +197,9 @@ function QueueRow({ item }: { item: ReviewQueueItem }) {
           </Link>
         </div>
         <div>
-          <span className={LABEL}>Created </span>
+          <span className={LABEL}>
+            <T k="admin.common.created" />{" "}
+          </span>
           <AdminValue>{item.created_at}</AdminValue>
         </div>
         {item.media_sha256s.length === 0 ? (
@@ -198,13 +216,19 @@ function QueueRow({ item }: { item: ReviewQueueItem }) {
       <Verdict item={item} />
 
       <div className="flex flex-wrap items-center gap-2">
-        <AdminStatusBadge tone="muted">{item.review_status}</AdminStatusBadge>
-        {item.analyst_assessment !== null && <AdminValue>{item.analyst_assessment}</AdminValue>}
+        <AdminStatusBadge tone="muted">
+          <CanonicalLabel domain="reviewStatusCode" value={item.review_status} />
+        </AdminStatusBadge>
+        {item.analyst_assessment !== null && (
+          <AdminValue>
+            <CanonicalLabel domain="analystAssessmentCode" value={item.analyst_assessment} />
+          </AdminValue>
+        )}
       </div>
 
-      <Counts counts={item.feedback_counts} />
+      <Counts counts={item.feedback_counts} domain="feedbackAssessmentCode" />
 
-      <Counts counts={item.signal_error_counts} />
+      <Counts counts={item.signal_error_counts} domain="signalStatus" />
     </div>
   );
 }
@@ -212,11 +236,21 @@ function QueueRow({ item }: { item: ReviewQueueItem }) {
 function QueueHeader() {
   return (
     <div className={`${GRID} px-5 py-3 text-[11px] font-medium tracking-[0.08em] text-muted uppercase`}>
-      <div>Analysis</div>
-      <div>Stored verdict</div>
-      <div>Review</div>
-      <div>Owner feedback</div>
-      <div>Signal errors</div>
+      <div>
+        <T k="admin.queue.column.analysis" />
+      </div>
+      <div>
+        <T k="admin.queue.column.verdict" />
+      </div>
+      <div>
+        <T k="admin.queue.column.review" />
+      </div>
+      <div>
+        <T k="admin.queue.column.feedback" />
+      </div>
+      <div>
+        <T k="admin.queue.column.signalErrors" />
+      </div>
     </div>
   );
 }
@@ -244,19 +278,23 @@ function Pager({
   return (
     <div className="mt-4 flex items-center justify-between gap-4">
       <p className="text-[12px] text-muted">
-        {shown === 0
-          ? `0 of ${total}`
-          : `${filters.offset + 1}–${filters.offset + shown} of ${total}`}
+        <T
+          k="admin.queue.range"
+          values={{
+            range: shown === 0 ? "0" : `${filters.offset + 1}–${filters.offset + shown}`,
+            total,
+          }}
+        />
       </p>
       <div className="flex gap-2">
         {filters.offset > 0 && (
           <Link href={link(previous)} className={style}>
-            Newer
+            <T k="admin.queue.newer" />
           </Link>
         )}
         {next < total && (
           <Link href={link(next)} className={style}>
-            Older
+            <T k="admin.queue.older" />
           </Link>
         )}
       </div>
@@ -285,8 +323,8 @@ export default async function AdminReviewQueue({
   return (
     <>
       <AdminPageHeader
-        title="Review queue"
-        description="Analyses matching the filters below, newest first. Being listed here is not a finding: it means only that the stored facts matched — owner feedback, the recorded decision, a detector that did not answer, or a review not yet closed. Nothing here is ranked or scored, and nothing here changes a result."
+        title={<T k="admin.queue.title" />}
+        description={<T k="admin.queue.description" />}
       />
 
       <div className="mt-5 space-y-5">
@@ -295,10 +333,14 @@ export default async function AdminReviewQueue({
         </AdminSection>
 
         {!result.ok ? (
-          <AdminAlert tone="error">{result.error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={result.error} />
+          </AdminAlert>
         ) : result.page.items.length === 0 ? (
           <AdminSection>
-            <p className="text-[13px] text-muted">No analysis matches these filters.</p>
+            <p className="text-[13px] text-muted">
+              <T k="admin.queue.empty" />
+            </p>
           </AdminSection>
         ) : (
           <div>

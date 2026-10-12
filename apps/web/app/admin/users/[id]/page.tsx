@@ -41,6 +41,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
 import { fetchSession } from "../../../analysis";
+import { CanonicalLabel, MessageOption, T } from "../../../i18n/client";
 import { LOGIN_PATH, USER_ROLE_ADMIN, USER_ROLE_USER, adminAccountPath } from "../../../session";
 import { AdminAlert } from "../../components/AdminAlert";
 import { AdminPageHeader } from "../../components/AdminPageHeader";
@@ -62,7 +63,7 @@ import { AdminAccount, MINIMUM_PASSWORD_LENGTH, fetchAccount } from "../../users
  */
 
 /** One labelled fact, as a definition-list pair. */
-function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+function Fact({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div>
       <dt className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
@@ -78,7 +79,7 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
 function Activity({ active }: { active: boolean }) {
   return (
     <AdminStatusBadge tone={active ? "neutral" : "negative"} dot>
-      {active ? "Active" : "Deactivated"}
+      <T k={active ? "admin.accounts.active" : "admin.accounts.deactivated"} />
     </AdminStatusBadge>
   );
 }
@@ -98,21 +99,23 @@ const BUTTON =
 /** What the account is, as stored. No control on this card — the ones below do the changing. */
 function Identity({ account }: { account: AdminAccount }) {
   return (
-    <AdminSection title="Account">
+    <AdminSection title={<T k="admin.account.title" />}>
       <dl className="mt-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
-        <Fact label="Email">
+        <Fact label={<T k="admin.accounts.email" />}>
           {/* Monospace: an address is a machine value the reader has to be able to check
               character by character, the same reason the list sets it this way. */}
           <span className="font-mono text-[12px] break-all">{account.email}</span>
         </Fact>
-        <Fact label="Identifier">
+        <Fact label={<T k="admin.account.identifier" />}>
           <span className="font-mono text-[11px] break-all text-muted">{account.id}</span>
         </Fact>
-        <Fact label="Role">{account.role === USER_ROLE_ADMIN ? "Admin" : "User"}</Fact>
-        <Fact label="Status">
+        <Fact label={<T k="admin.accounts.role" />}>
+          <T k={account.role === USER_ROLE_ADMIN ? "admin.accounts.role.admin" : "admin.accounts.role.user"} />
+        </Fact>
+        <Fact label={<T k="admin.accounts.column.status" />}>
           <Activity active={account.is_active} />
         </Fact>
-        <Fact label="Created">
+        <Fact label={<T k="admin.common.created" />}>
           {/* The API's own timestamp, shown as stored rather than reformatted into a local
               rendering the record does not hold — the convention every table here follows. */}
           <span className="font-mono text-[11px] text-muted">{account.created_at}</span>
@@ -141,8 +144,8 @@ function Identity({ account }: { account: AdminAccount }) {
 function AccountForm({ account }: { account: AdminAccount }) {
   return (
     <AdminSection
-      title="Change this account"
-      description="Changing the address renames the account: the old one stops working immediately and the new one starts. It does not sign the person out — a session is bound to the account, not to the address. Changing the role grants or withdraws access to this administrative surface."
+      title={<T k="admin.account.changeTitle" />}
+      description={<T k="admin.account.changeDescription" />}
     >
       <form
         action="/admin/update-user"
@@ -157,7 +160,7 @@ function AccountForm({ account }: { account: AdminAccount }) {
             htmlFor="account-email"
             className="block text-[11px] font-medium tracking-[0.08em] text-muted uppercase"
           >
-            Email
+            <T k="admin.accounts.email" />
           </label>
           <input
             id="account-email"
@@ -175,7 +178,7 @@ function AccountForm({ account }: { account: AdminAccount }) {
             htmlFor="account-role"
             className="block text-[11px] font-medium tracking-[0.08em] text-muted uppercase"
           >
-            Role
+            <T k="admin.accounts.role" />
           </label>
           <select
             id="account-role"
@@ -183,14 +186,14 @@ function AccountForm({ account }: { account: AdminAccount }) {
             defaultValue={account.role}
             className={FIELD}
           >
-            <option value={USER_ROLE_USER}>User</option>
-            <option value={USER_ROLE_ADMIN}>Admin</option>
+            <MessageOption value={USER_ROLE_USER} k="admin.accounts.role.user" />
+            <MessageOption value={USER_ROLE_ADMIN} k="admin.accounts.role.admin" />
           </select>
         </div>
 
         <div className="sm:col-span-2">
           <button type="submit" className={BUTTON}>
-            Save changes
+            <T k="admin.account.save" />
           </button>
         </div>
       </form>
@@ -212,15 +215,15 @@ function AccountForm({ account }: { account: AdminAccount }) {
 function Lifecycle({ account }: { account: AdminAccount }) {
   return (
     <AdminSection
-      title="Ending access"
-      description="Deactivating is how an account is removed here, and there is no delete. An account that has uploaded media is referenced by that media, and the audit log and any case reviews keep its identifier so that who did what stays answerable — deleting the row would either fail outright or erase that history. A deactivated account cannot sign in and its existing sessions stop working, while everything it submitted remains attributable. It can be reactivated from this page at any time."
+      title={<T k="admin.account.lifecycleTitle" />}
+      description={<T k="admin.account.lifecycleDescription" />}
     >
       <form action="/admin/update-user" method="post" className="mt-4">
         <input type="hidden" name="user_id" value={account.id} />
         <input type="hidden" name="return_to" value="detail" />
         <input type="hidden" name="is_active" value={account.is_active ? "false" : "true"} />
         <button type="submit" className={BUTTON}>
-          {account.is_active ? "Deactivate account" : "Reactivate account"}
+          <T k={account.is_active ? "admin.account.deactivate" : "admin.account.reactivate"} />
         </button>
       </form>
     </AdminSection>
@@ -244,16 +247,16 @@ function Lifecycle({ account }: { account: AdminAccount }) {
 function PasswordReset({ account, self }: { account: AdminAccount; self: boolean }) {
   return (
     <AdminSection
-      title="Reset the password"
+      title={<T k="admin.account.resetTitle" />}
       description={
         <p>
-          Setting a password here replaces the old one and immediately ends every session this
-          account has open, so anyone signed in as it is signed out. The password is stored only
-          as a hash and cannot be read back from anywhere — tell the person what it is, because
-          nothing in this deployment sends mail.
-          {self
-            ? " This is your own account: saving will sign you out, and you will need to sign back in with the password you set here."
-            : ""}
+          <T k="admin.account.resetDescription" />
+          {self ? (
+            <>
+              {" "}
+              <T k="admin.account.resetSelf" />
+            </>
+          ) : null}
         </p>
       }
     >
@@ -269,7 +272,7 @@ function PasswordReset({ account, self }: { account: AdminAccount; self: boolean
             htmlFor="account-password"
             className="block text-[11px] font-medium tracking-[0.08em] text-muted uppercase"
           >
-            New password
+            <T k="admin.account.newPassword" />
           </label>
           <input
             id="account-password"
@@ -281,12 +284,12 @@ function PasswordReset({ account, self }: { account: AdminAccount; self: boolean
             className={`${FIELD} font-mono`}
           />
           <p className="mt-1.5 text-[11px] text-muted">
-            At least {MINIMUM_PASSWORD_LENGTH} characters.
+            <T k="admin.accounts.passwordHelp" values={{ count: MINIMUM_PASSWORD_LENGTH }} />
           </p>
         </div>
 
         <button type="submit" className={`${BUTTON} mb-7`}>
-          Reset password
+          <T k="admin.account.resetSubmit" />
         </button>
       </form>
     </AdminSection>
@@ -337,8 +340,8 @@ export default async function AdminAccountDetail({
   return (
     <>
       <AdminPageHeader
-        title="Account"
-        description="One account, and everything an administrator can change about it. The list of every account in this deployment is on the accounts page; this screen is about this one."
+        title={<T k="admin.account.title" />}
+        description={<T k="admin.account.description" />}
         actions={
           // A reload of this page, and deliberately a link rather than a button: the account is
           // state another administrator can change, and there is no JavaScript here to notice
@@ -347,7 +350,7 @@ export default async function AdminAccountDetail({
             href={adminAccountPath(id)}
             className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
           >
-            Refresh
+            <T k="admin.common.refresh" />
           </Link>
         }
       />
@@ -358,25 +361,31 @@ export default async function AdminAccountDetail({
           rendered as text. */}
       {error && (
         <div className="mt-5">
-          <AdminAlert tone="error">{error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={error} />
+          </AdminAlert>
         </div>
       )}
       {reset !== null && !error && (
         <div className="mt-5">
           <AdminAlert tone="success">
-            Password reset. Every session this account had open has been ended.
+            <T k="admin.account.passwordReset" />
           </AdminAlert>
         </div>
       )}
       {updated !== null && !error && reset === null && (
         <div className="mt-5">
-          <AdminAlert tone="success">Account updated.</AdminAlert>
+          <AdminAlert tone="success">
+            <T k="admin.accounts.updated" />.
+          </AdminAlert>
         </div>
       )}
 
       <div className="mt-5 space-y-5">
         {!result.ok ? (
-          <AdminAlert tone="error">{result.error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={result.error} />
+          </AdminAlert>
         ) : (
           <>
             <Identity account={result.account} />
@@ -388,8 +397,8 @@ export default async function AdminAccountDetail({
               // is nothing here. A disabled control invites the reader to work out how to enable
               // it, and this one never can be — the rule is about who they are.
               <AdminSection
-                title="Change this account"
-                description="This is your own account. Its address, role and activation must be changed by another administrator — an administrator who demoted or deactivated themselves could no longer reach this page to put it back. You can still reset your own password below."
+                title={<T k="admin.account.changeTitle" />}
+                description={<T k="admin.account.ownDescription" />}
               />
             ) : (
               <>

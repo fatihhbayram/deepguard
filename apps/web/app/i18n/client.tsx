@@ -88,9 +88,60 @@ export function useLocale(): [Locale, (locale: Locale) => void] {
  * of this interface drawn inside one of those regions has to name its own language, or the
  * browser would apply the region's rules to it — case mapping under `uppercase` first among them.
  */
-export function T({ k }: { k: MessageKey }) {
+export function T({ k, values }: { k: MessageKey; values?: Record<string, ReactNode> }) {
   const [locale] = useLocale();
-  return <span lang={locale}>{translate(locale, k)}</span>;
+  return <span lang={locale}>{fillSlots(translate(locale, k), values)}</span>;
+}
+
+/*
+ * An interface string's `{name}` slots, filled from `values` (R16 admin localization). What fills
+ * a slot is never looked up — an id, an address or a count is drawn exactly as the record holds
+ * it — which is the rule `<Copy>` follows for the report's sentences.
+ */
+function fillSlots(text: string, values?: Record<string, ReactNode>): ReactNode {
+  if (values === undefined) return text;
+  return copySegments(text).map((segment, index) =>
+    typeof segment === "string" ? (
+      segment
+    ) : (
+      <Fragment key={index}>{values[segment.slot] ?? `{${segment.slot}}`}</Fragment>
+    ),
+  );
+}
+
+function fillSlotsText(text: string, values?: Record<string, string | number>): string {
+  if (values === undefined) return text;
+  return copySegments(text)
+    .map((segment) =>
+      typeof segment === "string" ? segment : String(values[segment.slot] ?? `{${segment.slot}}`),
+    )
+    .join("");
+}
+
+/**
+ * `<T>` for a `title`: an interface string as hover text, in the reader's language. The element
+ * that carries it is drawn here because an attribute cannot hold a client island — the reason
+ * `<CopyTitle>` exists for the report's sentences.
+ */
+export function MessageTitle({
+  k,
+  values,
+  as: Tag = "span",
+  className,
+  children,
+}: {
+  k: MessageKey;
+  values?: Record<string, string | number>;
+  as?: "span" | "div";
+  className?: string;
+  children: ReactNode;
+}) {
+  const [locale] = useLocale();
+  return (
+    <Tag className={className} title={fillSlotsText(translate(locale, k), values)}>
+      {children}
+    </Tag>
+  );
 }
 
 /**
@@ -225,12 +276,60 @@ export function CopyBesideRecord({
 }
 
 /**
+ * A `<nav>` whose accessible name is an interface string (R16 admin localization, Architect fix).
+ * `aria-label` is screen-reader copy and an attribute cannot hold a client island, so the element
+ * is drawn here and its contents — server-rendered — are handed through as `children`.
+ */
+export function MessageNav({
+  k,
+  className,
+  children,
+}: {
+  k: MessageKey;
+  className?: string;
+  children: ReactNode;
+}) {
+  const [locale] = useLocale();
+  return (
+    <nav aria-label={translate(locale, k)} className={className}>
+      {children}
+    </nav>
+  );
+}
+
+/**
  * One `<option>` naming an interface string. An `<option>` may hold only text, so the word is
  * computed here and handed to it as a string rather than rendered through `<T>`.
  */
-export function MessageOption({ value, k }: { value: string; k: MessageKey }) {
+export function MessageOption({
+  value,
+  k,
+  values,
+  domains,
+  disabled,
+}: {
+  value: string;
+  k: MessageKey;
+  values?: Record<string, string | number>;
+  /** A slot whose value is an API word with a name in the reader's language. */
+  domains?: Record<string, CanonicalDomain>;
+  disabled?: boolean;
+}) {
   const [locale] = useLocale();
-  return <option value={value}>{translate(locale, k)}</option>;
+  const named =
+    values === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(values).map(([slot, raw]) => {
+            const domain = domains?.[slot];
+            return [slot, domain === undefined ? raw : translateCanonical(locale, domain, String(raw))];
+          }),
+        );
+  return (
+    <option value={value} disabled={disabled}>
+      {fillSlotsText(translate(locale, k), named)}
+    </option>
+  );
 }
 
 /** One `<option>` naming a value the API owns. `value` is what the form posts, untouched. */

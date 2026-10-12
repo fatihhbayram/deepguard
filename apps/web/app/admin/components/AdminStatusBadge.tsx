@@ -56,8 +56,13 @@ export function AdminStatusBadge({
 }) {
   const styles = TONES[tone];
 
+  // `lang="en"` because the chip is `uppercase`: a raw API word drawn in it — a status this build
+  // does not name, an id-like token — must be cased by English rules, not as `İ` under a Turkish
+  // `<html lang>`. A word translated into the reader's language is a `<T>` or `<CanonicalLabel>`
+  // leaf that names its own language, so Turkish words inside still case as Turkish.
   return (
     <span
+      lang="en"
       title={title}
       className={`inline-flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] font-medium tracking-[0.08em] uppercase ${
         mono ? "font-mono" : ""

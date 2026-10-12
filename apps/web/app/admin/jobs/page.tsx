@@ -27,7 +27,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { fetchSession } from "../../analysis";
-import { CanonicalLabel } from "../../i18n/client";
+import { CanonicalLabel, MessageTitle, T } from "../../i18n/client";
 import { ADMIN_JOBS_PATH, adminAnalysisPath, LOGIN_PATH } from "../../session";
 import { AdminAlert } from "../components/AdminAlert";
 import { AdminPageHeader } from "../components/AdminPageHeader";
@@ -82,14 +82,14 @@ function Status({ status }: { status: string }) {
  * rather than about the worker that was holding it.
  */
 function Stale() {
+  // The hover text is presentation, so it is in the reader's language too (R16 admin
+  // localization); the chip sits inside the element that carries it.
   return (
-    <AdminStatusBadge
-      tone="warning"
-      dot
-      title="The worker's claim on this job expired while it was still running. Recovery will fail it on its next pass."
-    >
-      Stale
-    </AdminStatusBadge>
+    <MessageTitle k="admin.jobs.staleTitle">
+      <AdminStatusBadge tone="warning" dot>
+        <T k="admin.jobs.stale" />
+      </AdminStatusBadge>
+    </MessageTitle>
   );
 }
 
@@ -119,13 +119,19 @@ function JobRow({ job }: { job: AdminJob }) {
             </Link>
           </div>
           <div className="mt-1 truncate" title={job.id}>
-            <AdminValue>{`job ${job.id}`}</AdminValue>
+            <AdminValue>
+              <T k="admin.jobs.jobId" values={{ id: job.id }} />
+            </AdminValue>
           </div>
           {/* The correlation id the API bound to the request that queued this work, so one
               grep covers the browser request and the analysis minutes later. Null on every job
               queued before the column existed, and shown as absent rather than invented. */}
           <div className="mt-1 truncate">
-            <AdminValue>{job.request_id === null ? null : `request ${job.request_id}`}</AdminValue>
+            <AdminValue>
+              {job.request_id === null ? null : (
+                <T k="admin.common.requestId" values={{ id: job.request_id }} />
+              )}
+            </AdminValue>
           </div>
         </div>
 
@@ -140,15 +146,21 @@ function JobRow({ job }: { job: AdminJob }) {
             table already follow, and the one that keeps the lease out of a clock comparison. */}
         <div className="space-y-1">
           <div>
-            <span className="text-[11px] tracking-[0.08em] text-muted uppercase">Created </span>
+            <span className="text-[11px] tracking-[0.08em] text-muted uppercase">
+              <T k="admin.jobs.created" /> 
+            </span>
             <AdminValue>{job.created_at}</AdminValue>
           </div>
           <div>
-            <span className="text-[11px] tracking-[0.08em] text-muted uppercase">Updated </span>
+            <span className="text-[11px] tracking-[0.08em] text-muted uppercase">
+              <T k="admin.jobs.updated" /> 
+            </span>
             <AdminValue>{job.updated_at}</AdminValue>
           </div>
           <div>
-            <span className="text-[11px] tracking-[0.08em] text-muted uppercase">Lease </span>
+            <span className="text-[11px] tracking-[0.08em] text-muted uppercase">
+              <T k="admin.jobs.lease" /> 
+            </span>
             <AdminValue>{job.lease_expires_at}</AdminValue>
           </div>
         </div>
@@ -172,9 +184,15 @@ function JobRow({ job }: { job: AdminJob }) {
 function JobHeader() {
   return (
     <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.4fr)] gap-6 px-5 py-3 text-[11px] font-medium tracking-[0.08em] text-muted uppercase">
-      <div>Analysis</div>
-      <div>State</div>
-      <div>Timestamps</div>
+      <div>
+        <T k="admin.jobs.column.analysis" />
+      </div>
+      <div>
+        <T k="admin.jobs.column.state" />
+      </div>
+      <div>
+        <T k="admin.jobs.column.timestamps" />
+      </div>
     </div>
   );
 }
@@ -197,8 +215,8 @@ export default async function AdminJobs() {
   return (
     <>
       <AdminPageHeader
-        title="Detection jobs"
-        description="The most recent detection work in this deployment, newest first. A job marked stale was claimed by a worker whose lease has since expired; recovery fails those on its next pass and nothing here changes them. Failures carry the message the worker recorded."
+        title={<T k="admin.jobs.title" />}
+        description={<T k="admin.jobs.description" />}
         actions={
           // A reload of this page, and deliberately a link rather than a button: the queue moves
           // on its own and there is no JavaScript here to notice when it does. The cross-links
@@ -207,18 +225,20 @@ export default async function AdminJobs() {
             href={ADMIN_JOBS_PATH}
             className="rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
           >
-            Refresh
+            <T k="admin.common.refresh" />
           </Link>
         }
       />
 
       <div className="mt-5">
         {!result.ok ? (
-          <AdminAlert tone="error">{result.error}</AdminAlert>
+          <AdminAlert tone="error">
+            <CanonicalLabel domain="webMessage" value={result.error} />
+          </AdminAlert>
         ) : result.jobs.length === 0 ? (
           <AdminSection>
             <p className="text-[13px] text-muted">
-              No detection work has been submitted yet.
+              <T k="admin.jobs.empty" />
             </p>
           </AdminSection>
         ) : (

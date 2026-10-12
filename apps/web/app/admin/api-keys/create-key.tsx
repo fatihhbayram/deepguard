@@ -27,6 +27,8 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { CanonicalLabel, T, useLocale } from "../../i18n/client";
+import { translate } from "../../i18n/core";
 import type { CreatedApiKey } from "../api-keys";
 
 // Type-only, and it has to stay that way. `../api-keys` reads the session cookie through
@@ -82,16 +84,15 @@ function Secret({ value, onDismiss }: { value: string; onDismiss: () => void }) 
       className="mt-6 rounded-md border border-accent/40 bg-accent/10 p-5"
     >
       <p className="text-[13px] font-medium text-bone">
-        Copy this key now. It will not be shown again.
+        <T k="admin.apiKeys.secret.title" />
       </p>
       <p className="mt-1.5 max-w-[68ch] text-[13px] leading-relaxed text-muted">
-        InspectRoot stores only a hash of it and cannot recover the value. If it is lost, the only
-        remedy is to revoke this key and issue another.
+        <T k="admin.apiKeys.secret.detail" />
       </p>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <label className="sr-only" htmlFor="issued-key">
-          The issued API key
+          <T k="admin.apiKeys.secret.label" />
         </label>
         <input
           id="issued-key"
@@ -107,7 +108,7 @@ function Secret({ value, onDismiss }: { value: string; onDismiss: () => void }) 
           onClick={copy}
           className="cursor-pointer rounded-md border border-line px-3 py-2 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
         >
-          {copied === "done" ? "Copied" : "Copy"}
+          <T k={copied === "done" ? "admin.apiKeys.secret.copied" : "admin.apiKeys.secret.copy"} />
         </button>
         <button
           type="button"
@@ -117,14 +118,13 @@ function Secret({ value, onDismiss }: { value: string; onDismiss: () => void }) 
           onClick={onDismiss}
           className="cursor-pointer rounded-md border border-line px-3 py-2 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone"
         >
-          I have copied it
+          <T k="admin.apiKeys.secret.dismiss" />
         </button>
       </div>
 
       {copied === "failed" && (
         <p className="mt-3 text-[12px] text-muted">
-          This browser would not let the page write to the clipboard. Select the key above and
-          copy it yourself.
+          <T k="admin.apiKeys.secret.copyFailed" />
         </p>
       )}
     </div>
@@ -147,6 +147,7 @@ function Secret({ value, onDismiss }: { value: string; onDismiss: () => void }) 
  */
 export function CreateKey({ signInPath }: { signInPath: string }) {
   const router = useRouter();
+  const [locale] = useLocale();
   const [name, setName] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -212,7 +213,7 @@ export function CreateKey({ signInPath }: { signInPath: string }) {
             htmlFor="key-name"
             className="text-[11px] font-medium tracking-[0.08em] text-muted uppercase"
           >
-            Name
+            <T k="admin.apiKeys.name" />
           </label>
           <input
             id="key-name"
@@ -221,7 +222,7 @@ export function CreateKey({ signInPath }: { signInPath: string }) {
             maxLength={MAX_NAME_LENGTH}
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="Who is this key for?"
+            placeholder={translate(locale, "admin.apiKeys.namePlaceholder")}
             disabled={pending}
             className="mt-1.5 w-full rounded-md border border-line bg-ink px-3 py-2 text-[13px] text-bone transition-colors duration-150 hover:border-rule focus:border-rule focus:outline-none disabled:opacity-60"
           />
@@ -231,7 +232,7 @@ export function CreateKey({ signInPath }: { signInPath: string }) {
           disabled={pending}
           className="cursor-pointer rounded-md border border-line px-4 py-2 text-[13px] font-medium text-muted transition-colors duration-150 hover:border-rule hover:text-bone disabled:cursor-default disabled:opacity-60"
         >
-          {pending ? "Issuing…" : "Issue key"}
+          <T k={pending ? "admin.apiKeys.issuing" : "admin.apiKeys.issue"} />
         </button>
       </form>
 
@@ -240,14 +241,15 @@ export function CreateKey({ signInPath }: { signInPath: string }) {
           form and is unaffected. */}
       <noscript>
         <p className="mt-3 text-[12px] text-muted">
-          Issuing a key needs JavaScript: the secret is returned in the response and cannot be
-          carried safely in a page reload.
+          <T k="admin.apiKeys.noscript" />
         </p>
       </noscript>
 
       {error && (
         <p role="status" className="mt-3 text-[13px] text-rose-200">
-          {error}
+          {/* This component's own sentences, or the route handler's, named in the reader's
+              language; the API's own refusal text matches nothing and is drawn as it arrived. */}
+          <CanonicalLabel domain="webMessage" value={error} />
         </p>
       )}
 
