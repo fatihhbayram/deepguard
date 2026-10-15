@@ -993,3 +993,46 @@ Future work may include:
 - versioned recalibration and replay if justified
 
 Any threshold or detector change must create a new calibration/ruleset context and must never rewrite historical analyses.
+
+---
+
+## R17 — AI-Visual Detection Evaluation & Recall Improvement
+
+**Objective:** Measure how the production `r9-v5.0.0` system actually performs on AI-generated video (Sora, Veo, Runway) on a frozen, traceable dataset; analyse why it misses; and only after measurement, evaluate evidence-based recall-improvement candidates. The first five tasks do not change production.
+
+**Dataset:** `/home/adentechio/deepguard-corpus/r17-ai-visual-v1` (45 cases: 30 AI-generated, 15 real controls; the source-cluster count is frozen in `FREEZE.json`). This dataset is used as is; it is not redesigned.
+
+### R17-T1 — Dataset Validation & Freeze
+- **Objective:** Validate the manifest for structure, URLs, timestamps, and **ground-truth and provenance evidence**; complete the timestamp defects and AI-029/AI-030; produce the frozen manifest and the validation record.
+- **Closure Criteria:** 45/45 cases `VALIDATED`; every case's truth evidence is in the frozen record; manifest sha256 and counts are in `FREEZE.json`; every correction is in the CHANGELOG; the dataset path is unchanged; production, DB and ruleset are unchanged.
+
+### R17-T2 — Evaluation Harness
+- **Objective:** A harness that makes frozen manifest → clip extraction → production analysis → results.csv/json deterministic.
+- **Closure Criteria:** The harness runs end to end; the result schema and the scoring mapping (which canonical decision is positive, negative or abstention) are frozen before any result is seen.
+
+### R17-T3 — Production Baseline Evaluation
+- **Objective:** Baseline with `r9-v5.0.0`: case-level and source-cluster-level recall/FPR/abstention reported separately; provider failures reported separately.
+- **Closure Criteria:** Baseline report published; cluster-level results explicitly marked **not generalisable given the small number of source clusters**; threshold/ruleset unchanged.
+
+### R17-T4 — Failure & Aggregation Analysis
+- **Objective:** Analyse FN and abstention cases by detector, provider and generator; isolate the contribution of the aggregation rule.
+- **Closure Criteria:** A classified cause for every FN/abstention; no code or ruleset change.
+
+### R17-T5 — Challenger Experiments
+- **Objective:** Offline/evidence-only experiments driven by the T4 findings; nothing enters the production decision path.
+- **Closure Criteria:** Every challenger measured on the same frozen dataset and scoring mapping.
+
+### R17-T6 — Promotion Decision
+- **Objective:** Decide whether any challenger is promoted into a new versioned ruleset. Conditional: if none passes the thresholds, the ruleset does not change.
+- **Closure Criteria:** A new immutable ruleset is defined, or the phase closes without a ruleset change.
+
+#### Phase Rules:
+- `r9-v5.0.0` does not change until the baseline (T3) is complete; threshold/ruleset are not touched before T3.
+- No DB migration; no change to forensic semantics.
+- The scoring mapping and classification rules are frozen before results are seen.
+- Case-level and source-cluster-level metrics are reported separately; cluster-level results do not count as generalisable evidence.
+- No case with ambiguous ground truth enters the frozen set.
+- Minimum-change / YAGNI.
+
+#### Exit Criteria:
+- A frozen, traceable, truth-evidenced dataset; a baseline measurement; documented miss causes; a promotion decision (promotion, or an explicit "no promotion").
