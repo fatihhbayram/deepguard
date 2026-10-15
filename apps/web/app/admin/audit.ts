@@ -46,6 +46,20 @@ export const AUDIT_TIMEOUT_MS = 5000;
  */
 export type FieldChange = { old: unknown; new: unknown };
 
+/*
+ * The one recorded key that is not a field change (Audit log fix, after R16 admin localization).
+ *
+ * `app/api/admin_analyses.py` (`_review_changes`) writes `note_changed: true|false` on every
+ * review event: the note's text is withheld from the log, and this boolean is the only thing the
+ * log says about it — whether the wording moved. It is a statement, not a diff, so it is carried
+ * as a flag beside `changes` and never as an `{old, new}` pair: there was no `false → true`
+ * transition to show. Only this key, and only a boolean, is accepted in that shape; any other
+ * bare scalar is still a payload this file does not understand, and is refused.
+ */
+export const AUDIT_FLAG_NOTE_CHANGED = "note_changed";
+
+export type AuditFlags = { note_changed?: boolean };
+
 /**
  * One event as `/api/v1/admin/audit` reports it.
  *
@@ -66,6 +80,7 @@ export type AdminAuditEntry = {
   target_id: string;
   target_email_snapshot: string | null;
   changes: Record<string, FieldChange>;
+  flags: AuditFlags;
   request_id: string | null;
   created_at: string;
 };
@@ -91,21 +106,32 @@ function nullableString(value: unknown): string | null | undefined {
 }
 
 /**
- * The `changes` payload, or null for anything that is not one.
+ * The `changes` payload, split into its field changes and its flags, or null for anything that is
+ * not one.
  *
- * Every entry must be an object carrying both an `old` and a `new` key. The keys are required
+ * Every entry must be an object carrying both an `old` and a `new` key — except
+ * `note_changed`, which must be a boolean (see `AUDIT_FLAG_NOTE_CHANGED`). The keys are required
  * but their values are not constrained: `null` is a legitimate old value, and so is `false`,
  * so the test is for the key's presence rather than for its contents being truthy — the
  * difference between `"old" in entry` and `entry.old !== undefined` is the whole correctness
  * of this function.
  */
-export function parseChanges(payload: unknown): Record<string, FieldChange> | null {
+export function parseChanges(
+  payload: unknown,
+): { changes: Record<string, FieldChange>; flags: AuditFlags } | null {
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
     return null;
   }
 
-  const changes: Record<string, FieldChange> = {};
+  // Null-prototype, so a field the API names `__proto__` or `constructor` is an own key of the
+  // record like any other and can neither reach nor be read from `Object.prototype`.
+  const changes: Record<string, FieldChange> = Object.create(null);
+  const flags: AuditFlags = Object.create(null);
   for (const [field, entry] of Object.entries(payload)) {
+    if (field === AUDIT_FLAG_NOTE_CHANGED && typeof entry === "boolean") {
+      flags.note_changed = entry;
+      continue;
+    }
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
       return null;
     }
@@ -115,7 +141,7 @@ export function parseChanges(payload: unknown): Record<string, FieldChange> | nu
     changes[field] = { old: entry.old, new: entry.new };
   }
 
-  return changes;
+  return { changes, flags };
 }
 
 /** One event out of the payload, or null for anything that is not one. */
@@ -168,7 +194,8 @@ export function parseEvent(payload: unknown): AdminAuditEntry | null {
     target_type,
     target_id,
     target_email_snapshot: targetEmail,
-    changes: parsedChanges,
+    changes: parsedChanges.changes,
+    flags: parsedChanges.flags,
     request_id: requestId,
     created_at,
   };

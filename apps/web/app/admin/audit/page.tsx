@@ -33,7 +33,13 @@ import { AdminPageHeader } from "../components/AdminPageHeader";
 import { AdminSection } from "../components/AdminSection";
 import { AdminStatusBadge } from "../components/AdminStatusBadge";
 import { AdminValue } from "../components/AdminValue";
-import { AdminAuditEntry, FieldChange, fetchAuditEvents } from "../audit";
+import {
+  AUDIT_FLAG_NOTE_CHANGED,
+  AdminAuditEntry,
+  AuditFlags,
+  FieldChange,
+  fetchAuditEvents,
+} from "../audit";
 
 /*
  * The private `Legend`, `Heading`, `Alert` and `Value` this file carried — the fifth copy of the
@@ -69,10 +75,11 @@ function recorded(value: unknown): string {
  * able to associate each value with its field, and an event that changed two things should
  * read as two rows instead of a clause somebody has to parse.
  */
-function Diff({ changes }: { changes: Record<string, FieldChange> }) {
+function Diff({ changes, flags }: { changes: Record<string, FieldChange>; flags: AuditFlags }) {
   const entries = Object.entries(changes);
+  const noteChanged = flags.note_changed;
 
-  if (entries.length === 0) {
+  if (entries.length === 0 && noteChanged === undefined) {
     // The API does not write an event with an empty diff — that is the no-op case, and it
     // writes nothing at all. Drawn anyway rather than assumed away: an empty cell here would
     // otherwise be indistinguishable from a rendering bug.
@@ -103,6 +110,19 @@ function Diff({ changes }: { changes: Record<string, FieldChange> }) {
           </dd>
         </div>
       ))}
+      {/* A review event's statement about its note — the only thing the log records about it.
+          Not an `old → new` pair: it says whether the wording moved, and nothing moved from one
+          boolean to the other. The key is drawn raw, as every field name here is. */}
+      {noteChanged !== undefined && (
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <dt lang="en" className="font-mono text-[11px] tracking-[0.06em] text-muted uppercase">
+            {AUDIT_FLAG_NOTE_CHANGED}
+          </dt>
+          <dd className="text-[12px] text-bone">
+            <T k={noteChanged ? "admin.audit.noteChanged" : "admin.audit.noteUnchanged"} />
+          </dd>
+        </div>
+      )}
     </dl>
   );
 }
@@ -162,7 +182,7 @@ function EventRow({ event }: { event: AdminAuditEntry }) {
       </td>
 
       <td className="px-5 py-4">
-        <Diff changes={event.changes} />
+        <Diff changes={event.changes} flags={event.flags} />
       </td>
 
       <td className="px-5 py-4">

@@ -144,6 +144,15 @@ export const REVIEW_UPDATED_EVENT = auditEvent("REVIEW_UPDATED", 20, {
   status: { old: "UNREVIEWED", new: "REVIEWED" },
 });
 
+/** The same, for a review whose note did move: `note_changed: true` beside an assessment pair. */
+export const REVIEW_CREATED_EVENT = auditEvent("REVIEW_CREATED", 21, {
+  note_changed: true,
+  analyst_assessment: { old: null, new: "AGREES_WITH_AUTOMATED_ASSESSMENT" },
+});
+
+/** An event whose diff the console does not understand: a bare number under a field name. */
+export const MALFORMED_EVENT = auditEvent("USER_UPDATED", 22, { is_active: 0 });
+
 export const API_KEYS = [
   { id: "k0000000-0000-4000-8000-000000000001", name: "Acme production", is_active: true, created_at: "2026-10-03T09:00:00Z", last_used_at: null },
   { id: "k0000000-0000-4000-8000-000000000002", name: "Old pilot", is_active: false, created_at: "2026-09-03T09:00:00Z", last_used_at: "2026-09-04T09:00:00Z" },

@@ -81,7 +81,8 @@ const STATES = {
   "analytics:unavailable": [{ "/api/v1/admin/analytics": refused }, () => Analytics()],
   "audit": [{}, () => Audit()],
   "audit:empty": [{ "/api/v1/admin/audit": [] }, () => Audit()],
-  "audit:unreadable": [{ "/api/v1/admin/audit": [...F.AUDIT, F.REVIEW_UPDATED_EVENT] }, () => Audit()],
+  "audit:unreadable": [{ "/api/v1/admin/audit": [...F.AUDIT, F.MALFORMED_EVENT] }, () => Audit()],
+  "audit:reviewEvents": [{ "/api/v1/admin/audit": [F.REVIEW_CREATED_EVENT, ...F.AUDIT, F.REVIEW_UPDATED_EVENT] }, () => Audit()],
   "audit:unavailable": [{ "/api/v1/admin/audit": refused }, () => Audit()],
   "apiKeys": [{}, () => ApiKeys(page())],
   "apiKeys:confirm": [{}, () => ApiKeys(page({ revoking: F.API_KEYS[0].id }))],
@@ -319,15 +320,18 @@ function recordWords() {
       }
     }
   };
-  for (const fixture of [F.ADMIN, F.ACCOUNTS, F.JOBS, F.QUEUE, F.ANALYTICS, F.AUDIT, F.API_KEYS, F.REVIEW, F.GROUND_TRUTH, F.GOVERNANCE, F.FEEDBACK, F.ANALYSIS]) {
+  for (const fixture of [F.ADMIN, F.ACCOUNTS, F.JOBS, F.QUEUE, F.ANALYTICS, F.AUDIT, F.REVIEW_CREATED_EVENT, F.REVIEW_UPDATED_EVENT, F.API_KEYS, F.REVIEW, F.GROUND_TRUTH, F.GOVERNANCE, F.FEEDBACK, F.ANALYSIS]) {
     walk(fixture);
   }
   out.add(F.UNKNOWN_ACTION);
   out.add("WORKSPACE");
   // A diff's values are drawn as recorded, including the ones a domain names elsewhere (`USER`,
   // `ADMIN`) and the booleans, which the page writes out as `true` / `false`.
-  for (const event of F.AUDIT) {
-    for (const change of Object.values(event.changes)) for (const side of [change.old, change.new]) out.add(String(side));
+  for (const event of [...F.AUDIT, F.REVIEW_CREATED_EVENT, F.REVIEW_UPDATED_EVENT]) {
+    for (const change of Object.values(event.changes)) {
+      if (typeof change === "object" && change !== null) for (const side of [change.old, change.new]) out.add(String(side));
+    }
+    for (const key of Object.keys(event.changes)) out.add(key);
   }
   // An id shortened to its first eight characters, as the success notices print it.
   for (const id of [...F.ACCOUNTS.map((account) => account.id), ...F.API_KEYS.map((key) => key.id)]) out.add(id.slice(0, 8));
