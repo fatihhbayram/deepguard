@@ -1,0 +1,18 @@
+{
+ "schema": "r17-t2-expected-digests-1",
+ "dataset_path": "/home/adentechio/deepguard-corpus/r17-ai-visual-v1",
+ "sha256": {
+  "FREEZE.json": "c57220b755afe67a09fbc34f90f3ab7ff06e748e75ef8985de27bc07471d4c0d",
+  "manifest.csv": "ae9a231d020a942d26ae1706c4666b446c23ef7b5a3b31e83d3ca2a1b768048c",
+  "manifest.json": "5ce7d8363696b5370edd54f923ef816b60f671be2fa1ec9a67d0b488684d73e7"
+ },
+ "provenance": {
+  "kind": "architect_confirmed_bootstrap_trust_anchor",
+  "confirmed": "2026-10-16, Architect ruling on R17-T2 stop S7",
+  "basis": [
+   "R17-T1 excluded report docs/ai/r17_t1_report.md (written 2026-10-15T19:48Z, git-excluded)",
+   "R17-T1 execution transcript: sha256sum output at freeze time 2026-10-15T19:44:57Z"
+  ],
+  "note": "Commit 774fa33 (R17-T1) does not independently contain the FREEZE.json digest, nor the manifest.csv or manifest.json digests; VALIDATION_REPORT.md does not contain them either. The manifest digests are also recorded inside FREEZE.json, which cannot vouch for itself. T1 is not amended or rewritten. This file becomes the committed anchor with the R17-T2 closure commit."
+ }
+}

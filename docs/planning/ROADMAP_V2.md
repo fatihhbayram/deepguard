@@ -1009,6 +1009,7 @@ Any threshold or detector change must create a new calibration/ruleset context a
 ### R17-T2 — Evaluation Harness
 - **Objective:** A harness that makes frozen manifest → clip extraction → production analysis → results.csv/json deterministic.
 - **Closure Criteria:** The harness runs end to end; the result schema and the scoring mapping (which canonical decision is positive, negative or abstention) are frozen before any result is seen.
+- **Status:** CLOSED. Architect FINAL PASS on 2026-10-17. The extractor reproduced 45/45 frozen clips with 0 mismatches. A 2-clip non-dataset smoke run passed end to end and was sealed and verified. No R17 case was analysed. **T3 precondition:** re-acquire the sources and reproduce all 45 clips through the unchanged sha256 hard gate; one mismatch stops T3.
 
 ### R17-T3 — Production Baseline Evaluation
 - **Objective:** Baseline with `r9-v5.0.0`: case-level and source-cluster-level recall/FPR/abstention reported separately; provider failures reported separately.
