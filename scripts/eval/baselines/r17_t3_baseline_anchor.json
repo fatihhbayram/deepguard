@@ -1,0 +1,120 @@
+{
+ "calibration_id": "a74f6b9dbc64cead34cb8e31a03791228cdeb19497e8e5e0bc1a67c0337fc5f7",
+ "case_level": {
+  "AI": 30,
+  "FN": 1,
+  "FP": 0,
+  "REAL": 15,
+  "TN": 0,
+  "TP": 0,
+  "cases": 45,
+  "states": {
+   "abstention": 44,
+   "hash_blocked": 0,
+   "negative": 1,
+   "operational_failure": 0,
+   "positive": 0,
+   "protocol_violation": 0
+  }
+ },
+ "cluster_level": {
+  "K": 6,
+  "clusters": {
+   "CL-NASA-A2-ASCENT": {
+    "AI": 0,
+    "REAL": 5,
+    "cases": 5,
+    "states": {
+     "abstention": 5,
+     "hash_blocked": 0,
+     "negative": 0,
+     "operational_failure": 0,
+     "positive": 0,
+     "protocol_violation": 0
+    }
+   },
+   "CL-NASA-A2-SAW1": {
+    "AI": 0,
+    "REAL": 10,
+    "cases": 10,
+    "states": {
+     "abstention": 10,
+     "hash_blocked": 0,
+     "negative": 0,
+     "operational_failure": 0,
+     "positive": 0,
+     "protocol_violation": 0
+    }
+   },
+   "CL-RUNWAY-GEN3": {
+    "AI": 1,
+    "REAL": 0,
+    "cases": 1,
+    "states": {
+     "abstention": 1,
+     "hash_blocked": 0,
+     "negative": 0,
+     "operational_failure": 0,
+     "positive": 0,
+     "protocol_violation": 0
+    }
+   },
+   "CL-RUNWAY-GEN4": {
+    "AI": 1,
+    "REAL": 0,
+    "cases": 1,
+    "states": {
+     "abstention": 1,
+     "hash_blocked": 0,
+     "negative": 0,
+     "operational_failure": 0,
+     "positive": 0,
+     "protocol_violation": 0
+    }
+   },
+   "CL-SORA": {
+    "AI": 17,
+    "REAL": 0,
+    "cases": 17,
+    "states": {
+     "abstention": 16,
+     "hash_blocked": 0,
+     "negative": 1,
+     "operational_failure": 0,
+     "positive": 0,
+     "protocol_violation": 0
+    }
+   },
+   "CL-VEO": {
+    "AI": 11,
+    "REAL": 0,
+    "cases": 11,
+    "states": {
+     "abstention": 11,
+     "hash_blocked": 0,
+     "negative": 0,
+     "operational_failure": 0,
+     "positive": 0,
+     "protocol_violation": 0
+    }
+   }
+  },
+  "label": "6 source clusters, not independent, not generalisable"
+ },
+ "dataset_anchors": {
+  "FREEZE.json": "c57220b755afe67a09fbc34f90f3ab7ff06e748e75ef8985de27bc07471d4c0d",
+  "manifest.csv": "ae9a231d020a942d26ae1706c4666b446c23ef7b5a3b31e83d3ca2a1b768048c",
+  "manifest.json": "5ce7d8363696b5370edd54f923ef816b60f671be2fa1ec9a67d0b488684d73e7"
+ },
+ "phase_a_seal_root": "6fc23d408dc4da918fc85968acc364b700d1d770114d718735e2862687d2f579",
+ "results_json_sha256": "67bc12a0106c41d996f742fd9cb1dd848a8d38c94298b3a1459bd57b6298e70f",
+ "ruleset": "r9-v5.0.0",
+ "schema": "r17-t3-baseline-anchor-1",
+ "spec_sha256": {
+  "expected_digests": "61c080b848e174d3a00290bbb35386508bcde07fe7c98f3a19888797f88f8730",
+  "result_schema": "60158e98be71a26867246d25aa7a1099b51adefc3565d4bb4883286b61ea3375",
+  "scoring_freeze": "f476582e21baa23975322db0f52c148e2f74e21ff0ff6cda45b18625811e449e"
+ },
+ "t2_closure_commit": "40a5c1bb2b8bc20e6d9a55fcce200bd036f7b130",
+ "task": "R17-T3 Production Baseline Evaluation"
+}

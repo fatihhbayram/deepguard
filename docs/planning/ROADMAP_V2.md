@@ -1014,6 +1014,7 @@ Any threshold or detector change must create a new calibration/ruleset context a
 ### R17-T3 — Production Baseline Evaluation
 - **Objective:** Baseline with `r9-v5.0.0`: case-level and source-cluster-level recall/FPR/abstention reported separately; provider failures reported separately.
 - **Closure Criteria:** Baseline report published; cluster-level results explicitly marked **not generalisable given the small number of source clusters**; threshold/ruleset unchanged.
+- **Status:** CLOSED. Architect FINAL PASS on 2026-10-18. 45/45 clips through the hash gate, one attempt per case, Phase A sealed (root `6fc23d40…f579`), scorer passed, production snapshot unchanged. Case level: 44 abstention, 1 negative, 0 positive, 0 operational failure (TPR 0/1, FPR N/A). Anchor: `scripts/eval/baselines/r17_t3_baseline_anchor.json`.
 
 ### R17-T4 — Failure & Aggregation Analysis
 - **Objective:** Analyse FN and abstention cases by detector, provider and generator; isolate the contribution of the aggregation rule.
