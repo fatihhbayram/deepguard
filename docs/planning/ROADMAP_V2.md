@@ -1019,6 +1019,7 @@ Any threshold or detector change must create a new calibration/ruleset context a
 ### R17-T4 — Failure & Aggregation Analysis
 - **Objective:** Analyse FN and abstention cases by detector, provider and generator; isolate the contribution of the aggregation rule.
 - **Closure Criteria:** A classified cause for every FN/abstention; no code or ruleset change.
+- **Status:** CLOSED. Architect FINAL PASS on 2026-10-19. Offline and read-only, with every T3 integrity check verified. The cause taxonomy was frozen before per-case classification (sha256 `053bfd3d…ba0d`), but after the aggregate failure-kind frequencies had been seen. That is a recorded protocol deviation, so the cause counts are descriptive and exploratory, not preregistered. Primary causes for 45/45 cases: 24 `detector_input_ineligible` (face_manipulation `FaceDetectorNoFaceFound`), 20 `detector_runtime_failure` (a time-correlated synthetic_video `NvidiaProviderUnavailable` pattern), 1 `decision_contradicts_truth` (AI-002), 0 unclassifiable. All 44 abstentions are attributed to detector evidence and 0 to the aggregation rule. The unchanged `evaluate_v5` reproduced 45/45 stored verdicts. Record: `scripts/eval/baselines/r17_t4_case_causes.json`. **T5 carry-forward:** freeze the hypotheses and success criteria before any challenger result is seen.
 
 ### R17-T5 — Challenger Experiments
 - **Objective:** Offline/evidence-only experiments driven by the T4 findings; nothing enters the production decision path.
