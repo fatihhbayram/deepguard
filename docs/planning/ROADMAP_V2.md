@@ -1050,3 +1050,47 @@ Any threshold or detector change must create a new calibration/ruleset context a
 
 #### Exit Criteria:
 - A frozen, traceable, truth-evidenced dataset; a baseline measurement; documented miss causes; a promotion decision (promotion, or an explicit "no promotion").
+
+---
+
+## R18 — Detector Characterization, Dataset Expansion & Calibration
+
+**Phase Objective:**
+Determine whether InspectRoot's current forensic detectors have sufficient discriminative power for modern AI-generated video, distinguish detector limitations from calibration/aggregation limitations, expand the evaluation dataset with reliable AI and REAL ground truth, and evaluate improvements without changing production until a locked evaluation justifies promotion.
+
+**R17 Carry-Forward Findings:**
+- `r9-v5.0.0` remains production.
+- AI-visual recall is still insufficiently validated/improved.
+- `synthetic_video` provider reliability/rate limiting is a known external operational limitation.
+- Faceless fallback increased coverage but did not improve AI recall and can convert abstentions into false negatives.
+- LipForensics showed exploratory recall value but lacks adequate REAL talking-head safety validation.
+- Existing REAL controls are too narrow (NASA spacecraft footage) for general FPR conclusions.
+- Threshold changes must not be made before detector score distributions are characterized.
+- Ground truth must never be inferred from the detector being evaluated.
+
+**Planned Task Sequence:**
+- **R18-T1 — Existing Corpus Inventory & Dataset Gap Analysis** (CLOSED)
+- **R18-T2 — Automated Dataset Sourcing & Ground-Truth Validation**
+- **R18-T3 — Dataset Freeze & Leakage-Safe Split**
+- **R18-T4 — Detector Characterization**
+- **R18-T5 — Temporal Aggregation & Calibration Challengers**
+- **R18-T6 — Locked Evaluation & Promotion Decision**
+
+### R18-T1 — Existing Corpus Inventory & Dataset Gap Analysis (CLOSED)
+- **Objective:** Determine exactly what usable video material already exists under `/home/adentechio/deepguard-corpus/` before anything new is sourced: a deterministic, read-only catalogue (ffprobe + SHA-256), ground-truth confidence from an explicit trust-anchor allowlist only, technical inspectability tracked separately, and quantified gaps against the R18 target.
+- **Closure Criteria:** Inventory and gap analysis written; no corpus file modified; no detector, model or production analysis run; folder names never used as GT evidence; truth conflicts quarantined as `AMBIGUOUS`; no dataset admission decided.
+- **Status:** CLOSED. Architect FINAL PASS on 2026-10-20 (after PASS WITH FIXES). 6,760 media paths → 3,789 unique digests (3,765 INSPECTABLE, 24 UNREADABLE audio-only). GT confidence: 30 VERIFIED_AI, 25 VERIFIED_REAL, 3,697 LABEL_PRESENT_BUT_GT_INSUFFICIENT, 17 UNLABELED, 20 AMBIGUOUS; 0 truth conflicts. VERIFIED comes only from git-tracked anchors: historical docs/ai-only provenance records were not treated as sufficient trust anchors. **Verified ∧ inspectable = 55** (30 AI from 4 source clusters: Sora/Veo/Runway; 25 REAL: 15 NASA spacecraft, official-source capture statement + 10 R16 owner camera originals, owner-attested with a tracked hash anchor in `scripts/eval/r16_t6_pilot_dataset.py` ROOTS) → shortfall **245–445** against 300–500. Missing generators: Kling, Hailuo/MiniMax, Luma, Pika; missing REAL domains: webcam, interview/talking-head, podcast, street/outdoor, nature, vehicle, product, general faceless; face/talking-head metadata documented for 0 items (no detector run). Real-TurnTurk carries no camera video (rendered → AMBIGUOUS). `r17_t3_work` was scanned only as a narrow exception to recover the tracked-anchored frozen R17 clips. VCD1 is not verified (T2 source/provenance review). Records: `scripts/eval/baselines/r18_t1_corpus_inventory.json`, `scripts/eval/baselines/r18_t1_gap_analysis.json`.
+
+#### Phase Rules:
+1. **Production Isolation:** No change to `apps/*`, production DB/schema, `docker-compose.yml`, active ruleset, thresholds, or forensic semantics during T1–T5. `r9-v5.0.0` remains production unless R18-T6 explicitly approves a new immutable ruleset.
+2. **Dataset Sourcing:** The system should reuse suitable material already present under `/home/adentechio/deepguard-corpus/` before searching externally. Missing categories may later be sourced automatically. Automated discovery does NOT mean automatic ground-truth acceptance.
+3. **Ground Truth:**
+   - **AI:** Prefer official generator/provider sources and explicit official generation assertions. Never label a video AI merely because a detector/model says it looks synthetic.
+   - **REAL:** Prefer captured-footage sources with independently supportable provenance. Never label material REAL because InspectRoot or another AI detector returns a low synthetic score. CGI/rendered/mixed/ambiguous footage must be rejected or quarantined.
+4. **Dataset Target:** Aim for roughly 300–500 usable cases, subject to availability and ground-truth quality rather than an artificial quota. Desired balance includes AI (Sora, Veo, Runway, Kling, Hailuo/MiniMax, Luma, Pika, etc.) and REAL (smartphone, webcam, interview/talking-head, podcast, street/outdoor, nature, vehicle, product, faceless, face-present).
+5. **Face/Talking-Head Coverage:** Explicitly track `face_present`, `faceless`, and `speaking/talking_head` where determinable. LipForensics evaluation later requires meaningful REAL and AI talking-head populations.
+6. **Leakage Control:** Dataset splitting must be source-cluster-aware, not clip-random. Same source video / near-identical source scenes / tightly related material must not cross development, validation, and locked-test partitions.
+7. **Detector Characterization Before Calibration:** Characterize raw score distributions, ROC/PR, AUROC/AUPRC, and TPR at fixed FPR operating points before changing any thresholds.
+8. **Temporal Aggregation:** Offline evaluations of temporal windowing and aggregation functions (mean, median, max, top-k mean, p90/p95, consecutive-high).
+9. **Locked Evaluation Discipline:** Thresholds, calibration methods, aggregation rules, and success criteria must be frozen before locked-test results are viewed.
+10. **Minimum-Change / YAGNI:** Implement only what the current task requires. No speculative frameworks.

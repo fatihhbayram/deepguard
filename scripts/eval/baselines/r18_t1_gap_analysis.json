@@ -1,0 +1,525 @@
+{
+ "allowlist_candidates_not_granted": {
+  "external-genuine-vcd1": {
+   "by_documented_domain": {
+    "handheld phone (VCD1 th-m, documented)": 40,
+    "webcam (VCD1 th, documented)": 40
+   },
+   "inspectable": 80,
+   "unique": 80
+  }
+ },
+ "facial_semantic_metadata": {
+  "detector_or_vision_model_run": false,
+  "fields": {
+   "face_present": {
+    "None": 3789
+   },
+   "talking_head": {
+    "None": 3789
+   }
+  },
+  "note": "populated only from explicit fields of trusted manifests; none exists"
+ },
+ "gap_vs_r18_target": {
+  "desired_generators_missing": [
+   "Kling",
+   "Hailuo/MiniMax",
+   "Luma",
+   "Pika"
+  ],
+  "desired_generators_present": [
+   "Runway",
+   "Sora",
+   "Veo"
+  ],
+  "desired_real_domains_missing": [
+   "webcam",
+   "interview/talking-head",
+   "podcast",
+   "street/outdoor",
+   "nature",
+   "vehicle",
+   "product",
+   "faceless",
+   "face-present"
+  ],
+  "desired_real_domains_present": [
+   "smartphone"
+  ],
+  "face_or_talking_head_documented": 0,
+  "illustrative_even_split_shortfall": {
+   "AI": [
+    120,
+    220
+   ],
+   "REAL": [
+    125,
+    225
+   ],
+   "assumption": "half AI / half REAL; the plan names no ratio"
+  },
+  "shortfall_total": [
+   245,
+   445
+  ],
+  "target_cases": [
+   300,
+   500
+  ],
+  "verified_and_inspectable": {
+   "AI": 30,
+   "REAL": 25,
+   "total": 55
+  }
+ },
+ "ground_truth_confidence": {
+  "ambiguous_reasons": {
+   "rendered face-vector animation; the intake record states it carries no camera pixels and is not genuine footage": 6,
+   "truth outside the AI/REAL binary (MANIPULATED_OTHER)": 14
+  },
+  "by_technical_status": {
+   "INSPECTABLE": {
+    "AMBIGUOUS": 20,
+    "LABEL_PRESENT_BUT_GT_INSUFFICIENT": 3685,
+    "UNLABELED": 5,
+    "VERIFIED_AI": 30,
+    "VERIFIED_REAL": 25
+   },
+   "UNREADABLE": {
+    "AMBIGUOUS": 0,
+    "LABEL_PRESENT_BUT_GT_INSUFFICIENT": 12,
+    "UNLABELED": 12,
+    "VERIFIED_AI": 0,
+    "VERIFIED_REAL": 0
+   }
+  },
+  "unique": {
+   "AMBIGUOUS": 20,
+   "LABEL_PRESENT_BUT_GT_INSUFFICIENT": 3697,
+   "UNLABELED": 17,
+   "VERIFIED_AI": 30,
+   "VERIFIED_REAL": 25
+  }
+ },
+ "known_stock_outside_scan_root": [
+  {
+   "group": "primary_oos",
+   "label": "GENUINE",
+   "path": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_2684.MOV",
+   "sha256": "0c22e82da65391b4e84848a45a3ccac636fd2dfabd12b8696a041c220e338abc"
+  },
+  {
+   "group": "primary_oos",
+   "label": "GENUINE",
+   "path": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_2680.MOV",
+   "sha256": "2d7e714e274521c4ba1b2f0e84fb5272f4278d19f6caca0176c7af65b5072f9d"
+  },
+  {
+   "group": "primary_oos",
+   "label": "GENUINE",
+   "path": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_2683.MOV",
+   "sha256": "7ed24a6b066278a44cfe00611496afe3eb8c2c4861d8a9a74bc3cc2fb37df098"
+  },
+  {
+   "group": "primary_oos",
+   "label": "GENUINE",
+   "path": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_2682.MOV",
+   "sha256": "919f0631b14f9c8b11bc40350fe1c1612cc008e586877872802fb8432a847103"
+  },
+  {
+   "group": "primary_oos",
+   "label": "GENUINE",
+   "path": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_2679.MOV",
+   "sha256": "aa99c07001cbf31376eea8ab391a20b072fa5ed9cf3509e16758158e5c232864"
+  },
+  {
+   "group": "primary_oos",
+   "label": "GENUINE",
+   "path": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_2681.MOV",
+   "sha256": "cc4aaa8f9ef5a09e59a294b37db2974437025d05cca099a9f658c739ebc38149"
+  },
+  {
+   "group": "auxiliary_known_family",
+   "label": "GENUINE",
+   "path": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/c44a9914-9773-49a1-bf78-7cebad30da87.mp4",
+   "sha256": "622abd2a5937a8d29fd35cdb918ef6d16a79ecaebf9122644402939c6c79598d"
+  },
+  {
+   "group": "auxiliary_known_family",
+   "label": "GENUINE",
+   "path": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/75f4a707-9ae9-450a-834f-8c8d07739b47.mp4",
+   "sha256": "6bfffc567ec8005e0afb7aaa2c04524aca692da849275de9972302f5c7a390ad"
+  },
+  {
+   "group": "auxiliary_known_family",
+   "label": "GENUINE",
+   "path": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/2428f3a2-dd04-4bd0-aa8a-9de32529ecbb.mp4",
+   "sha256": "7d3ea31a2bbc2f971347ee2a209dd7a62b3c1739984fc6f7c0932fbeb44e3c41"
+  },
+  {
+   "group": "auxiliary_known_family",
+   "label": "GENUINE",
+   "path": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/840ba6cb-8f2d-43f8-a31e-d673bd7461ca.mp4",
+   "sha256": "886d68291040dc29c96b3ac247bce0b1282b77697fa7762ce1cfed8547b06980"
+  },
+  {
+   "group": "auxiliary_known_family",
+   "label": "GENUINE",
+   "path": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/259e9e09-a3df-4724-a1e1-f88b7b9e3a36.mp4",
+   "sha256": "8b6fb3ca9d9af6d0b2dfbfa593661ed5c111561aa8cf380a9811cf18fabf0822"
+  },
+  {
+   "group": "auxiliary_known_family",
+   "label": "GENUINE",
+   "path": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/3bf51d59-58b5-4c16-9f45-088154d78890.mp4",
+   "sha256": "ba3525981027812409a7fcfda3cee8861989403dd86d32af72559a1bb0eef169"
+  }
+ ],
+ "label_present_candidate_stock": {
+  "INSPECTABLE": {
+   "AI_GENERATED | Runway Gen-3": 1,
+   "AI_GENERATED | Runway Gen-4": 1,
+   "AI_GENERATED | Sora": 1,
+   "AI_GENERATED | Veo": 1,
+   "AI_GENERATED | personalized_talking_head": 2,
+   "AI_GENERATED | reenactment_liveportrait": 10,
+   "AI_GENERATED | t2v_allegro": 12,
+   "AI_GENERATED | t2v_cogvideox": 16,
+   "AI_GENERATED | t2v_gen3": 20,
+   "AI_GENERATED | t2v_hunyuanvideo": 12,
+   "AI_GENERATED | t2v_kling": 9,
+   "AI_GENERATED | t2v_ltxvideo": 12,
+   "AI_GENERATED | t2v_mochi1": 12,
+   "AI_GENERATED | t2v_pyramidflow": 16,
+   "AI_GENERATED | t2v_sora2": 9,
+   "AI_GENERATED | t2v_veo3": 9,
+   "AI_GENERATED | t2v_wan2": 16,
+   "AI_GENERATED | talkinghead_echomimic": 10,
+   "AI_GENERATED | talkinghead_memo": 10,
+   "AI_GENERATED | talkinghead_sonic": 18,
+   "FACE_SWAP | None": 40,
+   "FACE_SWAP | faceswap_blendface": 51,
+   "FACE_SWAP | faceswap_dfdm_dfaker": 15,
+   "FACE_SWAP | faceswap_dfdm_dfl_h128": 19,
+   "FACE_SWAP | faceswap_dfdm_iae": 15,
+   "FACE_SWAP | faceswap_dfdm_lightweight": 23,
+   "FACE_SWAP | faceswap_e4s": 41,
+   "FACE_SWAP | faceswap_facedancer": 39,
+   "FACE_SWAP | faceswap_fsgan": 39,
+   "FACE_SWAP | faceswap_inswapper": 39,
+   "FACE_SWAP | faceswap_mobileswap": 47,
+   "FACE_SWAP | faceswap_roop": 35,
+   "FACE_SWAP | faceswap_simswap": 55,
+   "FACE_SWAP | inthewild_social_deepfake": 59,
+   "FACE_SWAP | lipsync_lavdf": 35,
+   "FACE_SWAP | lipsync_wav2lip": 51,
+   "FACE_SWAP | reenact_dagan": 28,
+   "FACE_SWAP | reenact_fomm": 20,
+   "FACE_SWAP | reenact_hyperreenact": 24,
+   "FACE_SWAP | reenact_lia": 20,
+   "FACE_SWAP | reenact_mcnet": 32,
+   "FACE_SWAP | reenact_tpsm": 20,
+   "REAL | Microsoft VCD1": 80,
+   "REAL | NASA Artemis II Orion SAW1": 1,
+   "REAL | NASA Artemis II Orion ascent": 1,
+   "REAL | bilibili_upload": 50,
+   "REAL | broadcast_series_devtest": 132,
+   "REAL | broadcast_series_train": 130,
+   "REAL | celebv_hq": 152,
+   "REAL | consumer_longtail_scenes": 40,
+   "REAL | dh_facevid_1k": 102,
+   "REAL | douyin_short_video": 60,
+   "REAL | ffpp_real": 39,
+   "REAL | fmfcc_v_real": 50,
+   "REAL | high_resolution_talking_head": 104,
+   "REAL | librasil_consumer_capture": 152,
+   "REAL | mavos_real": 47,
+   "REAL | mavos_real_ar": 136,
+   "REAL | mavos_real_de": 136,
+   "REAL | mavos_real_en": 144,
+   "REAL | mavos_real_es": 122,
+   "REAL | mavos_real_hi": 136,
+   "REAL | mavos_real_ro": 90,
+   "REAL | mavos_real_ru": 122,
+   "REAL | mavos_real_zh": 136,
+   "REAL | phone_longtail_scenes": 64,
+   "REAL | polyglotfake_real": 40,
+   "REAL | real_world_regression": 18,
+   "REAL | slovo_consumer_capture": 140,
+   "REAL | social_media_real": 121,
+   "REAL | tiktok_short_video": 124,
+   "REAL | transcode_P1": 5,
+   "REAL | transcode_P2": 5,
+   "REAL | ucf_crime_clips": 62
+  },
+  "UNREADABLE": {
+   "REAL | Real-TurnTurk per-speaker isolated audio": 12
+  }
+ },
+ "metadata_conflict_registry": [],
+ "schema": "r18-t1-gap-analysis-1",
+ "stock_discovery": {
+  "duplicate_bytes": 8865431633,
+  "duplicate_paths": 2971,
+  "excluded_top_level": [
+   "models",
+   "r17_t3_blind_map",
+   "r17_t3_phase_a",
+   "r17_t3_phase_b",
+   "r17_t3_runlog",
+   "r17_t3_session",
+   "r17_t4_work",
+   "r17_t5_diagnostic",
+   "reports",
+   "runs"
+  ],
+  "manifest_rows_with_unresolved_paths": {
+   "missing_inside_root": {
+    "r10t4/manifest.csv": 46,
+    "r10t4/manifest_contended.csv": 16,
+    "r10t4/manifest_deep.csv": 29,
+    "r10t5/manifest.csv": 46,
+    "r10t5/manifest_contended.csv": 16,
+    "r9-preclosure/batch_1_manifest.csv": 181,
+    "r9-preclosure/batch_2_manifest.csv": 180,
+    "r9-preclosure/batch_3_manifest.csv": 179,
+    "r9-preclosure/batch_4_manifest.csv": 180
+   },
+   "pointing_outside_root": {
+    "r10t4/manifest.csv": 2,
+    "r10t4/manifest_deep.csv": 1,
+    "r10t5/manifest.csv": 2,
+    "r7t5/manifest.csv": 2,
+    "r7t5/manifest_effort_evaluation.csv": 2,
+    "r7t5/manifest_svd.csv": 2,
+    "r7t8-v1/manifest.csv": 2,
+    "r7t8-v1/manifest_effort_validation.csv": 2,
+    "r7t8/manifest.csv": 2,
+    "r7t8/manifest_effort_validation.csv": 2,
+    "r7t9-cache-src/manifest.csv": 2,
+    "r7t9/manifest.csv": 2,
+    "r7t9/manifest_effort_validation.csv": 2,
+    "r9-preclosure/batch_2_manifest.csv": 1,
+    "r9-preclosure/batch_3_manifest.csv": 1
+   }
+  },
+  "media_paths": 6760,
+  "out_of_extension_media_not_classified": [
+   "external-genuine-video-candidates/samples/grid/id23_6000_priazn.mpg",
+   "external-genuine-video-candidates/samples/grid/id2_6000_swwp2s.mpg",
+   "external-genuine-video-candidates/samples/grid/id2_vcd_swwp2s.mpg",
+   "external-genuine-video-candidates/samples/samples/1001_DFA_ANG_XX.flv",
+   "external-genuine-video-candidates/samples/samples/1076_MTI_NEU_XX.flv",
+   "external-genuine-video-candidates/samples/samples/1091_WSI_HAP_XX.flv"
+  ],
+  "paths_by_subcorpus": {
+   "external-genuine-real-turnturk": 30,
+   "external-genuine-vcd1": 80,
+   "external-genuine-video-candidates": 3,
+   "external-known-generated": 2,
+   "ff++_c23_r3t1": 40,
+   "ff++_c23_test_r3t1": 40,
+   "r16_pilot": 34,
+   "r16_pilot_raw": 38,
+   "r17_t3_work": 51,
+   "r4t1_calibration": 159,
+   "r7t5": 979,
+   "r7t5-svd-stage": 394,
+   "r7t8": 1032,
+   "r7t8-v1": 1032,
+   "r7t9": 1418,
+   "r7t9-cache-src": 1428
+  },
+  "symlinks_not_followed": [
+   {
+    "path": "r16_pilot_raw/genuine_source/candidates/IMG_1018.MOV",
+    "target": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_1018.MOV"
+   },
+   {
+    "path": "r16_pilot_raw/genuine_source/candidates/IMG_1019.MOV",
+    "target": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_1019.MOV"
+   },
+   {
+    "path": "r16_pilot_raw/genuine_source/candidates/IMG_1020.MOV",
+    "target": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_1020.MOV"
+   },
+   {
+    "path": "r16_pilot_raw/genuine_source/candidates/IMG_1021.MOV",
+    "target": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_1021.MOV"
+   },
+   {
+    "path": "r16_pilot_raw/genuine_source/candidates/IMG_1022.MOV",
+    "target": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_1022.MOV"
+   },
+   {
+    "path": "r16_pilot_raw/genuine_source/candidates/IMG_1023.MOV",
+    "target": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_1023.MOV"
+   },
+   {
+    "path": "r16_pilot_raw/genuine_source/candidates/IMG_1024.MOV",
+    "target": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_1024.MOV"
+   },
+   {
+    "path": "r16_pilot_raw/genuine_source/candidates/IMG_1025.MOV",
+    "target": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_1025.MOV"
+   },
+   {
+    "path": "r16_pilot_raw/genuine_source/candidates/IMG_1026.MOV",
+    "target": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_1026.MOV"
+   },
+   {
+    "path": "r16_pilot_raw/genuine_source/candidates/IMG_1028.MOV",
+    "target": "/home/adentechio/deepguard-p4-media/R15-T2-Real-Video/IMG_1028.MOV"
+   }
+  ],
+  "total_bytes": 24595123875,
+  "unique_by_canonical_subcorpus": {
+   "external-genuine-real-turnturk": 30,
+   "external-genuine-vcd1": 80,
+   "external-genuine-video-candidates": 1,
+   "external-known-generated": 2,
+   "ff++_c23_r3t1": 40,
+   "ff++_c23_test_r3t1": 39,
+   "r16_pilot": 34,
+   "r16_pilot_raw": 4,
+   "r17_t3_work": 51,
+   "r4t1_calibration": 80,
+   "r7t5": 469,
+   "r7t5-svd-stage": 353,
+   "r7t8": 134,
+   "r7t8-v1": 1016,
+   "r7t9": 44,
+   "r7t9-cache-src": 1412
+  },
+  "unique_sha256": 3789
+ },
+ "technical_inspectability": {
+  "unique": {
+   "INSPECTABLE": 3765,
+   "UNREADABLE": 24
+  },
+  "unreadable_reasons": {
+   "no video stream": 24
+  }
+ },
+ "trust_anchors": [
+  {
+   "anchor_source": "scripts/eval/specs/r17_t2_expected_digests.json (git-tracked, 40a5c1b)",
+   "corpus": "r17-ai-visual-v1",
+   "expected": {
+    "FREEZE.json": "c57220b755afe67a09fbc34f90f3ab7ff06e748e75ef8985de27bc07471d4c0d",
+    "manifest.csv": "ae9a231d020a942d26ae1706c4666b446c23ef7b5a3b31e83d3ca2a1b768048c",
+    "manifest.json": "5ce7d8363696b5370edd54f923ef816b60f671be2fa1ec9a67d0b488684d73e7"
+   },
+   "grants_verified": true,
+   "observed": {
+    "FREEZE.json": "c57220b755afe67a09fbc34f90f3ab7ff06e748e75ef8985de27bc07471d4c0d",
+    "manifest.csv": "ae9a231d020a942d26ae1706c4666b446c23ef7b5a3b31e83d3ca2a1b768048c",
+    "manifest.json": "5ce7d8363696b5370edd54f923ef816b60f671be2fa1ec9a67d0b488684d73e7"
+   },
+   "tracked": true,
+   "verified": true
+  },
+  {
+   "anchor_source": "docs/ai/reviews/R11_PHASE_CLOSURE.md, R11_T1 intake report (git-excluded)",
+   "corpus": "external-genuine-real-turnturk",
+   "expected": {
+    "manifest.json": "9cdbc0bba99a5cd0c363319a3a8835f906c45d93536aacb5368be80ea30cd711"
+   },
+   "grants_verified": false,
+   "observed": {
+    "manifest.json": "9cdbc0bba99a5cd0c363319a3a8835f906c45d93536aacb5368be80ea30cd711"
+   },
+   "tracked": false,
+   "verified": true
+  },
+  {
+   "anchor_source": "docs/ai/r16_t6_report.md, docs/ai/r16_t7_freeze.json (git-excluded)",
+   "corpus": "r16_pilot",
+   "expected": {
+    "pilot_manifest.json": "7f1d64dc648686e8f292c33fda37e48db3941c1bcc725318a8201f47c60945a3",
+    "sealed/pilot_ground_truth.json": "147eff948d393f698a9d92c3c56cee86b79fe8043f77a2b27cc32e8f0e38eda3"
+   },
+   "grants_verified": false,
+   "observed": {
+    "pilot_manifest.json": "7f1d64dc648686e8f292c33fda37e48db3941c1bcc725318a8201f47c60945a3",
+    "sealed/pilot_ground_truth.json": "147eff948d393f698a9d92c3c56cee86b79fe8043f77a2b27cc32e8f0e38eda3"
+   },
+   "seal_agrees": true,
+   "tracked": false,
+   "tracked_sub_anchor": {
+    "anchor_source": "scripts/eval/r16_t6_pilot_dataset.py ROOTS (git-tracked, afb8be9)",
+    "corpus": "r16_pilot owner originals",
+    "grants_verified": true,
+    "matched_in_corpus": 10,
+    "pinned_digests": 10,
+    "tracked": true,
+    "verified": true
+   },
+   "verified": true
+  },
+  {
+   "anchor_source": "docs/ai/r15_t7_freeze.json (git-excluded)",
+   "corpus": "r15_oos_manifest.json",
+   "expected": {
+    "r15_oos_manifest.json": "01f33af9f45db3ae2884514da15b6d55c4db37b94d594462387f54a31458d5bc"
+   },
+   "grants_verified": false,
+   "observed": {
+    "r15_oos_manifest.json": "01f33af9f45db3ae2884514da15b6d55c4db37b94d594462387f54a31458d5bc"
+   },
+   "tracked": false,
+   "verified": true
+  },
+  {
+   "allowlisted": false,
+   "anchor_source": "docs/ai/reviews/R11_PHASE_CLOSURE.md, docs/ai/r15_t7_freeze.json (git-excluded)",
+   "corpus": "external-genuine-vcd1",
+   "expected": {
+    "vcd1_intake_manifest.json": "2f44995f0fb2be0bce5ba7a61b72066ce30f5b8c36c8cdad75978184437b1476"
+   },
+   "grants_verified": false,
+   "observed": {
+    "vcd1_intake_manifest.json": "2f44995f0fb2be0bce5ba7a61b72066ce30f5b8c36c8cdad75978184437b1476"
+   },
+   "tracked": false,
+   "verified": true
+  }
+ ],
+ "untracked_anchor_not_granted": {
+  "by_subcorpus_and_class": {
+   "external-genuine-real-turnturk | AMBIGUOUS | INSPECTABLE": 6,
+   "external-genuine-real-turnturk | LABEL_PRESENT_BUT_GT_INSUFFICIENT | UNREADABLE": 12,
+   "r16_pilot | AMBIGUOUS | INSPECTABLE": 14,
+   "r16_pilot | LABEL_PRESENT_BUT_GT_INSUFFICIENT | INSPECTABLE": 10
+  },
+  "rule": "digest matches a git-excluded docs/ai/ record only; not a sufficient trust anchor for VERIFIED (Architect R18-T1 D-5)"
+ },
+ "verified_ai_by_generator": {
+  "inspectable": {
+   "Runway Gen-3": 1,
+   "Runway Gen-4": 1,
+   "Sora": 17,
+   "Veo": 11
+  },
+  "source_clusters": [
+   "CL-RUNWAY-GEN3",
+   "CL-RUNWAY-GEN4",
+   "CL-SORA",
+   "CL-VEO"
+  ]
+ },
+ "verified_real_by_capture_domain": {
+  "inspectable": {
+   "smartphone_handheld_owner": 10,
+   "spacecraft_onboard_camera": 15
+  },
+  "of_which_documented_derivatives": 0,
+  "source_clusters_or_lineages": [
+   "CL-NASA-A2-ASCENT",
+   "CL-NASA-A2-SAW1",
+   "r16-owner-session-2026-10-07"
+  ]
+ }
+}
