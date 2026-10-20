@@ -1,0 +1,8916 @@
+{
+ "c3_diagnostic": {
+  "counterfactual_figures": {
+   "FP_C1_all_real": 0,
+   "FP_C1_faceless_usable_real": 0,
+   "c1_changed_cases": [
+    "AI-004",
+    "AI-005",
+    "REAL-001",
+    "REAL-003",
+    "REAL-005",
+    "REAL-010"
+   ],
+   "c2_aux_cases@C0": [
+    "AI-018",
+    "AI-024"
+   ],
+   "c2_aux_cases@C1": [
+    "AI-018",
+    "AI-024"
+   ],
+   "c2_aux_fp@C0": [],
+   "c2_aux_fp@C1": [],
+   "c2_delta_tp@C0": 2,
+   "c2_delta_tp@C1": 2,
+   "faceless_by_truth": {
+    "AI": 9,
+    "REAL": 15
+   },
+   "faceless_cases": 24,
+   "faceless_coverage_gain": 6,
+   "faceless_decided": {
+    "C0": 0,
+    "C1": 6
+   },
+   "usable_real_cases": [
+    "REAL-001",
+    "REAL-003",
+    "REAL-005",
+    "REAL-010"
+   ],
+   "usable_real_denominator": 4
+  },
+  "counterfactual_metrics": {
+   "C0": {
+    "case_level": {
+     "AI": 30,
+     "FN": 4,
+     "FNR": {
+      "ci95": [
+       0.3976,
+       1.0
+      ],
+      "k": 4,
+      "n": 4,
+      "rate": 1.0
+     },
+     "FP": 0,
+     "FPR": {
+      "ci95": null,
+      "k": 0,
+      "n": 0,
+      "rate": null
+     },
+     "REAL": 15,
+     "TN": 0,
+     "TNR": {
+      "ci95": null,
+      "k": 0,
+      "n": 0,
+      "rate": null
+     },
+     "TP": 0,
+     "TPR": {
+      "ci95": [
+       0.0,
+       0.6024
+      ],
+      "k": 0,
+      "n": 4,
+      "rate": 0.0
+     },
+     "abstention_rate": {
+      "ci95": [
+       0.7878,
+       0.9752
+      ],
+      "k": 41,
+      "n": 45,
+      "rate": 0.9111
+     },
+     "abstention_rate_AI": {
+      "ci95": [
+       0.6928,
+       0.9624
+      ],
+      "k": 26,
+      "n": 30,
+      "rate": 0.8667
+     },
+     "abstention_rate_REAL": {
+      "ci95": [
+       0.782,
+       1.0
+      ],
+      "k": 15,
+      "n": 15,
+      "rate": 1.0
+     },
+     "cases": 45,
+     "coverage": {
+      "ci95": [
+       0.0248,
+       0.2122
+      ],
+      "k": 4,
+      "n": 45,
+      "rate": 0.0889
+     },
+     "coverage_AI": {
+      "ci95": [
+       0.0376,
+       0.3072
+      ],
+      "k": 4,
+      "n": 30,
+      "rate": 0.1333
+     },
+     "coverage_REAL": {
+      "ci95": [
+       0.0,
+       0.218
+      ],
+      "k": 0,
+      "n": 15,
+      "rate": 0.0
+     },
+     "hash_blocked_rate": {
+      "ci95": [
+       0.0,
+       0.0787
+      ],
+      "k": 0,
+      "n": 45,
+      "rate": 0.0
+     },
+     "operational_failure_rate": {
+      "ci95": [
+       0.0,
+       0.0787
+      ],
+      "k": 0,
+      "n": 45,
+      "rate": 0.0
+     },
+     "protocol_violation_rate": {
+      "ci95": [
+       0.0,
+       0.0787
+      ],
+      "k": 0,
+      "n": 45,
+      "rate": 0.0
+     },
+     "secondary_recall_abstention_as_miss": {
+      "ci95": [
+       0.0,
+       0.1157
+      ],
+      "k": 0,
+      "label": "secondary, abstention-as-miss",
+      "n": 30,
+      "rate": 0.0
+     },
+     "states": {
+      "abstention": 41,
+      "hash_blocked": 0,
+      "negative": 4,
+      "operational_failure": 0,
+      "positive": 0,
+      "protocol_violation": 0
+     }
+    },
+    "cluster_level": {
+     "clusters": {
+      "CL-NASA-A2-ASCENT": {
+       "AI": 0,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 5,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.4782,
+         1.0
+        ],
+        "k": 5,
+        "n": 5,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate_REAL": {
+        "ci95": [
+         0.4782,
+         1.0
+        ],
+        "k": 5,
+        "n": 5,
+        "rate": 1.0
+       },
+       "cases": 5,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "coverage_REAL": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": null,
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 0,
+        "rate": null
+       },
+       "states": {
+        "abstention": 5,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-NASA-A2-SAW1": {
+       "AI": 0,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 10,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.6915,
+         1.0
+        ],
+        "k": 10,
+        "n": 10,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate_REAL": {
+        "ci95": [
+         0.6915,
+         1.0
+        ],
+        "k": 10,
+        "n": 10,
+        "rate": 1.0
+       },
+       "cases": 10,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "coverage_REAL": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": null,
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 0,
+        "rate": null
+       },
+       "states": {
+        "abstention": 10,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-RUNWAY-GEN3": {
+       "AI": 1,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 1,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 1,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 1,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-RUNWAY-GEN4": {
+       "AI": 1,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 1,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 1,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 1,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-SORA": {
+       "AI": 17,
+       "FN": 4,
+       "FNR": {
+        "ci95": [
+         0.3976,
+         1.0
+        ],
+        "k": 4,
+        "n": 4,
+        "rate": 1.0
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": [
+         0.0,
+         0.6024
+        ],
+        "k": 0,
+        "n": 4,
+        "rate": 0.0
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.501,
+         0.9319
+        ],
+        "k": 13,
+        "n": 17,
+        "rate": 0.7647
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.501,
+         0.9319
+        ],
+        "k": 13,
+        "n": 17,
+        "rate": 0.7647
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 17,
+       "coverage": {
+        "ci95": [
+         0.0681,
+         0.499
+        ],
+        "k": 4,
+        "n": 17,
+        "rate": 0.2353
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0681,
+         0.499
+        ],
+        "k": 4,
+        "n": 17,
+        "rate": 0.2353
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "n": 17,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "n": 17,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "n": 17,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 17,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 13,
+        "hash_blocked": 0,
+        "negative": 4,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-VEO": {
+       "AI": 11,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.7151,
+         1.0
+        ],
+        "k": 11,
+        "n": 11,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.7151,
+         1.0
+        ],
+        "k": 11,
+        "n": 11,
+        "rate": 1.0
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 11,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 11,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 11,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      }
+     },
+     "label": "6 source clusters, not independent, not generalisable"
+    }
+   },
+   "C1": {
+    "case_level": {
+     "AI": 30,
+     "FN": 6,
+     "FNR": {
+      "ci95": [
+       0.5407,
+       1.0
+      ],
+      "k": 6,
+      "n": 6,
+      "rate": 1.0
+     },
+     "FP": 0,
+     "FPR": {
+      "ci95": [
+       0.0,
+       0.6024
+      ],
+      "k": 0,
+      "n": 4,
+      "rate": 0.0
+     },
+     "REAL": 15,
+     "TN": 4,
+     "TNR": {
+      "ci95": [
+       0.3976,
+       1.0
+      ],
+      "k": 4,
+      "n": 4,
+      "rate": 1.0
+     },
+     "TP": 0,
+     "TPR": {
+      "ci95": [
+       0.0,
+       0.4593
+      ],
+      "k": 0,
+      "n": 6,
+      "rate": 0.0
+     },
+     "abstention_rate": {
+      "ci95": [
+       0.6291,
+       0.888
+      ],
+      "k": 35,
+      "n": 45,
+      "rate": 0.7778
+     },
+     "abstention_rate_AI": {
+      "ci95": [
+       0.6143,
+       0.9229
+      ],
+      "k": 24,
+      "n": 30,
+      "rate": 0.8
+     },
+     "abstention_rate_REAL": {
+      "ci95": [
+       0.449,
+       0.9221
+      ],
+      "k": 11,
+      "n": 15,
+      "rate": 0.7333
+     },
+     "cases": 45,
+     "coverage": {
+      "ci95": [
+       0.112,
+       0.3709
+      ],
+      "k": 10,
+      "n": 45,
+      "rate": 0.2222
+     },
+     "coverage_AI": {
+      "ci95": [
+       0.0771,
+       0.3857
+      ],
+      "k": 6,
+      "n": 30,
+      "rate": 0.2
+     },
+     "coverage_REAL": {
+      "ci95": [
+       0.0779,
+       0.551
+      ],
+      "k": 4,
+      "n": 15,
+      "rate": 0.2667
+     },
+     "hash_blocked_rate": {
+      "ci95": [
+       0.0,
+       0.0787
+      ],
+      "k": 0,
+      "n": 45,
+      "rate": 0.0
+     },
+     "operational_failure_rate": {
+      "ci95": [
+       0.0,
+       0.0787
+      ],
+      "k": 0,
+      "n": 45,
+      "rate": 0.0
+     },
+     "protocol_violation_rate": {
+      "ci95": [
+       0.0,
+       0.0787
+      ],
+      "k": 0,
+      "n": 45,
+      "rate": 0.0
+     },
+     "secondary_recall_abstention_as_miss": {
+      "ci95": [
+       0.0,
+       0.1157
+      ],
+      "k": 0,
+      "label": "secondary, abstention-as-miss",
+      "n": 30,
+      "rate": 0.0
+     },
+     "states": {
+      "abstention": 35,
+      "hash_blocked": 0,
+      "negative": 10,
+      "operational_failure": 0,
+      "positive": 0,
+      "protocol_violation": 0
+     }
+    },
+    "cluster_level": {
+     "clusters": {
+      "CL-NASA-A2-ASCENT": {
+       "AI": 0,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 5,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.4782,
+         1.0
+        ],
+        "k": 5,
+        "n": 5,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate_REAL": {
+        "ci95": [
+         0.4782,
+         1.0
+        ],
+        "k": 5,
+        "n": 5,
+        "rate": 1.0
+       },
+       "cases": 5,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "coverage_REAL": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": null,
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 0,
+        "rate": null
+       },
+       "states": {
+        "abstention": 5,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-NASA-A2-SAW1": {
+       "AI": 0,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": [
+         0.0,
+         0.6024
+        ],
+        "k": 0,
+        "n": 4,
+        "rate": 0.0
+       },
+       "REAL": 10,
+       "TN": 4,
+       "TNR": {
+        "ci95": [
+         0.3976,
+         1.0
+        ],
+        "k": 4,
+        "n": 4,
+        "rate": 1.0
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.2624,
+         0.8784
+        ],
+        "k": 6,
+        "n": 10,
+        "rate": 0.6
+       },
+       "abstention_rate_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate_REAL": {
+        "ci95": [
+         0.2624,
+         0.8784
+        ],
+        "k": 6,
+        "n": 10,
+        "rate": 0.6
+       },
+       "cases": 10,
+       "coverage": {
+        "ci95": [
+         0.1216,
+         0.7376
+        ],
+        "k": 4,
+        "n": 10,
+        "rate": 0.4
+       },
+       "coverage_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "coverage_REAL": {
+        "ci95": [
+         0.1216,
+         0.7376
+        ],
+        "k": 4,
+        "n": 10,
+        "rate": 0.4
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": null,
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 0,
+        "rate": null
+       },
+       "states": {
+        "abstention": 6,
+        "hash_blocked": 0,
+        "negative": 4,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-RUNWAY-GEN3": {
+       "AI": 1,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 1,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 1,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 1,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-RUNWAY-GEN4": {
+       "AI": 1,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 1,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 1,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 1,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-SORA": {
+       "AI": 17,
+       "FN": 6,
+       "FNR": {
+        "ci95": [
+         0.5407,
+         1.0
+        ],
+        "k": 6,
+        "n": 6,
+        "rate": 1.0
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": [
+         0.0,
+         0.4593
+        ],
+        "k": 0,
+        "n": 6,
+        "rate": 0.0
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.3833,
+         0.8579
+        ],
+        "k": 11,
+        "n": 17,
+        "rate": 0.6471
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.3833,
+         0.8579
+        ],
+        "k": 11,
+        "n": 17,
+        "rate": 0.6471
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 17,
+       "coverage": {
+        "ci95": [
+         0.1421,
+         0.6167
+        ],
+        "k": 6,
+        "n": 17,
+        "rate": 0.3529
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.1421,
+         0.6167
+        ],
+        "k": 6,
+        "n": 17,
+        "rate": 0.3529
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "n": 17,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "n": 17,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "n": 17,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 17,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 11,
+        "hash_blocked": 0,
+        "negative": 6,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-VEO": {
+       "AI": 11,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.7151,
+         1.0
+        ],
+        "k": 11,
+        "n": 11,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.7151,
+         1.0
+        ],
+        "k": 11,
+        "n": 11,
+        "rate": 1.0
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 11,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 11,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 11,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      }
+     },
+     "label": "6 source clusters, not independent, not generalisable"
+    }
+   },
+   "C2@C0": {
+    "case_level": {
+     "AI": 30,
+     "FN": 4,
+     "FNR": {
+      "ci95": [
+       0.2228,
+       0.9567
+      ],
+      "k": 4,
+      "n": 6,
+      "rate": 0.6667
+     },
+     "FP": 0,
+     "FPR": {
+      "ci95": null,
+      "k": 0,
+      "n": 0,
+      "rate": null
+     },
+     "REAL": 15,
+     "TN": 0,
+     "TNR": {
+      "ci95": null,
+      "k": 0,
+      "n": 0,
+      "rate": null
+     },
+     "TP": 2,
+     "TPR": {
+      "ci95": [
+       0.0433,
+       0.7772
+      ],
+      "k": 2,
+      "n": 6,
+      "rate": 0.3333
+     },
+     "abstention_rate": {
+      "ci95": [
+       0.7321,
+       0.9495
+      ],
+      "k": 39,
+      "n": 45,
+      "rate": 0.8667
+     },
+     "abstention_rate_AI": {
+      "ci95": [
+       0.6143,
+       0.9229
+      ],
+      "k": 24,
+      "n": 30,
+      "rate": 0.8
+     },
+     "abstention_rate_REAL": {
+      "ci95": [
+       0.782,
+       1.0
+      ],
+      "k": 15,
+      "n": 15,
+      "rate": 1.0
+     },
+     "cases": 45,
+     "coverage": {
+      "ci95": [
+       0.0505,
+       0.2679
+      ],
+      "k": 6,
+      "n": 45,
+      "rate": 0.1333
+     },
+     "coverage_AI": {
+      "ci95": [
+       0.0771,
+       0.3857
+      ],
+      "k": 6,
+      "n": 30,
+      "rate": 0.2
+     },
+     "coverage_REAL": {
+      "ci95": [
+       0.0,
+       0.218
+      ],
+      "k": 0,
+      "n": 15,
+      "rate": 0.0
+     },
+     "hash_blocked_rate": {
+      "ci95": [
+       0.0,
+       0.0787
+      ],
+      "k": 0,
+      "n": 45,
+      "rate": 0.0
+     },
+     "operational_failure_rate": {
+      "ci95": [
+       0.0,
+       0.0787
+      ],
+      "k": 0,
+      "n": 45,
+      "rate": 0.0
+     },
+     "protocol_violation_rate": {
+      "ci95": [
+       0.0,
+       0.0787
+      ],
+      "k": 0,
+      "n": 45,
+      "rate": 0.0
+     },
+     "secondary_recall_abstention_as_miss": {
+      "ci95": [
+       0.0082,
+       0.2207
+      ],
+      "k": 2,
+      "label": "secondary, abstention-as-miss",
+      "n": 30,
+      "rate": 0.0667
+     },
+     "states": {
+      "abstention": 39,
+      "hash_blocked": 0,
+      "negative": 4,
+      "operational_failure": 0,
+      "positive": 2,
+      "protocol_violation": 0
+     }
+    },
+    "cluster_level": {
+     "clusters": {
+      "CL-NASA-A2-ASCENT": {
+       "AI": 0,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 5,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.4782,
+         1.0
+        ],
+        "k": 5,
+        "n": 5,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate_REAL": {
+        "ci95": [
+         0.4782,
+         1.0
+        ],
+        "k": 5,
+        "n": 5,
+        "rate": 1.0
+       },
+       "cases": 5,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "coverage_REAL": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": null,
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 0,
+        "rate": null
+       },
+       "states": {
+        "abstention": 5,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-NASA-A2-SAW1": {
+       "AI": 0,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 10,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.6915,
+         1.0
+        ],
+        "k": 10,
+        "n": 10,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate_REAL": {
+        "ci95": [
+         0.6915,
+         1.0
+        ],
+        "k": 10,
+        "n": 10,
+        "rate": 1.0
+       },
+       "cases": 10,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "coverage_REAL": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": null,
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 0,
+        "rate": null
+       },
+       "states": {
+        "abstention": 10,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-RUNWAY-GEN3": {
+       "AI": 1,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 1,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 1,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 1,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-RUNWAY-GEN4": {
+       "AI": 1,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 1,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 1,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 1,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-SORA": {
+       "AI": 17,
+       "FN": 4,
+       "FNR": {
+        "ci95": [
+         0.3976,
+         1.0
+        ],
+        "k": 4,
+        "n": 4,
+        "rate": 1.0
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": [
+         0.0,
+         0.6024
+        ],
+        "k": 0,
+        "n": 4,
+        "rate": 0.0
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.501,
+         0.9319
+        ],
+        "k": 13,
+        "n": 17,
+        "rate": 0.7647
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.501,
+         0.9319
+        ],
+        "k": 13,
+        "n": 17,
+        "rate": 0.7647
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 17,
+       "coverage": {
+        "ci95": [
+         0.0681,
+         0.499
+        ],
+        "k": 4,
+        "n": 17,
+        "rate": 0.2353
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0681,
+         0.499
+        ],
+        "k": 4,
+        "n": 17,
+        "rate": 0.2353
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "n": 17,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "n": 17,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "n": 17,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 17,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 13,
+        "hash_blocked": 0,
+        "negative": 4,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-VEO": {
+       "AI": 11,
+       "FN": 0,
+       "FNR": {
+        "ci95": [
+         0.0,
+         0.8419
+        ],
+        "k": 0,
+        "n": 2,
+        "rate": 0.0
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 2,
+       "TPR": {
+        "ci95": [
+         0.1581,
+         1.0
+        ],
+        "k": 2,
+        "n": 2,
+        "rate": 1.0
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.4822,
+         0.9772
+        ],
+        "k": 9,
+        "n": 11,
+        "rate": 0.8182
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.4822,
+         0.9772
+        ],
+        "k": 9,
+        "n": 11,
+        "rate": 0.8182
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 11,
+       "coverage": {
+        "ci95": [
+         0.0228,
+         0.5178
+        ],
+        "k": 2,
+        "n": 11,
+        "rate": 0.1818
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0228,
+         0.5178
+        ],
+        "k": 2,
+        "n": 11,
+        "rate": 0.1818
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0228,
+         0.5178
+        ],
+        "k": 2,
+        "label": "secondary, abstention-as-miss",
+        "n": 11,
+        "rate": 0.1818
+       },
+       "states": {
+        "abstention": 9,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 2,
+        "protocol_violation": 0
+       }
+      }
+     },
+     "label": "6 source clusters, not independent, not generalisable"
+    }
+   },
+   "C2@C1": {
+    "case_level": {
+     "AI": 30,
+     "FN": 6,
+     "FNR": {
+      "ci95": [
+       0.3491,
+       0.9681
+      ],
+      "k": 6,
+      "n": 8,
+      "rate": 0.75
+     },
+     "FP": 0,
+     "FPR": {
+      "ci95": [
+       0.0,
+       0.6024
+      ],
+      "k": 0,
+      "n": 4,
+      "rate": 0.0
+     },
+     "REAL": 15,
+     "TN": 4,
+     "TNR": {
+      "ci95": [
+       0.3976,
+       1.0
+      ],
+      "k": 4,
+      "n": 4,
+      "rate": 1.0
+     },
+     "TP": 2,
+     "TPR": {
+      "ci95": [
+       0.0319,
+       0.6509
+      ],
+      "k": 2,
+      "n": 8,
+      "rate": 0.25
+     },
+     "abstention_rate": {
+      "ci95": [
+       0.5806,
+       0.854
+      ],
+      "k": 33,
+      "n": 45,
+      "rate": 0.7333
+     },
+     "abstention_rate_AI": {
+      "ci95": [
+       0.5411,
+       0.8772
+      ],
+      "k": 22,
+      "n": 30,
+      "rate": 0.7333
+     },
+     "abstention_rate_REAL": {
+      "ci95": [
+       0.449,
+       0.9221
+      ],
+      "k": 11,
+      "n": 15,
+      "rate": 0.7333
+     },
+     "cases": 45,
+     "coverage": {
+      "ci95": [
+       0.146,
+       0.4194
+      ],
+      "k": 12,
+      "n": 45,
+      "rate": 0.2667
+     },
+     "coverage_AI": {
+      "ci95": [
+       0.1228,
+       0.4589
+      ],
+      "k": 8,
+      "n": 30,
+      "rate": 0.2667
+     },
+     "coverage_REAL": {
+      "ci95": [
+       0.0779,
+       0.551
+      ],
+      "k": 4,
+      "n": 15,
+      "rate": 0.2667
+     },
+     "hash_blocked_rate": {
+      "ci95": [
+       0.0,
+       0.0787
+      ],
+      "k": 0,
+      "n": 45,
+      "rate": 0.0
+     },
+     "operational_failure_rate": {
+      "ci95": [
+       0.0,
+       0.0787
+      ],
+      "k": 0,
+      "n": 45,
+      "rate": 0.0
+     },
+     "protocol_violation_rate": {
+      "ci95": [
+       0.0,
+       0.0787
+      ],
+      "k": 0,
+      "n": 45,
+      "rate": 0.0
+     },
+     "secondary_recall_abstention_as_miss": {
+      "ci95": [
+       0.0082,
+       0.2207
+      ],
+      "k": 2,
+      "label": "secondary, abstention-as-miss",
+      "n": 30,
+      "rate": 0.0667
+     },
+     "states": {
+      "abstention": 33,
+      "hash_blocked": 0,
+      "negative": 10,
+      "operational_failure": 0,
+      "positive": 2,
+      "protocol_violation": 0
+     }
+    },
+    "cluster_level": {
+     "clusters": {
+      "CL-NASA-A2-ASCENT": {
+       "AI": 0,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 5,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.4782,
+         1.0
+        ],
+        "k": 5,
+        "n": 5,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate_REAL": {
+        "ci95": [
+         0.4782,
+         1.0
+        ],
+        "k": 5,
+        "n": 5,
+        "rate": 1.0
+       },
+       "cases": 5,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "coverage_REAL": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.5218
+        ],
+        "k": 0,
+        "n": 5,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": null,
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 0,
+        "rate": null
+       },
+       "states": {
+        "abstention": 5,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-NASA-A2-SAW1": {
+       "AI": 0,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": [
+         0.0,
+         0.6024
+        ],
+        "k": 0,
+        "n": 4,
+        "rate": 0.0
+       },
+       "REAL": 10,
+       "TN": 4,
+       "TNR": {
+        "ci95": [
+         0.3976,
+         1.0
+        ],
+        "k": 4,
+        "n": 4,
+        "rate": 1.0
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.2624,
+         0.8784
+        ],
+        "k": 6,
+        "n": 10,
+        "rate": 0.6
+       },
+       "abstention_rate_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate_REAL": {
+        "ci95": [
+         0.2624,
+         0.8784
+        ],
+        "k": 6,
+        "n": 10,
+        "rate": 0.6
+       },
+       "cases": 10,
+       "coverage": {
+        "ci95": [
+         0.1216,
+         0.7376
+        ],
+        "k": 4,
+        "n": 10,
+        "rate": 0.4
+       },
+       "coverage_AI": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "coverage_REAL": {
+        "ci95": [
+         0.1216,
+         0.7376
+        ],
+        "k": 4,
+        "n": 10,
+        "rate": 0.4
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.3085
+        ],
+        "k": 0,
+        "n": 10,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": null,
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 0,
+        "rate": null
+       },
+       "states": {
+        "abstention": 6,
+        "hash_blocked": 0,
+        "negative": 4,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-RUNWAY-GEN3": {
+       "AI": 1,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 1,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 1,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 1,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-RUNWAY-GEN4": {
+       "AI": 1,
+       "FN": 0,
+       "FNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.025,
+         1.0
+        ],
+        "k": 1,
+        "n": 1,
+        "rate": 1.0
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 1,
+       "coverage": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "n": 1,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.975
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 1,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 1,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-SORA": {
+       "AI": 17,
+       "FN": 6,
+       "FNR": {
+        "ci95": [
+         0.5407,
+         1.0
+        ],
+        "k": 6,
+        "n": 6,
+        "rate": 1.0
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 0,
+       "TPR": {
+        "ci95": [
+         0.0,
+         0.4593
+        ],
+        "k": 0,
+        "n": 6,
+        "rate": 0.0
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.3833,
+         0.8579
+        ],
+        "k": 11,
+        "n": 17,
+        "rate": 0.6471
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.3833,
+         0.8579
+        ],
+        "k": 11,
+        "n": 17,
+        "rate": 0.6471
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 17,
+       "coverage": {
+        "ci95": [
+         0.1421,
+         0.6167
+        ],
+        "k": 6,
+        "n": 17,
+        "rate": 0.3529
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.1421,
+         0.6167
+        ],
+        "k": 6,
+        "n": 17,
+        "rate": 0.3529
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "n": 17,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "n": 17,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "n": 17,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0,
+         0.1951
+        ],
+        "k": 0,
+        "label": "secondary, abstention-as-miss",
+        "n": 17,
+        "rate": 0.0
+       },
+       "states": {
+        "abstention": 11,
+        "hash_blocked": 0,
+        "negative": 6,
+        "operational_failure": 0,
+        "positive": 0,
+        "protocol_violation": 0
+       }
+      },
+      "CL-VEO": {
+       "AI": 11,
+       "FN": 0,
+       "FNR": {
+        "ci95": [
+         0.0,
+         0.8419
+        ],
+        "k": 0,
+        "n": 2,
+        "rate": 0.0
+       },
+       "FP": 0,
+       "FPR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "REAL": 0,
+       "TN": 0,
+       "TNR": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "TP": 2,
+       "TPR": {
+        "ci95": [
+         0.1581,
+         1.0
+        ],
+        "k": 2,
+        "n": 2,
+        "rate": 1.0
+       },
+       "abstention_rate": {
+        "ci95": [
+         0.4822,
+         0.9772
+        ],
+        "k": 9,
+        "n": 11,
+        "rate": 0.8182
+       },
+       "abstention_rate_AI": {
+        "ci95": [
+         0.4822,
+         0.9772
+        ],
+        "k": 9,
+        "n": 11,
+        "rate": 0.8182
+       },
+       "abstention_rate_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "cases": 11,
+       "coverage": {
+        "ci95": [
+         0.0228,
+         0.5178
+        ],
+        "k": 2,
+        "n": 11,
+        "rate": 0.1818
+       },
+       "coverage_AI": {
+        "ci95": [
+         0.0228,
+         0.5178
+        ],
+        "k": 2,
+        "n": 11,
+        "rate": 0.1818
+       },
+       "coverage_REAL": {
+        "ci95": null,
+        "k": 0,
+        "n": 0,
+        "rate": null
+       },
+       "hash_blocked_rate": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "operational_failure_rate": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "protocol_violation_rate": {
+        "ci95": [
+         0.0,
+         0.2849
+        ],
+        "k": 0,
+        "n": 11,
+        "rate": 0.0
+       },
+       "secondary_recall_abstention_as_miss": {
+        "ci95": [
+         0.0228,
+         0.5178
+        ],
+        "k": 2,
+        "label": "secondary, abstention-as-miss",
+        "n": 11,
+        "rate": 0.1818
+       },
+       "states": {
+        "abstention": 9,
+        "hash_blocked": 0,
+        "negative": 0,
+        "operational_failure": 0,
+        "positive": 2,
+        "protocol_violation": 0
+       }
+      }
+     },
+     "label": "6 source clusters, not independent, not generalisable"
+    }
+   }
+  },
+  "delta_vs_factual_case_level": {
+   "C0": {
+    "FN": 3,
+    "FP": 0,
+    "TN": 0,
+    "TP": 0,
+    "TPR_counterfactual": {
+     "ci95": [
+      0.0,
+      0.6024
+     ],
+     "k": 0,
+     "n": 4,
+     "rate": 0.0
+    },
+    "TPR_factual": {
+     "ci95": [
+      0.0,
+      0.975
+     ],
+     "k": 0,
+     "n": 1,
+     "rate": 0.0
+    },
+    "coverage_decided": 3
+   },
+   "C1": {
+    "FN": 5,
+    "FP": 0,
+    "TN": 0,
+    "TP": 0,
+    "TPR_counterfactual": {
+     "ci95": [
+      0.0,
+      0.4593
+     ],
+     "k": 0,
+     "n": 6,
+     "rate": 0.0
+    },
+    "TPR_factual": {
+     "ci95": [
+      0.0,
+      0.975
+     ],
+     "k": 0,
+     "n": 1,
+     "rate": 0.0
+    },
+    "coverage_decided": 5
+   },
+   "C2@C0": {
+    "FN": 3,
+    "FP": 0,
+    "TN": 0,
+    "TP": 0,
+    "TPR_counterfactual": {
+     "ci95": [
+      0.0433,
+      0.7772
+     ],
+     "k": 2,
+     "n": 6,
+     "rate": 0.3333
+    },
+    "TPR_factual": {
+     "ci95": [
+      0.0943,
+      0.9916
+     ],
+     "k": 2,
+     "n": 3,
+     "rate": 0.6667
+    },
+    "coverage_decided": 3
+   },
+   "C2@C1": {
+    "FN": 5,
+    "FP": 0,
+    "TN": 0,
+    "TP": 0,
+    "TPR_counterfactual": {
+     "ci95": [
+      0.0319,
+      0.6509
+     ],
+     "k": 2,
+     "n": 8,
+     "rate": 0.25
+    },
+    "TPR_factual": {
+     "ci95": [
+      0.0943,
+      0.9916
+     ],
+     "k": 2,
+     "n": 3,
+     "rate": 0.6667
+    },
+    "coverage_decided": 5
+   }
+  },
+  "input_format_incompatibility": 0,
+  "label": "counterfactual — diagnostic_revalidation, not a measurement of production",
+  "outcomes": {
+   "input_format_incompatibility": 0,
+   "provider_unavailable": 35,
+   "usable_response": 5
+  },
+  "per_case": [
+   {
+    "case_id": "AI-001",
+    "counterfactual": {
+     "C0": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+     "C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+     "C2@C0": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+     "C2@C1": "NO_CALIBRATED_MANIPULATION_SIGNAL"
+    },
+    "grpc_code": null,
+    "outcome": "usable_response",
+    "score": 0.7549328804016113,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-003",
+    "counterfactual": {
+     "C0": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+     "C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+     "C2@C0": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+     "C2@C1": "NO_CALIBRATED_MANIPULATION_SIGNAL"
+    },
+    "grpc_code": null,
+    "outcome": "usable_response",
+    "score": 0.021368887275457382,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-004",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "NO_CALIBRATED_MANIPULATION_SIGNAL"
+    },
+    "grpc_code": null,
+    "outcome": "usable_response",
+    "score": 0.18538035452365875,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-005",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "NO_CALIBRATED_MANIPULATION_SIGNAL"
+    },
+    "grpc_code": null,
+    "outcome": "usable_response",
+    "score": 0.1726822555065155,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-006",
+    "counterfactual": {
+     "C0": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+     "C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+     "C2@C0": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+     "C2@C1": "NO_CALIBRATED_MANIPULATION_SIGNAL"
+    },
+    "grpc_code": null,
+    "outcome": "usable_response",
+    "score": 0.12378530949354172,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-007",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-008",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-009",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-010",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-011",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-012",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-013",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-014",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-015",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-016",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-017",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-018",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "MANIPULATION_DETECTED_AUXILIARY",
+     "C2@C1": "MANIPULATION_DETECTED_AUXILIARY"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-019",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-020",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-021",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-022",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-023",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-024",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "MANIPULATION_DETECTED_AUXILIARY",
+     "C2@C1": "MANIPULATION_DETECTED_AUXILIARY"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-025",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-026",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-027",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-028",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-029",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "AI-030",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "AI"
+   },
+   {
+    "case_id": "REAL-002",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "REAL"
+   },
+   {
+    "case_id": "REAL-004",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "REAL"
+   },
+   {
+    "case_id": "REAL-006",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "REAL"
+   },
+   {
+    "case_id": "REAL-007",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "REAL"
+   },
+   {
+    "case_id": "REAL-008",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "REAL"
+   },
+   {
+    "case_id": "REAL-009",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "REAL"
+   },
+   {
+    "case_id": "REAL-011",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "REAL"
+   },
+   {
+    "case_id": "REAL-012",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "REAL"
+   },
+   {
+    "case_id": "REAL-013",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "REAL"
+   },
+   {
+    "case_id": "REAL-014",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "REAL"
+   },
+   {
+    "case_id": "REAL-015",
+    "counterfactual": {
+     "C0": "INCONCLUSIVE",
+     "C1": "INCONCLUSIVE",
+     "C2@C0": "INCONCLUSIVE",
+     "C2@C1": "INCONCLUSIVE"
+    },
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "outcome": "provider_unavailable",
+    "score": null,
+    "truth": "REAL"
+   }
+  ],
+  "population": 40,
+  "promotion_eligible": false,
+  "provenance": "diagnostic_revalidation",
+  "source": {
+   "nvidia_video_sha256": "132069fd355920ac39ff9c936277d16ca2f8c74b957acfff7d97154779d14ac1",
+   "path": "/home/adentechio/deepguard-corpus/r17_t5_diagnostic/c3_records.json",
+   "run_finished_at": "2026-10-19T11:16:22.437777+00:00",
+   "run_started_at": "2026-10-19T10:53:52.950840+00:00",
+   "sha256": "2bb32470f7c0f575c5218701d03ea06620e61260c150664a45e5ee91969fc748"
+  },
+  "usable": 5,
+  "verdict": "INCONCLUSIVE"
+ },
+ "cases": [
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B006",
+   "case_id": "AI-001",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+   "C0_rule": "R9-200",
+   "C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+   "C2@C0": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+   "C2@C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+   "blind_id": "B004",
+   "case_id": "AI-002",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "SUCCESS",
+   "svd_usable": true,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B014",
+   "case_id": "AI-003",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B032",
+   "case_id": "AI-004",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B036",
+   "case_id": "AI-005",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B028",
+   "case_id": "AI-006",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B034",
+   "case_id": "AI-007",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B020",
+   "case_id": "AI-008",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B037",
+   "case_id": "AI-009",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B011",
+   "case_id": "AI-010",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B029",
+   "case_id": "AI-011",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B018",
+   "case_id": "AI-012",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B010",
+   "case_id": "AI-013",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B025",
+   "case_id": "AI-014",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B017",
+   "case_id": "AI-015",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B041",
+   "case_id": "AI-016",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B031",
+   "case_id": "AI-017",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "SUCCESS",
+   "source_cluster_id": "CL-SORA",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "MANIPULATION_DETECTED_AUXILIARY",
+   "C2@C1": "MANIPULATION_DETECTED_AUXILIARY",
+   "blind_id": "B007",
+   "case_id": "AI-018",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": true,
+   "lip_status": "SUCCESS",
+   "source_cluster_id": "CL-VEO",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B045",
+   "case_id": "AI-019",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-VEO",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B038",
+   "case_id": "AI-020",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-VEO",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B021",
+   "case_id": "AI-021",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-VEO",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B012",
+   "case_id": "AI-022",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-VEO",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B039",
+   "case_id": "AI-023",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-VEO",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "MANIPULATION_DETECTED_AUXILIARY",
+   "C2@C1": "MANIPULATION_DETECTED_AUXILIARY",
+   "blind_id": "B026",
+   "case_id": "AI-024",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": true,
+   "lip_status": "SUCCESS",
+   "source_cluster_id": "CL-VEO",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B027",
+   "case_id": "AI-025",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-VEO",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B033",
+   "case_id": "AI-026",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "SUCCESS",
+   "source_cluster_id": "CL-VEO",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B030",
+   "case_id": "AI-027",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-VEO",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B023",
+   "case_id": "AI-028",
+   "face_reason": null,
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "SUCCESS",
+   "faceless": false,
+   "lip_hit": false,
+   "lip_status": "SUCCESS",
+   "source_cluster_id": "CL-VEO",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B043",
+   "case_id": "AI-029",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-RUNWAY-GEN3",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B019",
+   "case_id": "AI-030",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-RUNWAY-GEN4",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "AI"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+   "blind_id": "B002",
+   "case_id": "REAL-001",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-SAW1",
+   "svd_status": "SUCCESS",
+   "svd_usable": true,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B044",
+   "case_id": "REAL-002",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-SAW1",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+   "blind_id": "B001",
+   "case_id": "REAL-003",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-SAW1",
+   "svd_status": "SUCCESS",
+   "svd_usable": true,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B009",
+   "case_id": "REAL-004",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-SAW1",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+   "blind_id": "B005",
+   "case_id": "REAL-005",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-SAW1",
+   "svd_status": "SUCCESS",
+   "svd_usable": true,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B008",
+   "case_id": "REAL-006",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-SAW1",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B035",
+   "case_id": "REAL-007",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-SAW1",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B042",
+   "case_id": "REAL-008",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-SAW1",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B024",
+   "case_id": "REAL-009",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-SAW1",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-300",
+   "C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "NO_CALIBRATED_MANIPULATION_SIGNAL",
+   "blind_id": "B003",
+   "case_id": "REAL-010",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-SAW1",
+   "svd_status": "SUCCESS",
+   "svd_usable": true,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B013",
+   "case_id": "REAL-011",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-ASCENT",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B015",
+   "case_id": "REAL-012",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-ASCENT",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B022",
+   "case_id": "REAL-013",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-ASCENT",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B016",
+   "case_id": "REAL-014",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-ASCENT",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "REAL"
+  },
+  {
+   "C0": "INCONCLUSIVE",
+   "C0_rule": "R9-301",
+   "C1": "INCONCLUSIVE",
+   "C2@C0": "INCONCLUSIVE",
+   "C2@C1": "INCONCLUSIVE",
+   "blind_id": "B040",
+   "case_id": "REAL-015",
+   "face_reason": "FaceDetectorNoFaceFound",
+   "face_reason_provenance": "production_committed_row (via T4 record)",
+   "face_status": "FAILED",
+   "faceless": true,
+   "lip_hit": false,
+   "lip_status": "FAILED",
+   "source_cluster_id": "CL-NASA-A2-ASCENT",
+   "svd_status": "FAILED",
+   "svd_usable": false,
+   "truth": "REAL"
+  }
+ ],
+ "dataset_limitation": "The 15 REAL controls are a single narrow technical domain (NASA Artemis II spacecraft cameras, 2 source clusters) with zero human faces. Zero false positives on this set is not general-population FPR or safety evidence. C2's lip-based FPR cannot be tested here at all. Cluster-level results come from 6 source clusters, which are not independent and not generalisable.",
+ "figures": {
+  "FP_C1_all_real": 0,
+  "FP_C1_faceless_usable_real": 0,
+  "c1_changed_cases": [
+   "REAL-001",
+   "REAL-003",
+   "REAL-005",
+   "REAL-010"
+  ],
+  "c2_aux_cases@C0": [
+   "AI-018",
+   "AI-024"
+  ],
+  "c2_aux_cases@C1": [
+   "AI-018",
+   "AI-024"
+  ],
+  "c2_aux_fp@C0": [],
+  "c2_aux_fp@C1": [],
+  "c2_delta_tp@C0": 2,
+  "c2_delta_tp@C1": 2,
+  "faceless_by_truth": {
+   "AI": 9,
+   "REAL": 15
+  },
+  "faceless_cases": 24,
+  "faceless_coverage_gain": 4,
+  "faceless_decided": {
+   "C0": 0,
+   "C1": 4
+  },
+  "usable_real_cases": [
+   "REAL-001",
+   "REAL-003",
+   "REAL-005",
+   "REAL-010"
+  ],
+  "usable_real_denominator": 4
+ },
+ "metrics": {
+  "C0": {
+   "case_level": {
+    "AI": 30,
+    "FN": 1,
+    "FNR": {
+     "ci95": [
+      0.025,
+      1.0
+     ],
+     "k": 1,
+     "n": 1,
+     "rate": 1.0
+    },
+    "FP": 0,
+    "FPR": {
+     "ci95": null,
+     "k": 0,
+     "n": 0,
+     "rate": null
+    },
+    "REAL": 15,
+    "TN": 0,
+    "TNR": {
+     "ci95": null,
+     "k": 0,
+     "n": 0,
+     "rate": null
+    },
+    "TP": 0,
+    "TPR": {
+     "ci95": [
+      0.0,
+      0.975
+     ],
+     "k": 0,
+     "n": 1,
+     "rate": 0.0
+    },
+    "abstention_rate": {
+     "ci95": [
+      0.8823,
+      0.9994
+     ],
+     "k": 44,
+     "n": 45,
+     "rate": 0.9778
+    },
+    "abstention_rate_AI": {
+     "ci95": [
+      0.8278,
+      0.9992
+     ],
+     "k": 29,
+     "n": 30,
+     "rate": 0.9667
+    },
+    "abstention_rate_REAL": {
+     "ci95": [
+      0.782,
+      1.0
+     ],
+     "k": 15,
+     "n": 15,
+     "rate": 1.0
+    },
+    "cases": 45,
+    "coverage": {
+     "ci95": [
+      0.0006,
+      0.1177
+     ],
+     "k": 1,
+     "n": 45,
+     "rate": 0.0222
+    },
+    "coverage_AI": {
+     "ci95": [
+      0.0008,
+      0.1722
+     ],
+     "k": 1,
+     "n": 30,
+     "rate": 0.0333
+    },
+    "coverage_REAL": {
+     "ci95": [
+      0.0,
+      0.218
+     ],
+     "k": 0,
+     "n": 15,
+     "rate": 0.0
+    },
+    "hash_blocked_rate": {
+     "ci95": [
+      0.0,
+      0.0787
+     ],
+     "k": 0,
+     "n": 45,
+     "rate": 0.0
+    },
+    "operational_failure_rate": {
+     "ci95": [
+      0.0,
+      0.0787
+     ],
+     "k": 0,
+     "n": 45,
+     "rate": 0.0
+    },
+    "protocol_violation_rate": {
+     "ci95": [
+      0.0,
+      0.0787
+     ],
+     "k": 0,
+     "n": 45,
+     "rate": 0.0
+    },
+    "secondary_recall_abstention_as_miss": {
+     "ci95": [
+      0.0,
+      0.1157
+     ],
+     "k": 0,
+     "label": "secondary, abstention-as-miss",
+     "n": 30,
+     "rate": 0.0
+    },
+    "states": {
+     "abstention": 44,
+     "hash_blocked": 0,
+     "negative": 1,
+     "operational_failure": 0,
+     "positive": 0,
+     "protocol_violation": 0
+    }
+   },
+   "cluster_level": {
+    "clusters": {
+     "CL-NASA-A2-ASCENT": {
+      "AI": 0,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 5,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.4782,
+        1.0
+       ],
+       "k": 5,
+       "n": 5,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate_REAL": {
+       "ci95": [
+        0.4782,
+        1.0
+       ],
+       "k": 5,
+       "n": 5,
+       "rate": 1.0
+      },
+      "cases": 5,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "coverage_REAL": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": null,
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 0,
+       "rate": null
+      },
+      "states": {
+       "abstention": 5,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-NASA-A2-SAW1": {
+      "AI": 0,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 10,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.6915,
+        1.0
+       ],
+       "k": 10,
+       "n": 10,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate_REAL": {
+       "ci95": [
+        0.6915,
+        1.0
+       ],
+       "k": 10,
+       "n": 10,
+       "rate": 1.0
+      },
+      "cases": 10,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "coverage_REAL": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": null,
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 0,
+       "rate": null
+      },
+      "states": {
+       "abstention": 10,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-RUNWAY-GEN3": {
+      "AI": 1,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 1,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 1,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 1,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-RUNWAY-GEN4": {
+      "AI": 1,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 1,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 1,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 1,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-SORA": {
+      "AI": 17,
+      "FN": 1,
+      "FNR": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.7131,
+        0.9985
+       ],
+       "k": 16,
+       "n": 17,
+       "rate": 0.9412
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.7131,
+        0.9985
+       ],
+       "k": 16,
+       "n": 17,
+       "rate": 0.9412
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 17,
+      "coverage": {
+       "ci95": [
+        0.0015,
+        0.2869
+       ],
+       "k": 1,
+       "n": 17,
+       "rate": 0.0588
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0015,
+        0.2869
+       ],
+       "k": 1,
+       "n": 17,
+       "rate": 0.0588
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "n": 17,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "n": 17,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "n": 17,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 17,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 16,
+       "hash_blocked": 0,
+       "negative": 1,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-VEO": {
+      "AI": 11,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.7151,
+        1.0
+       ],
+       "k": 11,
+       "n": 11,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.7151,
+        1.0
+       ],
+       "k": 11,
+       "n": 11,
+       "rate": 1.0
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 11,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 11,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 11,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     }
+    },
+    "label": "6 source clusters, not independent, not generalisable"
+   }
+  },
+  "C1": {
+   "case_level": {
+    "AI": 30,
+    "FN": 1,
+    "FNR": {
+     "ci95": [
+      0.025,
+      1.0
+     ],
+     "k": 1,
+     "n": 1,
+     "rate": 1.0
+    },
+    "FP": 0,
+    "FPR": {
+     "ci95": [
+      0.0,
+      0.6024
+     ],
+     "k": 0,
+     "n": 4,
+     "rate": 0.0
+    },
+    "REAL": 15,
+    "TN": 4,
+    "TNR": {
+     "ci95": [
+      0.3976,
+      1.0
+     ],
+     "k": 4,
+     "n": 4,
+     "rate": 1.0
+    },
+    "TP": 0,
+    "TPR": {
+     "ci95": [
+      0.0,
+      0.975
+     ],
+     "k": 0,
+     "n": 1,
+     "rate": 0.0
+    },
+    "abstention_rate": {
+     "ci95": [
+      0.7595,
+      0.9629
+     ],
+     "k": 40,
+     "n": 45,
+     "rate": 0.8889
+    },
+    "abstention_rate_AI": {
+     "ci95": [
+      0.8278,
+      0.9992
+     ],
+     "k": 29,
+     "n": 30,
+     "rate": 0.9667
+    },
+    "abstention_rate_REAL": {
+     "ci95": [
+      0.449,
+      0.9221
+     ],
+     "k": 11,
+     "n": 15,
+     "rate": 0.7333
+    },
+    "cases": 45,
+    "coverage": {
+     "ci95": [
+      0.0371,
+      0.2405
+     ],
+     "k": 5,
+     "n": 45,
+     "rate": 0.1111
+    },
+    "coverage_AI": {
+     "ci95": [
+      0.0008,
+      0.1722
+     ],
+     "k": 1,
+     "n": 30,
+     "rate": 0.0333
+    },
+    "coverage_REAL": {
+     "ci95": [
+      0.0779,
+      0.551
+     ],
+     "k": 4,
+     "n": 15,
+     "rate": 0.2667
+    },
+    "hash_blocked_rate": {
+     "ci95": [
+      0.0,
+      0.0787
+     ],
+     "k": 0,
+     "n": 45,
+     "rate": 0.0
+    },
+    "operational_failure_rate": {
+     "ci95": [
+      0.0,
+      0.0787
+     ],
+     "k": 0,
+     "n": 45,
+     "rate": 0.0
+    },
+    "protocol_violation_rate": {
+     "ci95": [
+      0.0,
+      0.0787
+     ],
+     "k": 0,
+     "n": 45,
+     "rate": 0.0
+    },
+    "secondary_recall_abstention_as_miss": {
+     "ci95": [
+      0.0,
+      0.1157
+     ],
+     "k": 0,
+     "label": "secondary, abstention-as-miss",
+     "n": 30,
+     "rate": 0.0
+    },
+    "states": {
+     "abstention": 40,
+     "hash_blocked": 0,
+     "negative": 5,
+     "operational_failure": 0,
+     "positive": 0,
+     "protocol_violation": 0
+    }
+   },
+   "cluster_level": {
+    "clusters": {
+     "CL-NASA-A2-ASCENT": {
+      "AI": 0,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 5,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.4782,
+        1.0
+       ],
+       "k": 5,
+       "n": 5,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate_REAL": {
+       "ci95": [
+        0.4782,
+        1.0
+       ],
+       "k": 5,
+       "n": 5,
+       "rate": 1.0
+      },
+      "cases": 5,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "coverage_REAL": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": null,
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 0,
+       "rate": null
+      },
+      "states": {
+       "abstention": 5,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-NASA-A2-SAW1": {
+      "AI": 0,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": [
+        0.0,
+        0.6024
+       ],
+       "k": 0,
+       "n": 4,
+       "rate": 0.0
+      },
+      "REAL": 10,
+      "TN": 4,
+      "TNR": {
+       "ci95": [
+        0.3976,
+        1.0
+       ],
+       "k": 4,
+       "n": 4,
+       "rate": 1.0
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.2624,
+        0.8784
+       ],
+       "k": 6,
+       "n": 10,
+       "rate": 0.6
+      },
+      "abstention_rate_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate_REAL": {
+       "ci95": [
+        0.2624,
+        0.8784
+       ],
+       "k": 6,
+       "n": 10,
+       "rate": 0.6
+      },
+      "cases": 10,
+      "coverage": {
+       "ci95": [
+        0.1216,
+        0.7376
+       ],
+       "k": 4,
+       "n": 10,
+       "rate": 0.4
+      },
+      "coverage_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "coverage_REAL": {
+       "ci95": [
+        0.1216,
+        0.7376
+       ],
+       "k": 4,
+       "n": 10,
+       "rate": 0.4
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": null,
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 0,
+       "rate": null
+      },
+      "states": {
+       "abstention": 6,
+       "hash_blocked": 0,
+       "negative": 4,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-RUNWAY-GEN3": {
+      "AI": 1,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 1,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 1,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 1,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-RUNWAY-GEN4": {
+      "AI": 1,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 1,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 1,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 1,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-SORA": {
+      "AI": 17,
+      "FN": 1,
+      "FNR": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.7131,
+        0.9985
+       ],
+       "k": 16,
+       "n": 17,
+       "rate": 0.9412
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.7131,
+        0.9985
+       ],
+       "k": 16,
+       "n": 17,
+       "rate": 0.9412
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 17,
+      "coverage": {
+       "ci95": [
+        0.0015,
+        0.2869
+       ],
+       "k": 1,
+       "n": 17,
+       "rate": 0.0588
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0015,
+        0.2869
+       ],
+       "k": 1,
+       "n": 17,
+       "rate": 0.0588
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "n": 17,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "n": 17,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "n": 17,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 17,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 16,
+       "hash_blocked": 0,
+       "negative": 1,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-VEO": {
+      "AI": 11,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.7151,
+        1.0
+       ],
+       "k": 11,
+       "n": 11,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.7151,
+        1.0
+       ],
+       "k": 11,
+       "n": 11,
+       "rate": 1.0
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 11,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 11,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 11,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     }
+    },
+    "label": "6 source clusters, not independent, not generalisable"
+   }
+  },
+  "C2@C0": {
+   "case_level": {
+    "AI": 30,
+    "FN": 1,
+    "FNR": {
+     "ci95": [
+      0.0084,
+      0.9057
+     ],
+     "k": 1,
+     "n": 3,
+     "rate": 0.3333
+    },
+    "FP": 0,
+    "FPR": {
+     "ci95": null,
+     "k": 0,
+     "n": 0,
+     "rate": null
+    },
+    "REAL": 15,
+    "TN": 0,
+    "TNR": {
+     "ci95": null,
+     "k": 0,
+     "n": 0,
+     "rate": null
+    },
+    "TP": 2,
+    "TPR": {
+     "ci95": [
+      0.0943,
+      0.9916
+     ],
+     "k": 2,
+     "n": 3,
+     "rate": 0.6667
+    },
+    "abstention_rate": {
+     "ci95": [
+      0.8173,
+      0.986
+     ],
+     "k": 42,
+     "n": 45,
+     "rate": 0.9333
+    },
+    "abstention_rate_AI": {
+     "ci95": [
+      0.7347,
+      0.9789
+     ],
+     "k": 27,
+     "n": 30,
+     "rate": 0.9
+    },
+    "abstention_rate_REAL": {
+     "ci95": [
+      0.782,
+      1.0
+     ],
+     "k": 15,
+     "n": 15,
+     "rate": 1.0
+    },
+    "cases": 45,
+    "coverage": {
+     "ci95": [
+      0.014,
+      0.1827
+     ],
+     "k": 3,
+     "n": 45,
+     "rate": 0.0667
+    },
+    "coverage_AI": {
+     "ci95": [
+      0.0211,
+      0.2653
+     ],
+     "k": 3,
+     "n": 30,
+     "rate": 0.1
+    },
+    "coverage_REAL": {
+     "ci95": [
+      0.0,
+      0.218
+     ],
+     "k": 0,
+     "n": 15,
+     "rate": 0.0
+    },
+    "hash_blocked_rate": {
+     "ci95": [
+      0.0,
+      0.0787
+     ],
+     "k": 0,
+     "n": 45,
+     "rate": 0.0
+    },
+    "operational_failure_rate": {
+     "ci95": [
+      0.0,
+      0.0787
+     ],
+     "k": 0,
+     "n": 45,
+     "rate": 0.0
+    },
+    "protocol_violation_rate": {
+     "ci95": [
+      0.0,
+      0.0787
+     ],
+     "k": 0,
+     "n": 45,
+     "rate": 0.0
+    },
+    "secondary_recall_abstention_as_miss": {
+     "ci95": [
+      0.0082,
+      0.2207
+     ],
+     "k": 2,
+     "label": "secondary, abstention-as-miss",
+     "n": 30,
+     "rate": 0.0667
+    },
+    "states": {
+     "abstention": 42,
+     "hash_blocked": 0,
+     "negative": 1,
+     "operational_failure": 0,
+     "positive": 2,
+     "protocol_violation": 0
+    }
+   },
+   "cluster_level": {
+    "clusters": {
+     "CL-NASA-A2-ASCENT": {
+      "AI": 0,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 5,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.4782,
+        1.0
+       ],
+       "k": 5,
+       "n": 5,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate_REAL": {
+       "ci95": [
+        0.4782,
+        1.0
+       ],
+       "k": 5,
+       "n": 5,
+       "rate": 1.0
+      },
+      "cases": 5,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "coverage_REAL": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": null,
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 0,
+       "rate": null
+      },
+      "states": {
+       "abstention": 5,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-NASA-A2-SAW1": {
+      "AI": 0,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 10,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.6915,
+        1.0
+       ],
+       "k": 10,
+       "n": 10,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate_REAL": {
+       "ci95": [
+        0.6915,
+        1.0
+       ],
+       "k": 10,
+       "n": 10,
+       "rate": 1.0
+      },
+      "cases": 10,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "coverage_REAL": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": null,
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 0,
+       "rate": null
+      },
+      "states": {
+       "abstention": 10,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-RUNWAY-GEN3": {
+      "AI": 1,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 1,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 1,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 1,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-RUNWAY-GEN4": {
+      "AI": 1,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 1,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 1,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 1,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-SORA": {
+      "AI": 17,
+      "FN": 1,
+      "FNR": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.7131,
+        0.9985
+       ],
+       "k": 16,
+       "n": 17,
+       "rate": 0.9412
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.7131,
+        0.9985
+       ],
+       "k": 16,
+       "n": 17,
+       "rate": 0.9412
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 17,
+      "coverage": {
+       "ci95": [
+        0.0015,
+        0.2869
+       ],
+       "k": 1,
+       "n": 17,
+       "rate": 0.0588
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0015,
+        0.2869
+       ],
+       "k": 1,
+       "n": 17,
+       "rate": 0.0588
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "n": 17,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "n": 17,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "n": 17,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 17,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 16,
+       "hash_blocked": 0,
+       "negative": 1,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-VEO": {
+      "AI": 11,
+      "FN": 0,
+      "FNR": {
+       "ci95": [
+        0.0,
+        0.8419
+       ],
+       "k": 0,
+       "n": 2,
+       "rate": 0.0
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 2,
+      "TPR": {
+       "ci95": [
+        0.1581,
+        1.0
+       ],
+       "k": 2,
+       "n": 2,
+       "rate": 1.0
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.4822,
+        0.9772
+       ],
+       "k": 9,
+       "n": 11,
+       "rate": 0.8182
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.4822,
+        0.9772
+       ],
+       "k": 9,
+       "n": 11,
+       "rate": 0.8182
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 11,
+      "coverage": {
+       "ci95": [
+        0.0228,
+        0.5178
+       ],
+       "k": 2,
+       "n": 11,
+       "rate": 0.1818
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0228,
+        0.5178
+       ],
+       "k": 2,
+       "n": 11,
+       "rate": 0.1818
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0228,
+        0.5178
+       ],
+       "k": 2,
+       "label": "secondary, abstention-as-miss",
+       "n": 11,
+       "rate": 0.1818
+      },
+      "states": {
+       "abstention": 9,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 2,
+       "protocol_violation": 0
+      }
+     }
+    },
+    "label": "6 source clusters, not independent, not generalisable"
+   }
+  },
+  "C2@C1": {
+   "case_level": {
+    "AI": 30,
+    "FN": 1,
+    "FNR": {
+     "ci95": [
+      0.0084,
+      0.9057
+     ],
+     "k": 1,
+     "n": 3,
+     "rate": 0.3333
+    },
+    "FP": 0,
+    "FPR": {
+     "ci95": [
+      0.0,
+      0.6024
+     ],
+     "k": 0,
+     "n": 4,
+     "rate": 0.0
+    },
+    "REAL": 15,
+    "TN": 4,
+    "TNR": {
+     "ci95": [
+      0.3976,
+      1.0
+     ],
+     "k": 4,
+     "n": 4,
+     "rate": 1.0
+    },
+    "TP": 2,
+    "TPR": {
+     "ci95": [
+      0.0943,
+      0.9916
+     ],
+     "k": 2,
+     "n": 3,
+     "rate": 0.6667
+    },
+    "abstention_rate": {
+     "ci95": [
+      0.7054,
+      0.9351
+     ],
+     "k": 38,
+     "n": 45,
+     "rate": 0.8444
+    },
+    "abstention_rate_AI": {
+     "ci95": [
+      0.7347,
+      0.9789
+     ],
+     "k": 27,
+     "n": 30,
+     "rate": 0.9
+    },
+    "abstention_rate_REAL": {
+     "ci95": [
+      0.449,
+      0.9221
+     ],
+     "k": 11,
+     "n": 15,
+     "rate": 0.7333
+    },
+    "cases": 45,
+    "coverage": {
+     "ci95": [
+      0.0649,
+      0.2946
+     ],
+     "k": 7,
+     "n": 45,
+     "rate": 0.1556
+    },
+    "coverage_AI": {
+     "ci95": [
+      0.0211,
+      0.2653
+     ],
+     "k": 3,
+     "n": 30,
+     "rate": 0.1
+    },
+    "coverage_REAL": {
+     "ci95": [
+      0.0779,
+      0.551
+     ],
+     "k": 4,
+     "n": 15,
+     "rate": 0.2667
+    },
+    "hash_blocked_rate": {
+     "ci95": [
+      0.0,
+      0.0787
+     ],
+     "k": 0,
+     "n": 45,
+     "rate": 0.0
+    },
+    "operational_failure_rate": {
+     "ci95": [
+      0.0,
+      0.0787
+     ],
+     "k": 0,
+     "n": 45,
+     "rate": 0.0
+    },
+    "protocol_violation_rate": {
+     "ci95": [
+      0.0,
+      0.0787
+     ],
+     "k": 0,
+     "n": 45,
+     "rate": 0.0
+    },
+    "secondary_recall_abstention_as_miss": {
+     "ci95": [
+      0.0082,
+      0.2207
+     ],
+     "k": 2,
+     "label": "secondary, abstention-as-miss",
+     "n": 30,
+     "rate": 0.0667
+    },
+    "states": {
+     "abstention": 38,
+     "hash_blocked": 0,
+     "negative": 5,
+     "operational_failure": 0,
+     "positive": 2,
+     "protocol_violation": 0
+    }
+   },
+   "cluster_level": {
+    "clusters": {
+     "CL-NASA-A2-ASCENT": {
+      "AI": 0,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 5,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.4782,
+        1.0
+       ],
+       "k": 5,
+       "n": 5,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate_REAL": {
+       "ci95": [
+        0.4782,
+        1.0
+       ],
+       "k": 5,
+       "n": 5,
+       "rate": 1.0
+      },
+      "cases": 5,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "coverage_REAL": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.5218
+       ],
+       "k": 0,
+       "n": 5,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": null,
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 0,
+       "rate": null
+      },
+      "states": {
+       "abstention": 5,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-NASA-A2-SAW1": {
+      "AI": 0,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": [
+        0.0,
+        0.6024
+       ],
+       "k": 0,
+       "n": 4,
+       "rate": 0.0
+      },
+      "REAL": 10,
+      "TN": 4,
+      "TNR": {
+       "ci95": [
+        0.3976,
+        1.0
+       ],
+       "k": 4,
+       "n": 4,
+       "rate": 1.0
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.2624,
+        0.8784
+       ],
+       "k": 6,
+       "n": 10,
+       "rate": 0.6
+      },
+      "abstention_rate_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate_REAL": {
+       "ci95": [
+        0.2624,
+        0.8784
+       ],
+       "k": 6,
+       "n": 10,
+       "rate": 0.6
+      },
+      "cases": 10,
+      "coverage": {
+       "ci95": [
+        0.1216,
+        0.7376
+       ],
+       "k": 4,
+       "n": 10,
+       "rate": 0.4
+      },
+      "coverage_AI": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "coverage_REAL": {
+       "ci95": [
+        0.1216,
+        0.7376
+       ],
+       "k": 4,
+       "n": 10,
+       "rate": 0.4
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.3085
+       ],
+       "k": 0,
+       "n": 10,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": null,
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 0,
+       "rate": null
+      },
+      "states": {
+       "abstention": 6,
+       "hash_blocked": 0,
+       "negative": 4,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-RUNWAY-GEN3": {
+      "AI": 1,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 1,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 1,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 1,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-RUNWAY-GEN4": {
+      "AI": 1,
+      "FN": 0,
+      "FNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 1,
+      "coverage": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 1,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 1,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-SORA": {
+      "AI": 17,
+      "FN": 1,
+      "FNR": {
+       "ci95": [
+        0.025,
+        1.0
+       ],
+       "k": 1,
+       "n": 1,
+       "rate": 1.0
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 0,
+      "TPR": {
+       "ci95": [
+        0.0,
+        0.975
+       ],
+       "k": 0,
+       "n": 1,
+       "rate": 0.0
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.7131,
+        0.9985
+       ],
+       "k": 16,
+       "n": 17,
+       "rate": 0.9412
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.7131,
+        0.9985
+       ],
+       "k": 16,
+       "n": 17,
+       "rate": 0.9412
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 17,
+      "coverage": {
+       "ci95": [
+        0.0015,
+        0.2869
+       ],
+       "k": 1,
+       "n": 17,
+       "rate": 0.0588
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0015,
+        0.2869
+       ],
+       "k": 1,
+       "n": 17,
+       "rate": 0.0588
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "n": 17,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "n": 17,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "n": 17,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0,
+        0.1951
+       ],
+       "k": 0,
+       "label": "secondary, abstention-as-miss",
+       "n": 17,
+       "rate": 0.0
+      },
+      "states": {
+       "abstention": 16,
+       "hash_blocked": 0,
+       "negative": 1,
+       "operational_failure": 0,
+       "positive": 0,
+       "protocol_violation": 0
+      }
+     },
+     "CL-VEO": {
+      "AI": 11,
+      "FN": 0,
+      "FNR": {
+       "ci95": [
+        0.0,
+        0.8419
+       ],
+       "k": 0,
+       "n": 2,
+       "rate": 0.0
+      },
+      "FP": 0,
+      "FPR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "REAL": 0,
+      "TN": 0,
+      "TNR": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "TP": 2,
+      "TPR": {
+       "ci95": [
+        0.1581,
+        1.0
+       ],
+       "k": 2,
+       "n": 2,
+       "rate": 1.0
+      },
+      "abstention_rate": {
+       "ci95": [
+        0.4822,
+        0.9772
+       ],
+       "k": 9,
+       "n": 11,
+       "rate": 0.8182
+      },
+      "abstention_rate_AI": {
+       "ci95": [
+        0.4822,
+        0.9772
+       ],
+       "k": 9,
+       "n": 11,
+       "rate": 0.8182
+      },
+      "abstention_rate_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "cases": 11,
+      "coverage": {
+       "ci95": [
+        0.0228,
+        0.5178
+       ],
+       "k": 2,
+       "n": 11,
+       "rate": 0.1818
+      },
+      "coverage_AI": {
+       "ci95": [
+        0.0228,
+        0.5178
+       ],
+       "k": 2,
+       "n": 11,
+       "rate": 0.1818
+      },
+      "coverage_REAL": {
+       "ci95": null,
+       "k": 0,
+       "n": 0,
+       "rate": null
+      },
+      "hash_blocked_rate": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "operational_failure_rate": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "protocol_violation_rate": {
+       "ci95": [
+        0.0,
+        0.2849
+       ],
+       "k": 0,
+       "n": 11,
+       "rate": 0.0
+      },
+      "secondary_recall_abstention_as_miss": {
+       "ci95": [
+        0.0228,
+        0.5178
+       ],
+       "k": 2,
+       "label": "secondary, abstention-as-miss",
+       "n": 11,
+       "rate": 0.1818
+      },
+      "states": {
+       "abstention": 9,
+       "hash_blocked": 0,
+       "negative": 0,
+       "operational_failure": 0,
+       "positive": 2,
+       "protocol_violation": 0
+      }
+     }
+    },
+    "label": "6 source clusters, not independent, not generalisable"
+   }
+  }
+ },
+ "ruleset": "r9-v5.0.0",
+ "schema": "r17-t5-challenger-results-1",
+ "task": "R17-T5 Challenger Experiments",
+ "thresholds": {
+  "LIP_T_HIGH": 0.22962537594139576,
+  "SVD_T_HIGH": 0.9550971388816833,
+  "source": "apps/api/app/risk_engine.py (committed, unchanged)"
+ },
+ "verdicts": {
+  "C1": {
+   "note": "C1 adds no positive by construction (spec §3); every change is abstention -> negative",
+   "promotion": "eligible only for R17-T6 further promotion review; the 15 faceless NASA REAL controls are not sufficient by themselves for production promotion",
+   "verdict": "PASS"
+  },
+  "C2": {
+   "aux_fp": {
+    "C0": [],
+    "C1": []
+   },
+   "delta_tp": {
+    "C0": 2,
+    "C1": 2
+   },
+   "promotion_eligible": false,
+   "verdict": "DESCRIPTIVE ONLY"
+  },
+  "C3": {
+   "promotion_eligible": false,
+   "verdict": "INCONCLUSIVE"
+  }
+ },
+ "verification": {
+  "c0_reproduction": {
+   "matches": 45,
+   "n": 45
+  },
+  "dataset_anchors": {
+   "FREEZE.json": "c57220b755afe67a09fbc34f90f3ab7ff06e748e75ef8985de27bc07471d4c0d",
+   "manifest.json": "5ce7d8363696b5370edd54f923ef816b60f671be2fa1ec9a67d0b488684d73e7"
+  },
+  "phase_a_seal_root": "6fc23d408dc4da918fc85968acc364b700d1d770114d718735e2862687d2f579",
+  "results_json_sha256": "67bc12a0106c41d996f742fd9cb1dd848a8d38c94298b3a1459bd57b6298e70f",
+  "spec_sha256": "b1dc9991e80cdcebcd974517b071ed519d93f7a859002f5c81a284ab5f454f3e",
+  "t3_closure_commit": "74e91e76f567d280947af882f5724e77a8a1cfbf",
+  "t4_closure_commit": "0c4f2cf9f75fa4ef33f5cebd6616eda71d98b47b",
+  "t4_record_sha256": "80633792fb9274c3157a9d6c75265c475761804196d296dee68ef6715ef68f00"
+ }
+}
