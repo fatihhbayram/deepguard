@@ -996,7 +996,7 @@ Any threshold or detector change must create a new calibration/ruleset context a
 
 ---
 
-## R17 — AI-Visual Detection Evaluation & Recall Improvement
+## R17 — AI-Visual Detection Evaluation & Recall Improvement (CLOSED)
 
 **Objective:** Measure how the production `r9-v5.0.0` system actually performs on AI-generated video (Sora, Veo, Runway) on a frozen, traceable dataset; analyse why it misses; and only after measurement, evaluate evidence-based recall-improvement candidates. The first five tasks do not change production.
 
@@ -1029,6 +1029,16 @@ Any threshold or detector change must create a new calibration/ruleset context a
 ### R17-T6 — Promotion Decision
 - **Objective:** Decide whether any challenger is promoted into a new versioned ruleset. Conditional: if none passes the thresholds, the ruleset does not change.
 - **Closure Criteria:** A new immutable ruleset is defined, or the phase closes without a ruleset change.
+- **Status:** CLOSED. Ruling **Option A — NO PROMOTION / CLOSE WITHOUT RULESET CHANGE**; C1, C2 and C3 are rejected for production. Record: `scripts/eval/specs/r17_t6_promotion_decision.md`. C1 against the gates: Gate 1 metric efficacy **PASS** (coverage gain 4, REAL TN only, no AI recall gain); Gate 2 safety & FPR **FAIL / DEFICIENT** (4 TN from one faceless NASA cluster, FPR 0/4 with a 95% upper bound of 60.2%); Gate 3 asymmetric error **CONCERN** — where false clearance is more harmful than abstention, C1's error asymmetry is unfavorable (+2 FN on faceless Sora clips in the C3 counterfactual); Gate 4 forensic semantic impact **CONCERN / NOT SUFFICIENT FOR PROMOTION** (low implementation complexity, but faceless media would move from `INCONCLUSIVE` to `NO_CALIBRATED_MANIPULATION_SIGNAL`). C2 and C3 were promotion-ineligible by preregistration. The T5 diagnostic proved `RESOURCE_EXHAUSTED` during C3, and T3's historical pattern is consistent with it, but it is not proven retroactively for T3.
+
+#### Phase R17 Closure (CLOSED)
+1. No challenger is promoted into production.
+2. `r9-v5.0.0` remains the active production ruleset.
+3. AI-visual recall is still insufficiently validated/improved.
+4. Provider reliability remains an unresolved operational concern.
+5. Broader REAL safety validation is required before reconsidering C1.
+
+**Entry criteria for any future recall-improvement work:** (a) broader multi-domain REAL validation, including human-face and faceless footage, sized for a meaningful FPR bound; (b) provider/quota-stable `synthetic_video` access; (c) additional AI recall validation explaining sub-threshold SVD scores on AI clips. Any threshold or detector change creates a new calibration/ruleset context.
 
 #### Phase Rules:
 - `r9-v5.0.0` does not change until the baseline (T3) is complete; threshold/ruleset are not touched before T3.
