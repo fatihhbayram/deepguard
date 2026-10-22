@@ -1072,7 +1072,7 @@ Determine whether InspectRoot's current forensic detectors have sufficient discr
 - **R18-T1 — Existing Corpus Inventory & Dataset Gap Analysis** (CLOSED)
 - **R18-T2 — Automated Dataset Sourcing & Ground-Truth Validation** (CLOSED)
 - **R18-T3 — Dataset Freeze & Leakage-Safe Split** (CLOSED)
-- **R18-T4 — Detector Characterization**
+- **R18-T4 — Detector Characterization** (CLOSED — FINAL PASS / PARTIAL COMPLETE / SVD EXTERNALLY BLOCKED)
 - **R18-T5 — Temporal Aggregation & Calibration Challengers**
 - **R18-T6 — Locked Evaluation & Promotion Decision**
 
@@ -1088,6 +1088,23 @@ Determine whether InspectRoot's current forensic detectors have sufficient discr
 ### R18-T3 — Dataset Freeze & Leakage-Safe Split (CLOSED)
 - **Objective:** Freeze the 306 R18-T2 admitted cases and split them DEV ~50 % / VAL ~20 % / LOCKED_TEST ~30 % without leakage: source clusters and known (normalised, non-null) subjects atomic, zero SHA overlap, all 7 AI generator families in every split; collections are a soft balance axis only.
 - **Status:** CLOSED. Architect FINAL PASS on 2026-10-21 (after the adjudication-scope ruling: only cross-split dHash candidates block the freeze). **CLEAN.** `r18_eval_v1`, freeze timestamp `2026-10-21T16:00:00Z` (explicit CLI), seed `20261021`, manifest `8197e024…`. **DEV 155 / VAL 60 / LOCKED_TEST 91** (AI 72/29/44; face share 46.5/46.7/46.2 %), 242 partition units; monolithic clusters assigned by the seeded solver (NASA SAW1 + R16 owner → DEV, NASA ASCENT → LOCKED_TEST), so VAL has no NASA or R16 footage and LOCKED_TEST no R16. Identity overlap 0/0/0 (SHA/cluster/known subject). dHash ≤ 10 bits: 160 candidates (93 cross-split, 67 same-split diagnostic per the Architect scope ruling); all 93 cross-split adjudicated INDEPENDENT by visual contact-sheet review plus provenance, 0 SHARED_SOURCE, 0 unresolved. Freeze and registry byte-identical on rerun; 64 new tests, eval suite 488. **LOCKED_TEST is source-cluster- and subject-isolated, but not collection- or publisher-independent** (all AI from Rapidata; VCD 53–58 % of REAL per split). LOCKED_TEST is not an unseen-publisher generalisation test; this limitation is carried into T4–T6. T4 characterises on DEV only, VAL is reserved for T5 selection/calibration, LOCKED_TEST is untouched until T6 (`load_partition` refuses it outside R18-T6). Records: `scripts/eval/r18_t3_freeze_split.py`, `scripts/eval/specs/r18_t3_freeze.json`, `scripts/eval/specs/r18_t3_split_manifest.csv`, `scripts/eval/specs/r18_t3_perceptual_adjudications.json`.
+
+### R18-T4 — Detector Characterization (CLOSED — FINAL PASS / PARTIAL COMPLETE / SVD EXTERNALLY BLOCKED)
+- **Objective:** Characterize the raw score distributions, discrimination (AUROC/AUPRC with class-stratified cluster-bootstrap CIs) and operating points of SVD, EfficientNet-B7, LipForensics and Effort on DEV only (155 cases), before any calibration. Production anchors are introspected from HEAD.
+- **Status:** Implemented and measured on 2026-10-21/22.
+  - **Architect FINAL PASS (2026-10-22): PARTIAL COMPLETE / SVD EXTERNALLY BLOCKED.** The phase is not blocked by an external provider limit, and the missing evidence is not presented as success. `SVD_T_HIGH` is neither validated nor challenged.
+  - **Accepted:** B7 complete; LipForensics complete with partial coverage; Effort informational and non-blocking; SVD unavailable because of the external NVIDIA quota.
+  - **No meaningful SVD discrimination conclusion can be drawn from 4/155 scores.** No SVD threshold is inferred or tuned, and historical SVD results are not reused.
+  - The SVD cache and the resumable `score` command are kept for a future supplemental run. Production anchors: `r9-v5.0.0` @ `5e75567`.
+  - **SVD not characterized (availability blocker).** The NVIDIA build quota returned `RESOURCE_EXHAUSTED` on every attempt from 2026-10-21T19:32Z, through 22 retry rounds. Usable: 2 AI / 2 REAL out of 155. One further clip, the iPhone HEVC `R16P-002`, was rejected for format even after P1.
+  - **B7:** overall AUROC 0.841 [0.749, 0.917]; face-present 0.895, faceless 0.549 (chance). Max DEV score 0.881 is below `FACE_T_HIGH`, so production TPR is 0/44 and FPR 0/67.
+  - **LipForensics** (24 h time box, 151/155 reached): scores 9/72 AI and 51/83 REAL. AUROC 0.959 [0.890, 0.998]. At the inert `LIP_T_HIGH`: TPR 6/9, FPR 3/51 (webcam/lecture talking heads).
+  - **Effort:** stopped as non-blocking after 3 outcomes.
+  - **Paired comparison:** only B7 ∩ Lip is measurable. 59 cases (8 AI); AUROC difference −0.078 [−0.185, 0.008].
+- **Disclosed incident.** An early circuit breaker left 3 headless SVD containers running; 51 unrecorded provider replies were lost. Fixed and tested.
+- **Verification.** 48 new tests; eval suite 536. Metrics are byte-deterministic. Corpus, `apps/*`, Compose and thresholds are unchanged.
+- **Carry-forward to R18-T5:** T5 may proceed with B7, LipForensics and other locally supported evidence. **SVD calibration and SVD threshold challengers are out of scope until adequate SVD characterization exists.** That requires a supplemental SVD run on the remaining ~150 DEV clips once quota allows.
+- **Records:** `scripts/eval/r18_t4_characterize.py`, `scripts/eval/baselines/r18_t4_{detector_scores,characterization_metrics,svd_cache}.json`, `docs/ai/r18_t4_detector_characterization_report.md`.
 
 #### Phase Rules:
 1. **Production Isolation:** No change to `apps/*`, production DB/schema, `docker-compose.yml`, active ruleset, thresholds, or forensic semantics during T1–T5. `r9-v5.0.0` remains production unless R18-T6 explicitly approves a new immutable ruleset.
